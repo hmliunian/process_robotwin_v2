@@ -15,6 +15,13 @@ install:
 install-full:
     uv sync --extra phase2 --extra dev
 
+# 临时方案：链接到 process_data 环境进行开发测试
+link-dev-env:
+    @echo "⚠️  临时方案：链接到 ../process_data/.venv"
+    @echo "    生产环境请使用 'just install'"
+    ln -sf ../process_data/.venv .venv
+    @echo "✅ 已链接，可运行测试"
+
 # 清理环境
 clean:
     rm -rf .venv
