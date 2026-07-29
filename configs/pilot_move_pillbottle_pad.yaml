@@ -1,0 +1,38 @@
+# Pilot configuration: move_pillbottle_pad
+# First 10 episodes for Phase 1 validation
+
+coarse_task: move_pillbottle_pad
+camera: cam_high
+
+episodes:
+  - "007152"
+  - "007157"
+  - "011016"
+  - "011018"
+  - "012183"
+  - "012290"
+  - "013758"
+  - "013771"
+  - "022575"
+  - "024753"
+
+# Phase 1: only target and receiver
+roles:
+  - target_0
+  - receiver_0
+
+# Qwen grounding service
+qwen_service:
+  url: "http://localhost:18086"
+
+# SAM3 checkpoint
+sam3_checkpoint: "../process_data/checkpoints/sam3/sam3.pt"
+
+# RoboTwin data root
+data_root: "../process_data/data"
+
+# QC thresholds (Phase 1: keyframe only)
+qc:
+  min_area_fraction: 0.001
+  max_area_fraction: 0.5
+  min_bbox_overlap: 0.3
