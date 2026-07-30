@@ -2,6 +2,9 @@
   "format_version": "robotwin_dataset_manifest_v1",
   "task": "move_pillbottle_pad",
   "camera": "cam_high",
+  "frame_shape_hw": [240, 320],
+  "raw_video_frame_surplus": 1,
+  "usable_frame_count_source": "parquet",
   "dataset_root": "/DATA/disk8/xuran/add_mask_robotwin/dataset/move_pillbottle_pad_coverage20_original",
   "smoke_episode_ids": [7152],
   "regression_episode_ids": [
@@ -13,5 +16,5 @@
     "videos/chunk-007/observation.images.{camera}/episode_{episode_id}.mp4",
     "sidecars/episode_{episode_id}.hdf5"
   ],
-  "notes": "External test data. Binary video, parquet and HDF5 files are not committed."
+  "notes": "Each AV1 video decodes one trailing frame beyond the state/parquet length. The pipeline uses parquet length and ignores that final video-only frame. External binaries are not committed."
 }

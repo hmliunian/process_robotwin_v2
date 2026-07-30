@@ -169,19 +169,25 @@ Stage 1 生成少量带用途标签的帧，不把整个视频发送给 Qwen：
 
 ```json
 {
-  "episode": "move_pillbottle_pad/episode_007152",
-  "camera": "cam_high",
-  "active_arm": "left",
-  "events": {
-    "move_start": 4,
-    "close_start": 54,
-    "close_done": 68,
-    "open_start": 120,
-    "open_done": 136
+  "episode": {
+    "task": "move_pillbottle_pad",
+    "episode_index": 7152,
+    "episode_id": "007152",
+    "camera": "cam_high"
   },
-  "output_windows": {
-    "target_0": [4, 68],
-    "receiver_0": [68, 136]
+  "frame_count": 138,
+  "events": {
+    "active_arm": "right",
+    "t_move_start": 4,
+    "t_close_start": 55,
+    "t_close_done": 67,
+    "t_open_start": 119,
+    "t_open_done": 132
+  },
+  "windows": {
+    "loop": [4, 132],
+    "target_0": [4, 67],
+    "receiver_0": [67, 132]
   },
   "semantic_frames": [
     {
@@ -190,12 +196,12 @@ Stage 1 生成少量带用途标签的帧，不把整个视频发送给 Qwen：
       "eligible_roles": ["target", "receiver"]
     },
     {
-      "frame_id": 50,
+      "frame_id": 68,
       "purpose": "post_grasp_context",
       "eligible_roles": ["target"]
     },
     {
-      "frame_id": 128,
+      "frame_id": 120,
       "purpose": "place_context",
       "eligible_roles": ["receiver"]
     }
@@ -535,6 +541,10 @@ data/chunk-007/episode_<id>.parquet
 videos/chunk-007/observation.images.cam_high/episode_<id>.mp4
 sidecars/episode_<id>.hdf5
 ```
+
+当前 20 条 AV1 视频都比 Parquet/state 多解码出 1 个尾帧。Stage 1 preflight 已将它记录为
+dataset contract：可用帧数以 Parquet 的连续 `frame_index` 为准，Qwen 和 SAM 只消费
+`[0, parquet_frame_count - 1]`，最后一个 video-only 帧不进入 pipeline。
 
 前 10 个 episode 是 clean 样本，后 10 个是 randomized 样本。建议测试分两级：
 
