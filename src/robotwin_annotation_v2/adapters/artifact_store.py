@@ -32,6 +32,13 @@ class ArtifactStore:
 
     @staticmethod
     def write_json(path: Path, payload: dict[str, Any]) -> Path:
+        return ArtifactStore.write_text(
+            path,
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        )
+
+    @staticmethod
+    def write_text(path: Path, content: str) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary_name = tempfile.mkstemp(
             prefix=f".{path.name}.",
@@ -41,8 +48,7 @@ class ArtifactStore:
         temporary = Path(temporary_name)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                json.dump(payload, handle, ensure_ascii=False, indent=2)
-                handle.write("\n")
+                handle.write(content)
             os.replace(temporary, path)
         except BaseException:
             temporary.unlink(missing_ok=True)
@@ -51,3 +57,56 @@ class ArtifactStore:
 
     def save_loop(self, run_id: str, ref: EpisodeRef, payload: dict[str, Any]) -> Path:
         return self.write_json(self.episode_dir(run_id, ref) / "loop.json", payload)
+
+    def save_semantic_plan(
+        self,
+        run_id: str,
+        ref: EpisodeRef,
+        payload: dict[str, Any],
+        *,
+        rendered_prompt: str,
+        raw_response: str,
+    ) -> dict[str, Path]:
+        episode_dir = self.episode_dir(run_id, ref)
+        return {
+            "semantic_plan": self.write_json(episode_dir / "semantic_plan.json", payload),
+            "rendered_prompt": self.write_text(
+                episode_dir / "qwen_rendered_prompt.txt",
+                rendered_prompt,
+            ),
+            "raw_response": self.write_text(
+                episode_dir / "qwen_raw_response.txt",
+                raw_response,
+            ),
+        }
+
+    def save_qwen_failure(
+        self,
+        run_id: str,
+        ref: EpisodeRef,
+        *,
+        error: str,
+        rendered_prompt: str | None,
+        raw_response: str | None,
+    ) -> dict[str, Path]:
+        episode_dir = self.episode_dir(run_id, ref)
+        paths = {
+            "failure": self.write_json(
+                episode_dir / "qwen_failure.json",
+                {
+                    "format_version": "robotwin_qwen_failure_v1",
+                    "error": error,
+                },
+            )
+        }
+        if rendered_prompt is not None:
+            paths["rendered_prompt"] = self.write_text(
+                episode_dir / "qwen_rendered_prompt.txt",
+                rendered_prompt,
+            )
+        if raw_response is not None:
+            paths["raw_response"] = self.write_text(
+                episode_dir / "qwen_raw_response.txt",
+                raw_response,
+            )
+        return paths

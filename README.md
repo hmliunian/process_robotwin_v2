@@ -44,8 +44,10 @@ docs/process_data_v2_architecture_design.md
 just test
 just preflight
 just loop 7152
+just qwen 7152
 ```
 
-Qwen server、SAM smoke 和完整运行命令将在对应阶段实现后加入 `justfile`。
+运行 Qwen 前先在另一个终端执行 `just serve-qwen`。当前 Stage 1、Stage 2 已实现；Stage 3
+的 SAM smoke 和完整运行命令会在对应阶段实现后加入 `justfile`。
 
 完整设计见 [docs/process_data_v2_architecture_design.md](docs/process_data_v2_architecture_design.md)。

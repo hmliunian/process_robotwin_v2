@@ -4,6 +4,7 @@
 > 本架构将流程收缩为三个阶段：`State Loop → Qwen → SAM`。
 > 当前实验范围：`move_pillbottle_pad / cam_high / target_0 + receiver_0`。
 > 测试数据集：`/DATA/disk8/xuran/add_mask_robotwin/dataset/move_pillbottle_pad_coverage20_original`。
+> 实施进度：P0 数据合同、P1 State Loop、P2 Qwen Client / Server 已完成；P3、P4 待实施。
 
 本文已经替代旧的“单帧 keyframe 候选 → 人工审批 → 后续传播”设计。旧文档只保留在 Git
 历史中，不再作为实现依据。
@@ -307,8 +308,9 @@ prompt 模板可以修改，但模板中的输出字段和类型必须保持稳�
    with 的长属性串；禁止只描述 cap、logo、label、handle 等子部件；
 7. category_query 必须是最具体且常见的无修饰类别名；有颜色或形状证据时分别填写
    color_category_query、shape_category_query。若规则 4 的第二个紧凑线索不可缺少，
-   color_category_query 可同时保留它；可选的 general_fallback_query 必须更一般但仍指向
-   完整物体，且永远排在最后；
+   color_category_query 可同时保留它；可选的 general_fallback_query 必须是更一般但仍有
+   视觉意义的完整物体类别，且永远排在最后；没有合理上位类别时填写 `null`，禁止使用
+   `object`、`thing`、`item`、`stuff` 等空泛词；
 8. 所有非空候选必须互不相同，recommended_order 必须列出所有非空候选字段且不重复；
 9. 不返回 bbox，不返回 mask，不评价任何 mask。不要为了让两个角色的文字不同而编造
    视觉属性；如果身份仍有歧义，在 reason 中说明。

@@ -8,10 +8,14 @@ import json
 from pathlib import Path
 from typing import Any
 
-from robotwin_annotation_v2.adapters import ArtifactStore, RoboTwinDataset
+from robotwin_annotation_v2.adapters import (
+    ArtifactStore,
+    OpenAICompatibleQwenClient,
+    RoboTwinDataset,
+)
 from robotwin_annotation_v2.config import PipelineConfig, load_config
 from robotwin_annotation_v2.models import EpisodeRef
-from robotwin_annotation_v2.pipeline import build_loop_context
+from robotwin_annotation_v2.pipeline import QwenStageError, build_loop_context, run_qwen_stage
 
 
 def _dataset(config: PipelineConfig) -> RoboTwinDataset:
@@ -60,17 +64,81 @@ def run_loop(config: PipelineConfig, episode_index: int, run_id: str | None) -> 
     )
 
 
+def run_qwen(config: PipelineConfig, episode_index: int, run_id: str | None) -> None:
+    dataset = _dataset(config)
+    ref = _episode_ref(config, episode_index)
+    context = build_loop_context(dataset, ref)
+    frames = dataset.read_frames(
+        ref,
+        (frame.frame_id for frame in context.semantic_frames),
+    )
+    client = OpenAICompatibleQwenClient(
+        endpoint=config.qwen.endpoint,
+        model=config.qwen.model,
+        timeout_seconds=config.qwen.timeout_seconds,
+    )
+    store = ArtifactStore(config.output_root)
+    selected_run_id = run_id or store.new_run_id()
+    loop_path = store.save_loop(selected_run_id, ref, context.to_json())
+    try:
+        result = run_qwen_stage(context, frames, config.qwen, client)
+    except QwenStageError as exc:
+        paths = store.save_qwen_failure(
+            selected_run_id,
+            ref,
+            error=str(exc),
+            rendered_prompt=exc.rendered_prompt,
+            raw_response=exc.raw_response,
+        )
+        _print(
+            {
+                "run_id": selected_run_id,
+                "stage": "qwen_failed",
+                "loop_artifact": str(loop_path),
+                "artifacts": {name: str(path) for name, path in paths.items()},
+                "error": str(exc),
+            }
+        )
+        raise SystemExit(2) from exc
+
+    plan = result.semantic_plan
+    paths = store.save_semantic_plan(
+        selected_run_id,
+        ref,
+        plan.to_json(),
+        rendered_prompt=result.rendered_prompt,
+        raw_response=plan.raw_response,
+    )
+    _print(
+        {
+            "run_id": selected_run_id,
+            "stage": "qwen",
+            "loop_artifact": str(loop_path),
+            "artifacts": {name: str(path) for name, path in paths.items()},
+            "server": result.health,
+            "target": {
+                "seed_frame_id": plan.target.seed_frame_id,
+                "primary_query": plan.target.primary_query,
+            },
+            "receiver": {
+                "seed_frame_id": plan.receiver.seed_frame_id,
+                "primary_query": plan.receiver.primary_query,
+            },
+        }
+    )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for command in ("preflight", "loop"):
+    for command in ("preflight", "loop", "qwen"):
         subparser = subparsers.add_parser(command)
         subparser.add_argument(
             "--config",
             type=Path,
             default=Path("configs/pilot_move_pillbottle_pad.yaml"),
         )
-        if command == "loop":
+        if command in {"loop", "qwen"}:
             subparser.add_argument("--episode", type=int, required=True)
             subparser.add_argument("--run-id")
     return parser.parse_args()
@@ -83,6 +151,8 @@ def main() -> None:
         run_preflight(config)
     elif args.command == "loop":
         run_loop(config, args.episode, args.run_id)
+    elif args.command == "qwen":
+        run_qwen(config, args.episode, args.run_id)
     else:
         raise AssertionError(args.command)
 

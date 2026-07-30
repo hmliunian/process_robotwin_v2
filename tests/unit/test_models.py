@@ -75,6 +75,7 @@ def test_sam3_query_accepts_short_object_phrases(query: str) -> None:
         "Bottle",
         "white bottle with label",
         "bottle near gripper",
+        "object",
         "white cylindrical plastic medicine bottle",
     ],
 )

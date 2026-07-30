@@ -23,3 +23,22 @@ def test_artifact_store_writes_stage_path_atomically(tmp_path: Path) -> None:
     )
     assert json.loads(path.read_text(encoding="utf-8")) == {"format_version": "loop"}
     assert not list(path.parent.glob("*.tmp"))
+
+
+def test_artifact_store_writes_qwen_provenance(tmp_path: Path) -> None:
+    store = ArtifactStore(tmp_path)
+    ref = EpisodeRef("move_pillbottle_pad", 7152, "cam_high")
+
+    paths = store.save_semantic_plan(
+        "test-run",
+        ref,
+        {"prompt_sha256": "a" * 64},
+        rendered_prompt="rendered prompt",
+        raw_response='{"target": {}, "receiver": {}}',
+    )
+
+    assert json.loads(paths["semantic_plan"].read_text(encoding="utf-8")) == {
+        "prompt_sha256": "a" * 64
+    }
+    assert paths["rendered_prompt"].read_text(encoding="utf-8") == "rendered prompt"
+    assert paths["raw_response"].read_text(encoding="utf-8").startswith("{")

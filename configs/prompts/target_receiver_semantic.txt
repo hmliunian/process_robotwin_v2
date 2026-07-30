@@ -34,7 +34,8 @@
    with 的长属性串；禁止只描述 cap、logo、label、handle 等子部件；
 7. category_query 必须是最具体且常见的无修饰类别名；有颜色或形状/材质证据时填写
    color_category_query、shape_category_query。general_fallback_query 必须更一般但仍
-   指向完整物体，且永远排在最后；
+   是有视觉意义的完整物体类别（例如 container、mat），且永远排在最后；如果没有
+   合理的上位类别就填写 null，禁止使用 object、thing、item、stuff 等空泛词；
 8. 所有非空候选必须互不相同；recommended_order 必须列出所有非空候选字段且不重复；
 9. 不要为了让 target 和 receiver 的文字不同而编造视觉属性；如果身份有歧义，在 reason
    中说明，但仍遵守 schema。
