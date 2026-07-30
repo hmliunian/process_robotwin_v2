@@ -156,6 +156,37 @@ def test_parse_semantic_plan_uses_first_qwen_recommendation() -> None:
     assert len(plan.prompt_sha256) == 64
 
 
+def test_parse_semantic_plan_canonicalizes_exact_duplicate_candidates() -> None:
+    payload = json.loads(_response())
+    payload["target"]["shape_category_query"] = "orange bottle"
+    payload["target"]["recommended_order"].insert(1, "shape_category_query")
+    payload["receiver"]["category_query"] = "blue square pad"
+
+    plan = parse_semantic_plan(
+        json.dumps(payload),
+        context=_context(),
+        model="fake-qwen",
+        rendered_prompt="rendered prompt",
+    )
+
+    assert plan.target.query_bank is not None
+    assert plan.target.query_bank.shape_category_query is None
+    assert plan.target.query_bank.recommended_order == (
+        "color_category_query",
+        "category_query",
+        "general_fallback_query",
+    )
+    assert plan.receiver.query_bank is not None
+    assert plan.receiver.query_bank.category_query == "blue square pad"
+    assert plan.receiver.query_bank.color_category_query is None
+    assert plan.receiver.query_bank.recommended_order == (
+        "category_query",
+        "shape_category_query",
+        "general_fallback_query",
+    )
+    assert plan.receiver.primary_query == "blue square pad"
+
+
 def test_parse_semantic_plan_rejects_bbox_and_non_candidate_seed() -> None:
     payload = json.loads(_response())
     payload["target"]["bbox"] = [0, 0, 10, 10]

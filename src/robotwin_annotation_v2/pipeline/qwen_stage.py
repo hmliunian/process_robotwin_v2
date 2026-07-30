@@ -194,6 +194,46 @@ def _string_list(value: Any, *, field: str) -> tuple[str, ...]:
     return tuple(cleaned)
 
 
+def _canonicalize_duplicate_candidates(
+    candidate_values: dict[str, str | None],
+    order: tuple[str, ...],
+) -> tuple[dict[str, str | None], tuple[str, ...]]:
+    groups: dict[str, list[str]] = {}
+    for field in CANDIDATE_FIELDS:
+        value = candidate_values[field]
+        if value is not None:
+            groups.setdefault(" ".join(value.split()), []).append(field)
+
+    normalized = dict(candidate_values)
+    aliases: dict[str, str] = {}
+    order_rank = {field: index for index, field in enumerate(order)}
+    field_rank = {field: index for index, field in enumerate(CANDIDATE_FIELDS)}
+    for fields in groups.values():
+        if len(fields) < 2:
+            continue
+        if "category_query" in fields:
+            keeper = "category_query"
+        else:
+            keeper = min(
+                fields,
+                key=lambda field: (
+                    order_rank.get(field, len(order)),
+                    field_rank[field],
+                ),
+            )
+        for field in fields:
+            if field != keeper:
+                normalized[field] = None
+                aliases[field] = keeper
+
+    normalized_order: list[str] = []
+    for field in order:
+        resolved = aliases.get(field, field)
+        if resolved not in normalized_order:
+            normalized_order.append(resolved)
+    return normalized, tuple(normalized_order)
+
+
 def _parse_role(
     role: str,
     payload: Any,
@@ -229,6 +269,10 @@ def _parse_role(
         if value is not None and not isinstance(value, str):
             raise QwenStageError(f"{role}.{field} must be a string or null")
     order = _string_list(payload["recommended_order"], field=f"{role}.recommended_order")
+    candidate_values, order = _canonicalize_duplicate_candidates(
+        candidate_values,
+        order,
+    )
 
     if status is SemanticStatus.NO_CLEAR_SEED:
         if seed_frame_id is not None or any(
