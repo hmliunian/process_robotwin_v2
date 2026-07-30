@@ -309,7 +309,9 @@ prompt 模板可以修改，但模板中的输出字段和类型必须保持稳�
 5. 只使用多帧中稳定可见、能区分实例的属性，不猜测无法确认的属性；
 6. 禁止冠词/所有格、品牌或 OCR 文字、数字、动作、位置、空间关系、比较级以及包含
    with 的长属性串；禁止只描述 cap、logo、label、handle 等子部件；
-7. category_query 必须是最具体且常见的无修饰类别名；有颜色或形状证据时分别填写
+7. category_query 必须是简单、常见、可直接检测的无修饰完整类别，通常使用物体 head noun；
+   不得把任务文本中的用途、商品亚型或尺寸词拼成类别，例如 medicine bottle、pill bottle、
+   compact bottle 的 category_query 都应是 bottle。有颜色或形状证据时分别填写
    color_category_query、shape_category_query。若规则 4 的第二个紧凑线索不可缺少，
    color_category_query 可同时保留它；可选的 general_fallback_query 必须是更一般但仍有
    视觉意义的完整物体类别，且永远排在最后；没有合理上位类别时填写 `null`，禁止使用
