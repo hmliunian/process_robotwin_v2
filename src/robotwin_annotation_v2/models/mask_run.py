@@ -21,7 +21,9 @@ class RoleMaskResult:
     seed_frame_id: int | None
     primary_query: str | None
     output_window: FrameWindow
+    seed_rgb_path: str | None
     seed_mask_path: str | None
+    canonical_envelope_path: str | None
     native_track_path: str | None
     text_observation_path: str | None
     nonempty_frames: int
@@ -42,7 +44,9 @@ class RoleMaskResult:
             "seed_frame_id": self.seed_frame_id,
             "primary_query": self.primary_query,
             "output_window": self.output_window.to_json(),
+            "seed_rgb_path": self.seed_rgb_path,
             "seed_mask_path": self.seed_mask_path,
+            "canonical_envelope_path": self.canonical_envelope_path,
             "native_track_path": self.native_track_path,
             "text_observation_path": self.text_observation_path,
             "nonempty_frames": self.nonempty_frames,

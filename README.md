@@ -45,9 +45,11 @@ just test
 just preflight
 just loop 7152
 just qwen 7152
+just sam <run_id> 7152
+just run 7152
 ```
 
-运行 Qwen 前先在另一个终端执行 `just serve-qwen`。当前 Stage 1、Stage 2 已实现；Stage 3
-的 SAM smoke 和完整运行命令会在对应阶段实现后加入 `justfile`。
+运行 Qwen 或完整 pipeline 前先在另一个终端执行 `just serve-qwen`。`sam` 只消费指定
+`run_id` 中已经保存的 Stage 2 产物，不会再次调用 Qwen；`run` 依次执行三个阶段。
 
 完整设计见 [docs/process_data_v2_architecture_design.md](docs/process_data_v2_architecture_design.md)。

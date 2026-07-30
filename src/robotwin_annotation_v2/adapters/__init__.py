@@ -13,6 +13,7 @@ from .qwen_client import (
     QwenServiceError,
     image_data_url,
 )
+from .sam3_adapter import Sam3Adapter, Sam3Error, sam3_video_resource
 
 __all__ = [
     "ArtifactStore",
@@ -23,5 +24,8 @@ __all__ = [
     "QwenCompletion",
     "QwenServiceError",
     "RoboTwinDataset",
+    "Sam3Adapter",
+    "Sam3Error",
     "image_data_url",
+    "sam3_video_resource",
 ]

@@ -10,6 +10,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+from PIL import Image
+
 from ..models import EpisodeRef
 
 
@@ -49,6 +52,51 @@ class ArtifactStore:
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
                 handle.write(content)
+            os.replace(temporary, path)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+        return path
+
+    @staticmethod
+    def write_png(path: Path, array: np.ndarray, *, rgb: bool = False) -> Path:
+        value = np.asarray(array)
+        if rgb:
+            if value.ndim != 3 or value.shape[2] != 3:
+                raise ValueError(f"RGB image must have shape [H,W,3], got {value.shape}")
+            image = Image.fromarray(value.astype(np.uint8, copy=False), mode="RGB")
+        else:
+            if value.ndim != 2:
+                raise ValueError(f"mask image must have shape [H,W], got {value.shape}")
+            image = Image.fromarray(value.astype(bool).astype(np.uint8) * 255, mode="L")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{path.name}.",
+            suffix=".png",
+            dir=path.parent,
+        )
+        os.close(descriptor)
+        temporary = Path(temporary_name)
+        try:
+            image.save(temporary, format="PNG")
+            os.replace(temporary, path)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+        return path
+
+    @staticmethod
+    def write_npz(path: Path, **arrays: np.ndarray) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{path.name}.",
+            suffix=".npz",
+            dir=path.parent,
+        )
+        os.close(descriptor)
+        temporary = Path(temporary_name)
+        try:
+            np.savez_compressed(temporary, **arrays)
             os.replace(temporary, path)
         except BaseException:
             temporary.unlink(missing_ok=True)
@@ -110,3 +158,18 @@ class ArtifactStore:
                 raw_response,
             )
         return paths
+
+    def save_sam_failure(
+        self,
+        run_id: str,
+        ref: EpisodeRef,
+        *,
+        error: str,
+    ) -> Path:
+        return self.write_json(
+            self.episode_dir(run_id, ref) / "sam_failure.json",
+            {
+                "format_version": "robotwin_sam_failure_v1",
+                "error": error,
+            },
+        )

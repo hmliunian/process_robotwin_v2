@@ -1,0 +1,105 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Iterator
+
+import numpy as np
+
+from robotwin_annotation_v2.adapters import Sam3Adapter
+
+
+SHAPE = (4, 5)
+
+
+def _outputs(mask: np.ndarray, *, object_id: int = 1, probability: float = 1.0) -> dict[str, Any]:
+    return {
+        "out_obj_ids": np.asarray([object_id]),
+        "out_probs": np.asarray([probability]),
+        "out_binary_masks": np.asarray([mask]),
+    }
+
+
+class FakePredictor:
+    world_size = 1
+
+    def __init__(self) -> None:
+        self.requests: list[dict[str, Any]] = []
+        self.mask = np.zeros(SHAPE, dtype=bool)
+        self.mask[1:3, 2:4] = True
+
+    def handle_request(self, *, request: dict[str, Any]) -> dict[str, Any]:
+        self.requests.append(request)
+        if request["type"] == "start_session":
+            return {"session_id": "session"}
+        if request["type"] == "add_prompt":
+            distractor = np.zeros(SHAPE, dtype=bool)
+            distractor[0, 0] = True
+            return {
+                "outputs": {
+                    "out_obj_ids": np.asarray([1, 2]),
+                    "out_probs": np.asarray([0.1, 0.9]),
+                    "out_binary_masks": np.asarray([distractor, self.mask]),
+                }
+            }
+        return {}
+
+    def handle_stream_request(self, *, request: dict[str, Any]) -> Iterator[dict[str, Any]]:
+        self.requests.append(request)
+        direction = request["propagation_direction"]
+        frames = (2, 3) if direction == "forward" else (0,)
+        for frame_id in frames:
+            yield {"frame_index": frame_id, "outputs": _outputs(self.mask)}
+
+
+class NativeTestAdapter(Sam3Adapter):
+    def _install_native_mask(self, **_kwargs: Any) -> None:
+        return
+
+
+def test_text_masks_select_highest_probability_object() -> None:
+    predictor = FakePredictor()
+    adapter = Sam3Adapter(
+        checkpoint_path=Path("unused.pt"),
+        gpus=(0,),
+        predictor=predictor,
+    )
+
+    result = adapter.text_masks(
+        Path("resource"),
+        "orange bottle",
+        frame_ids=(0, 2),
+        frame_count=4,
+        frame_shape=SHAPE,
+    )
+
+    assert np.array_equal(result[0], predictor.mask)
+    assert np.array_equal(result[2], predictor.mask)
+    assert any(request["type"] == "reset_session" for request in predictor.requests)
+
+
+def test_native_mask_propagation_keeps_exact_seed() -> None:
+    predictor = FakePredictor()
+    adapter = NativeTestAdapter(
+        checkpoint_path=Path("unused.pt"),
+        gpus=(0,),
+        predictor=predictor,
+    )
+    seed = predictor.mask.copy()
+
+    track = adapter.propagate_mask(
+        Path("resource"),
+        seed,
+        seed_frame=1,
+        frame_count=4,
+        frame_shape=SHAPE,
+        tracking_window=(0, 3),
+    )
+
+    assert np.array_equal(track[1], seed)
+    assert track[0].any() and track[2].any() and track[3].any()
+    directions = [
+        request["propagation_direction"]
+        for request in predictor.requests
+        if request["type"] == "propagate_in_video"
+    ]
+    assert directions == ["forward", "backward"]

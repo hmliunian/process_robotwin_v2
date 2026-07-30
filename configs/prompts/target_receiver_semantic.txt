@@ -36,8 +36,15 @@
    color_category_query、shape_category_query。general_fallback_query 必须更一般但仍
    是有视觉意义的完整物体类别（例如 container、mat），且永远排在最后；如果没有
    合理的上位类别就填写 null，禁止使用 object、thing、item、stuff 等空泛词；
-8. 所有非空候选必须互不相同；recommended_order 必须列出所有非空候选字段且不重复；
-9. 不要为了让 target 和 receiver 的文字不同而编造视觉属性；如果身份有歧义，在 reason
+8. recommended_order 排的是预计 SAM3 分割鲁棒性，不是描述详细程度。对于 target 这类常见
+   三维可操作物体：如果提交帧中没有第二个同类别实例，recommended_order 第一项必须是
+   category_query；只有确实看见多个同类别实例、需要属性消歧时，颜色/形状候选才可排第一。
+   属性明显或任务文本提到属性，本身都不足以改变这条排序规则；
+9. 对 pad、mat 等薄平面承接区域，如果颜色和形状都稳定清晰，应在
+   color_category_query 中保留“颜色 + 形状 + 类别”的紧凑组合并优先排序，不要机械拆成
+   两条较弱提示；此规则按当前图像动态判断，不能照抄示例文字；
+10. 所有非空候选必须互不相同；recommended_order 必须列出所有非空候选字段且不重复；
+11. 不要为了让 target 和 receiver 的文字不同而编造视觉属性；如果身份有歧义，在 reason
    中说明，但仍遵守 schema。
 
 只返回一个 JSON 对象，不要输出 Markdown 或额外说明：

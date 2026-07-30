@@ -18,8 +18,7 @@ qwen:
 
 sam3:
   checkpoint: ../checkpoints/sam3/sam3.pt
-  device: cuda:0
-  gpus: [0]
+  gpus: [2]
   same_frame_text: true
 
 mask:

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from robotwin_annotation_v2.config import ConfigError, load_config
+from robotwin_annotation_v2.config import ConfigError, Sam3Config, load_config
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -22,6 +22,7 @@ def test_pilot_config_loads_new_pipeline_contract() -> None:
     assert config.qwen.prompt_template.is_file()
     assert config.dataset.manifest.is_file()
     assert config.sam3.checkpoint.name == "sam3.pt"
+    assert config.sam3.gpus == (2,)
 
 
 def test_config_rejects_automatic_query_fallback(tmp_path: Path) -> None:
@@ -50,3 +51,10 @@ output:
 
     with pytest.raises(ConfigError, match="fallback"):
         load_config(config_path)
+
+
+def test_sam_config_requires_one_gpu_and_same_frame_text() -> None:
+    with pytest.raises(ConfigError, match="exactly one"):
+        Sam3Config(Path("sam3.pt"), gpus=(0, 1))
+    with pytest.raises(ConfigError, match="same-frame"):
+        Sam3Config(Path("sam3.pt"), gpus=(0,), same_frame_text=False)

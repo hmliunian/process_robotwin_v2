@@ -67,15 +67,16 @@ class QwenConfig:
 @dataclass(frozen=True)
 class Sam3Config:
     checkpoint: Path
-    device: str = "cuda:0"
     gpus: tuple[int, ...] = (0,)
     same_frame_text: bool = True
 
     def __post_init__(self) -> None:
-        if not self.gpus:
-            raise ConfigError("sam3.gpus must not be empty")
+        if len(self.gpus) != 1:
+            raise ConfigError("sam3.gpus must contain exactly one GPU")
         if any(gpu < 0 for gpu in self.gpus):
             raise ConfigError("sam3.gpus must contain non-negative integers")
+        if not self.same_frame_text:
+            raise ConfigError("same-frame text observation is required")
 
 
 @dataclass(frozen=True)
@@ -165,7 +166,6 @@ def load_config(path: Path) -> PipelineConfig:
             base_dir=base_dir,
             field="sam3.checkpoint",
         ),
-        device=str(sam3_raw.get("device", "cuda:0")),
         gpus=_integers(sam3_raw.get("gpus", [0]), field="sam3.gpus"),
         same_frame_text=bool(sam3_raw.get("same_frame_text", True)),
     )

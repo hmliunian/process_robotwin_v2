@@ -20,10 +20,17 @@ just serve-qwen
 
 # 终端 B：运行 Stage 1 + Stage 2
 just qwen 7152
+
+# 对上一步输出的 run_id 运行 Stage 3，不重复调用 Qwen
+just sam <run_id> 7152
+
+# 或一次运行完整三阶段
+just run 7152
 ```
 
 主配置是 `configs/pilot_move_pillbottle_pad.yaml`。Qwen 的 prompt 模板位于
 `configs/prompts/target_receiver_semantic.txt`，物体名称和视觉属性不能写死在 Python 或 YAML
-中。Stage 2 会写出 `loop.json`、`semantic_plan.json`、rendered prompt 和 Qwen raw response。
+中。Stage 2 会写出 `loop.json`、`semantic_plan.json`、rendered prompt 和 Qwen raw response；
+Stage 3 会写出 seed、native track、same-frame text observation、`masks.npz` 和 provenance。
 
 运行产物写到 `artifacts/runs/`，不会进入 Git。

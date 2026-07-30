@@ -4,7 +4,8 @@
 > 本架构将流程收缩为三个阶段：`State Loop → Qwen → SAM`。
 > 当前实验范围：`move_pillbottle_pad / cam_high / target_0 + receiver_0`。
 > 测试数据集：`/DATA/disk8/xuran/add_mask_robotwin/dataset/move_pillbottle_pad_coverage20_original`。
-> 实施进度：P0 数据合同、P1 State Loop、P2 Qwen Client / Server 已完成；P3、P4 待实施。
+> 实施进度：P0–P3 已完成；P4 的 episode 7152 真实端到端 smoke 已完成，20 条全量
+> Qwen/SAM regression 待运行。
 
 本文已经替代旧的“单帧 keyframe 候选 → 人工审批 → 后续传播”设计。旧文档只保留在 Git
 历史中，不再作为实现依据。
@@ -311,8 +312,13 @@ prompt 模板可以修改，但模板中的输出字段和类型必须保持稳�
    color_category_query 可同时保留它；可选的 general_fallback_query 必须是更一般但仍有
    视觉意义的完整物体类别，且永远排在最后；没有合理上位类别时填写 `null`，禁止使用
    `object`、`thing`、`item`、`stuff` 等空泛词；
-8. 所有非空候选必须互不相同，recommended_order 必须列出所有非空候选字段且不重复；
-9. 不返回 bbox，不返回 mask，不评价任何 mask。不要为了让两个角色的文字不同而编造
+8. `recommended_order` 排的是预计 SAM3 分割鲁棒性，不是描述详细程度。对于 target 这类常见
+   三维可操作物体，若提交帧中没有第二个同类别实例，第一项必须是无修饰类别；只有确实存在
+   多个同类别实例并需要消歧时，才让颜色/形状候选优先；
+9. 对 `pad`、`mat` 等薄平面承接区域，如果颜色和形状都稳定清晰，应保留“颜色 + 形状 +
+   类别”的紧凑组合并优先排序，不机械拆成两条更弱的提示；具体短语仍由 Qwen 根据图像生成；
+10. 所有非空候选必须互不相同，recommended_order 必须列出所有非空候选字段且不重复；
+11. 不返回 bbox，不返回 mask，不评价任何 mask。不要为了让两个角色的文字不同而编造
    视觉属性；如果身份仍有歧义，在 reason 中说明。
 
 只返回一个 JSON 对象，不要输出 Markdown 或额外说明：
@@ -360,9 +366,9 @@ Qwen 根据证据给出，但当前小实验的执行策略固定为使用顺序
     "shape_category_query": "plastic bottle",
     "general_fallback_query": "container",
     "recommended_order": [
+      "category_query",
       "color_category_query",
       "shape_category_query",
-      "category_query",
       "general_fallback_query"
     ],
     "exclude": ["blue square pad", "black robot gripper", "table shadow"],
@@ -392,7 +398,28 @@ Qwen 根据证据给出，但当前小实验的执行策略固定为使用顺序
 字段名与 v4.2 实验保持一致；若组合短语（如 `blue square pad`）比拆开的候选更稳定，允许
 将其放在首位，但仍须满足 1–4 词合同。
 
-### 5.5 Box 的处理
+### 5.5 episode 7152 合法 seed 矩阵
+
+实现 Stage 3 时，旧 v4.2 表格使用的是 frame 58；它不属于当前 Stage 1 给出的无遮挡 seed
+候选。为避免把旧帧上的结论误套到新 pipeline，单独在合法候选 `[0, 17, 34, 51]` 上运行了
+text-only 短 query 矩阵。以下像素数只表示 SAM3 非空；结合 centroid 与 overlay 检查后，非空
+结果分别落在正确的瓶子和 pad 上：
+
+| role / query | f0 | f17 | f34 | f51 |
+|---|---:|---:|---:|---:|
+| target `bottle` | 2539 | 2496 | 0 | 0 |
+| target `orange bottle` | 0 | 0 | 0 | 0 |
+| target 其余已测短候选 | 0 | 0 | 0 | 0 |
+| receiver `blue square pad` | 1070 | 1100 | 1066 | 1068 |
+| receiver `blue pad` | 0 | 0 | 0 | 1066 |
+| receiver `square pad` | 1068 | 0 | 0 | 0 |
+| receiver `pad` / `mat` | 0 | 0 | 0 | 0 |
+
+这个隔离实验只用于改进 Qwen 的事前排序规则：单一常见三维物体优先 category，薄平面承接区
+保留稳定的颜色+形状组合。正式运行仍只调用 `recommended_order[0]`，没有读取上述 SAM 结果
+后自动切换候选，也没有在 Python 中写死 `bottle` 或 `blue square pad`。
+
+### 5.6 Box 的处理
 
 当前主流程不要求 Qwen 返回 bbox：
 
@@ -466,6 +493,19 @@ final_role_mask[t]
 - 不使用静态复制完整 receiver 的旧策略。
 
 这里的交集是 mask 生成规则，不引入独立的人工或 QC 阶段。
+
+### 6.5 episode 7152 真实 smoke
+
+使用 Qwen 动态生成的 `bottle@frame0` 与 `blue square pad@frame0` 完成了真实 GPU smoke：
+
+- target native track 在 `[0,67]` 全部非空；same-frame text 在活动窗口内支持 22 帧，最终
+  target 为 22/64 帧非空；frame 27 后没有可靠 text evidence，因此按 visible-only 合同置空；
+- receiver native track 在 `[0,132]` 全部非空；活动窗口 `[67,132]` 的 66 帧全部有最终
+  visible mask；瓶子放到 pad 后，只保留未被瓶子遮挡的 pad 边缘；
+- 四通道 `masks.npz` 中两个 gripper 通道全零且 metadata 明确为 `not_annotated`；
+- overlay 抽查确认 target 没有漂到夹爪，receiver 没有保留瓶子覆盖区域。
+
+这是实现 smoke 和算法行为核对，不是 QC 阶段，也不宣称存在像素级 ground truth。
 
 ---
 
@@ -598,8 +638,8 @@ qwen:
 
 sam3:
   checkpoint: /path/to/sam3.pt
-  device: cuda:0
-  seed_method: text_only
+  gpus: [0]
+  same_frame_text: true
 
 mask:
   target_envelope_padding_px: 4

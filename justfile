@@ -29,5 +29,11 @@ serve-qwen:
 qwen episode_id="7152":
     {{python}} scripts/run_target_receiver.py qwen --config {{config}} --episode {{episode_id}}
 
+sam run_id episode_id="7152":
+    {{python}} scripts/run_target_receiver.py sam --config {{config}} --episode {{episode_id}} --run-id {{run_id}}
+
+run episode_id="7152":
+    {{python}} scripts/run_target_receiver.py run --config {{config}} --episode {{episode_id}}
+
 check-gpu:
     nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv
