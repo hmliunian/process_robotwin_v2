@@ -21,6 +21,7 @@ wheels/
 *.egg
 
 # Virtual environments
+.venv
 .venv/
 venv/
 ENV/
@@ -49,6 +50,7 @@ dmypy.json
 
 # Runtime outputs (核心：所有 artifact 不进 git)
 artifacts/
+run/
 
 # OS
 .DS_Store

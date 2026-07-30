@@ -1,0 +1,17 @@
+{
+  "format_version": "robotwin_dataset_manifest_v1",
+  "task": "move_pillbottle_pad",
+  "camera": "cam_high",
+  "dataset_root": "/DATA/disk8/xuran/add_mask_robotwin/dataset/move_pillbottle_pad_coverage20_original",
+  "smoke_episode_ids": [7152],
+  "regression_episode_ids": [
+    7152, 7156, 7157, 7163, 7168, 7179, 7181, 7185, 7187, 7188,
+    7274, 7317, 7335, 7367, 7424, 7464, 7571, 7621, 7673, 7674
+  ],
+  "required_relative_files": [
+    "data/chunk-007/episode_{episode_id}.parquet",
+    "videos/chunk-007/observation.images.{camera}/episode_{episode_id}.mp4",
+    "sidecars/episode_{episode_id}.hdf5"
+  ],
+  "notes": "External test data. Binary video, parquet and HDF5 files are not committed."
+}

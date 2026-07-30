@@ -1,40 +1,29 @@
 [project]
 name = "robotwin-annotation-v2"
-version = "0.1.0"
-description = "Keyframe-first annotation system for RoboTwin (Phase 1: single-frame seeds)"
+version = "0.2.0"
+description = "Three-stage target/receiver visible-mask pipeline for RoboTwin"
 requires-python = ">=3.13"
 dependencies = [
-  # Domain/Application 层（纯 Python，轻量）
-  "pydantic>=2.10",           # 类型安全的 dataclass + 序列化
-  "pillow>=10.0",             # 图像加载
-  "numpy<2",                  # 与 process_data 保持一致
-
-  # Adapter 层基础
-  "pandas>=2.0",              # 读取 RoboTwin parquet
+  "av>=18.0",
+  "numpy<2",
+  "pandas>=2.0",
   "pyarrow>=25.0",
+  "pillow>=10.0",
+  "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
-# 阶段 1：关键帧标注（只需 SAM3 + Qwen + 文件 I/O）
-phase1 = [
+sam3 = [
   "torch==2.7.1+cu128",
   "torchvision==0.22.1+cu128",
   "opencv-python-headless>=5.0",
-  "av>=18.0",                 # 解码 RoboTwin AV1 视频
   "sam3 @ git+https://github.com/facebookresearch/sam3.git@8e451d5eb43c817b64ae7577fb7b9ae223db88a9",
 ]
-
-# 阶段 2：视频传播（需要 CoTracker）
-phase2 = [
-  "cotracker @ git+https://github.com/facebookresearch/co-tracker.git@82e02e8029753ad4ef13cf06be7f4fc5facdda4d",
-]
-
-# 开发依赖
 dev = [
   "pytest>=9.0",
   "pytest-cov>=4.1",
   "mypy>=1.5",
-  "ruff>=0.8",                # 快速 linter/formatter
+  "ruff>=0.8",
 ]
 
 [build-system]
@@ -61,7 +50,7 @@ python_files = ["test_*.py"]
 [tool.mypy]
 python_version = "3.13"
 strict = true
-ignore_missing_imports = true  # 对 SAM3/CoTracker 宽容
+ignore_missing_imports = true
 
 [tool.ruff]
 line-length = 100

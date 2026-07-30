@@ -1,647 +1,834 @@
-# `process_data_v2` 架构设计：以关键帧为中心的可扩展 Mask 标注系统
+# `process_data_v2` 简化架构设计
 
-> **状态：设计评审稿；尚未在 `process_data_v2/` 实现任何代码。**
-> **当前唯一实施目标：阶段 1——产出、审阅并确认可信的单帧 keyframe mask。**
-> 后续的视频传播与整段视频 QC 只在接口和数据契约中预留，**本轮不实现、不运行，也不以它们验收阶段 1**。
+> **状态：已确认，当前生效架构；代码按 P0–P4 实施。**
+> 本架构将流程收缩为三个阶段：`State Loop → Qwen → SAM`。
+> 当前实验范围：`move_pillbottle_pad / cam_high / target_0 + receiver_0`。
+> 测试数据集：`/DATA/disk8/xuran/add_mask_robotwin/dataset/move_pillbottle_pad_coverage20_original`。
+
+本文已经替代旧的“单帧 keyframe 候选 → 人工审批 → 后续传播”设计。旧文档只保留在 Git
+历史中，不再作为实现依据。
 
 ---
 
-## 1. 要解决的问题与本次边界
+## 1. 当前要解决的问题
 
-`process_data/` 已经同时承载了文本解析、事件检测、Qwen grounding、SAM3、CoTracker、
-mask 后处理、QC、渲染和许多历史实验入口。功能虽多，但一个脚本/函数往往跨越多个职责；
-同一份 `dict` 在不同模块之间不断补字段，导致人很难回答下面最基本的问题：
+给定一个 RoboTwin episode，自动输出：
 
-- 这张 mask 是哪一帧、哪个角色、由什么提示生成的？
-- 它是否已经被人/模型审核为正确的关键帧 mask？
-- 这是关键帧本身的问题，还是视频传播后才产生的问题？
-- 后续传播时，究竟应该使用哪一个已经确认的 seed？
+- target：被机械臂抓取并移动的物体；
+- receiver：target 最终被放置到的承接物或目标位置；
+- 两个角色在各自活动时间窗口内的 visible mask。
 
-`process_data_v2` 不应继续在旧流水线旁边叠加一个更大的 `pipeline.py`。新设计以
-**“可审核的关键帧标注包（Keyframe Package）”** 为第一等产物：先确认每个角色的 seed
-mask，只有被批准的 seed 才能进入未来的视频传播。
+当前方案的重点不是建立一个通用标注平台，而是先把一个小实验跑通，并让每个阶段都能独立检查输入和输出。
 
-### 1.1 本轮明确做与不做
+## 2. 明确边界
 
-| 项目 | 阶段 1（当前） | 阶段 2 以后 |
+本版本做：
+
+- 从机器人 state 中提取一次机械臂操作 loop；
+- 根据 loop 选择少量语义关键帧；
+- 通过 Qwen 联合确定 target / receiver 的语义，并为每个角色生成有序的
+  SAM3-native 短 query 候选池；
+- 使用 SAM3 生成 seed mask 并进行视频传播；
+- 生成 target / receiver 的 visible-only mask；
+- 保存每个阶段的中间结果和来源信息。
+
+本版本不做：
+
+- 人工选择或确认 mask；
+- Qwen 输出精确 bbox 作为默认输入；
+- Qwen 逐帧重新框或逐帧修补 mask；
+- gripper mask；
+- hidden / amodal mask 补全；
+- QC 设计；
+- 多任务、多相机、动态相机的通用化处理。
+
+gripper state 仍然可以用于判断动作边界；这不等于本版本要生成 gripper mask。
+
+---
+
+## 3. 总体架构
+
+```text
+RoboTwin episode
+      │
+      ▼
+┌──────────────────────────────┐
+│ Stage 1: State Loop           │
+│ 读取 state，提取动作边界和帧窗 │
+└──────────────┬───────────────┘
+               │ LoopContext
+               ▼
+┌──────────────────────────────┐
+│ Stage 2: Qwen Semantic Plan   │
+│ client 组 prompt，server 推理 │
+│ 输出角色语义、seed、短 query 池 │
+└──────────────┬───────────────┘
+               │ SemanticPlan
+               ▼
+┌──────────────────────────────┐
+│ Stage 3: SAM                  │
+│ seed mask → native propagation│
+│ → same-frame text → 合成输出   │
+└──────────────┬───────────────┘
+               │ MaskRun
+               ▼
+       target / receiver masks
+```
+
+三个阶段之间只传递三个主要对象：
+
+```text
+LoopContext → SemanticPlan → MaskRun
+```
+
+`run_pipeline.py` 可以作为一个很薄的编排入口，只负责按顺序调用三个阶段，不在其中实现 Qwen、SAM3 或 mask 算法细节。
+
+---
+
+## 4. 阶段一：State Loop Extraction
+
+### 4.1 职责
+
+Stage 1 只读取 episode metadata、state 和必要的视频长度信息，回答：
+
+- 哪一只机械臂是本次操作的 active arm；
+- 机械臂何时开始接近或移动；
+- 何时完成夹取；
+- 何时开始释放、何时完成释放；
+- target 和 receiver 各自应该在哪个窗口输出 mask；
+- 哪些帧应该交给 Qwen 作为语义上下文。
+
+Stage 1 不判断哪个视觉物体是 target，也不调用 Qwen 或 SAM3。
+
+### 4.2 当前 loop 定义
+
+当前 `move_pillbottle_pad` 实验使用以下事件：
+
+```text
+pre_grasp
+  → move_start
+  → close_start
+  → close_done
+  → transport / hold
+  → open_start
+  → open_done
+```
+
+一个完整的机械臂操作 loop 是：
+
+```text
+[t_move_start, t_open_done]
+```
+
+在这个 loop 内，当前状态 detector 输出五个边界事件，并划分为四个状态阶段：
+
+| 阶段 | 时间范围 | 含义 |
 |---|---|---|
-| 任务语义、角色槽位、动作边界 | 做；只作为 keyframe 选择的上下文 | 复用，不重新猜测 |
-| target / receiver 单帧 mask | 做；生成候选、QC、人工确认 | 作为传播 seed |
-| gripper 单帧锚点 | 接口预留；在 target/receiver 验收后作为阶段 1B 增量加入 | 用双锚点传播和动态 ROI |
-| `text + bbox` 单帧 SAM3 | 做 | 可继续作为重新播种手段 |
-| `propagate_in_video` / CoTracker | **禁止调用** | 做 |
-| 全视频 `masks[T,H,W]`、NPZ | **不写出** | 做 |
-| 连续性、抓取成功、放置成功 QC | **不做** | 阶段 3 做 |
-| keyframe 几何/语义/人工 QC | 做，且是阶段 1 的验收核心 | 保留 |
+| `approach / move` | `[t_move_start, t_close_start)` | 机械臂开始接近目标，夹爪仍未完成闭合 |
+| `close / grasp` | `[t_close_start, t_close_done]` | 夹爪闭合并稳定完成抓取 |
+| `hold / transport` | `(t_close_done, t_open_start)` | 目标被夹持并向 receiver 移动 |
+| `open / release` | `[t_open_start, t_open_done]` | 夹爪打开并完成释放 |
+| **完整 loop** | `[t_move_start, t_open_done]` | 以上四个阶段的合并窗口 |
 
-因此，阶段 1 的“通过”不表示“视频标注通过”；它只表示：**未来传播所需的 seed 已经可信、
-可追溯、可复现。**
+当前没有单独的 `hold_start` 或 `place_start` 事件；如果后续确实需要，再从 state 中增加，不在本轮预先扩展。
 
-### 1.2 首个 pilot 和逐步收窄的范围
-
-首个可运行范围固定为：
+角色输出窗口：
 
 ```text
-coarse_task = move_pillbottle_pad
-camera      = cam_high
-实例         = target_0（药瓶）、receiver_0（pad）
+target   : [t_move_start, t_close_done]
+receiver : [t_close_done, t_open_done]
 ```
 
-这与 `docs/v4_1_keyframe_mask_design.md` 一致。目标和 receiver 不要求使用同一帧：
-药瓶应选夹爪闭合前无遮挡帧，pad 应选自身完整、未被遮挡帧。
+seed 候选窗口与输出窗口不是同一个概念：
 
-在这两个角色稳定后，仍属于**阶段 1**的下一小步是加入：
+- target seed：优先选择 close 前无遮挡的早期帧；
+- receiver seed：优先选择动作前完整可见的 receiver 帧；
+- receiver 可以使用早期帧作为 seed，但只在放置阶段输出。
 
-```text
-gripper_left / gripper_right
-anchor_kind = pre_close_open | post_open
-```
+### 4.3 Qwen 输入帧类别
 
-夹爪和物体的视觉定义、候选生成和 QC 规则不同，不能为了“统一”而把它们塞进 target 的逻辑。
-但它们将使用同一套 `KeyframeRequest → Candidate → Review → ApprovedSeed` 契约。
+Stage 1 生成少量带用途标签的帧，不把整个视频发送给 Qwen：
 
----
-
-## 2. 总体原则与关键决策
-
-1. **Keyframe first，传播 second。** 传播服务的输入只能是已批准的 seed；它不能为了掩盖
-   失败而默默重新选择关键帧。
-2. **动作锚点与 mask seed 分开。** `close/open/move` 是由 state 得到的事件边界；mask seed
-   是在合法窗口内视觉上最清晰的一帧。两者可能相邻，但不是同一个概念。
-3. **一个角色实例一份独立的证据链。** 不再用“本 episode 的一个大结果对象”混装角色、
-   phase、mask、QC 和渲染状态。
-4. **单帧的语义正确性优先于几何漂亮。** bbox 内、面积合理只能排除明显错误；不能证明
-   分到的是药瓶或 pad。阶段 1 必须保存候选 overlay，并允许 `reject_all`。
-5. **Qwen 是 reviewer/grounder，不是不可质疑的真值。** 初期只有人工确认才能把 seed
-   提升为 `APPROVED`；以后若要开放自动批准，必须单独配置并保留同样的证据。
-6. **外部模型都放在 adapter 后面。** domain/application 不 import SAM3、Qwen、CoTracker、
-   OpenCV 或 `numpy` 图像操作代码。
-7. **输出是不可变 run artifact。** 每次运行有 `run_id`、配置/model/input hash；批准或拒绝
-   是新的 review revision，不覆盖历史候选，也绝不覆盖 `process_data/output/`。
-8. **不依赖旧代码作为运行时核心。** `process_data/` 只作为行为和数据格式的参考。v2 通过
-   独立 adapter 读取 RoboTwin 数据，不能 import 旧的巨型 pipeline 来“复用”。
-
-特别保留 v4.1 已验证的技术决策：对 `text_box` 候选，SAM3 必须在**同一次**
-`add_prompt` 请求里收到 `text + bounding_boxes`；不能先发 text、再发 bbox，也不能在阶段 1
-调用视频传播 API。
-
----
-
-## 3. 术语和状态模型
-
-### 3.1 四类容易混淆的对象
-
-| 名称 | 含义 | 示例 |
-|---|---|---|
-| `InteractionTimeline` | state/VLM 给出的动作上下文和合法时间窗，不含像素 mask | `close_start=54`、target seed window=`[3,53]` |
-| `KeyframeRequest` | “为哪个角色在什么窗口寻找什么类型的关键帧”的工作单 | `target_0 / PRE_GRASP_VISIBLE` |
-| `MaskCandidate` | 某个候选帧、某种提示方法生成的一张单帧 mask 及指标 | frame 49 的 `text_box` 药瓶 mask |
-| `ApprovedSeed` | 已经通过 review 的、允许视频传播消费的不可变选择 | `target_0` 在 frame 49 的 mask |
-
-`InteractionTimeline` 不是 QC 结果；`MaskCandidate` 不是已确认标注；只有
-`ApprovedSeed` 才是未来传播的输入。
-
-### 3.2 生命周期
-
-```text
-DRAFT request
-  → CANDIDATES_GENERATED
-  → AUTO_REVIEWED
-  → NEEDS_HUMAN_REVIEW ──→ REJECTED
-          │
-          └────────────────→ APPROVED → ApprovedSeed（阶段 2 的唯一合法输入）
-```
-
-- 模型/几何检查可以建议 `selected_candidate`，但不能跳过 `NEEDS_HUMAN_REVIEW`。
-- `reject_all`、空 mask、无合法 seed frame 都是正常且显式的 `REJECTED`/`BLOCKED` 结果，
-  不是静默 fallback。
-- 修正 query、bbox 或 frame 后创建新的 request revision；旧 artifact 保留。
-
----
-
-## 4. 分层架构（面向对象，但不过度抽象）
-
-采用轻量的 **ports-and-adapters / clean architecture**。核心依赖方向只能向内：
-
-```text
-CLI / 配置 / 人工 review UI
-             │
-             ▼
-┌─────────────────────────────────────────────┐
-│ application：Use Case / Workflow             │
-│ PrepareKeyframes, ReviewKeyframes, ...       │
-└──────────────────┬──────────────────────────┘
-                   │ 依赖 Protocol（ports）
-        ┌──────────┴──────────┐
-        ▼                     ▼
-┌───────────────┐      ┌──────────────────────┐
-│ domain        │      │ ports                │
-│ 实体、状态、   │      │ Dataset, Grounder,   │
-│ policy、规则   │      │ Segmenter, Store...  │
-└───────────────┘      └──────────┬───────────┘
-                                  │
-                     ┌────────────┴────────────────────────┐
-                     ▼                                     ▼
-          RoboTwin / 文件系统 adapter          Qwen / SAM3 / 渲染 adapter
-```
-
-### 4.1 每层允许与禁止的内容
-
-| 层 | 负责什么 | 绝不负责什么 |
-|---|---|---|
-| `domain` | ID、状态转换、角色规则、合法窗口、审批不变量 | 文件路径、JSON、HTTP、模型调用、图像 ndarray 操作 |
-| `application` | 编排一个可解释的用例，调用 port，构造 artifact | 硬编码 Qwen/SAM3 API、CLI 参数解析 |
-| `ports` | 用 `Protocol` 定义外部能力的输入/输出 | 具体模型和磁盘实现 |
-| `adapters` | RoboTwin 读取、Qwen grounding、SAM3 单帧分割、文件落盘、渲染 | 业务状态机和角色决策 |
-| `cli` | 参数、依赖组装、退出码、显示 run id | annotation 业务逻辑 |
-
-这不是为了把每个函数都包成 class。**纯计算**（例如 bbox IoU、mask 面积、JSON schema
-验证）可保留为小型无状态函数；只有具有状态、策略差异或外部依赖的职责才建对象。
-
----
-
-## 5. 核心领域对象
-
-领域对象使用不可变 `dataclass`、`Enum` 和显式类型，而不是跨模块传递
-`dict[str, Any]`。序列化/反序列化只发生在 adapter 边界。
-
-```python
-# domain/models.py（示意，不是本轮实现）
-class AnnotationRole(StrEnum):
-    TARGET = "target"
-    RECEIVER = "receiver"
-    GRIPPER = "gripper"
-
-class AnchorKind(StrEnum):
-    PRE_GRASP_VISIBLE = "pre_grasp_visible"
-    STATIC_RECEIVER_VISIBLE = "static_receiver_visible"
-    PRE_CLOSE_OPEN = "pre_close_open"
-    POST_OPEN = "post_open"
-
-class ReviewStatus(StrEnum):
-    DRAFT = "draft"
-    NEEDS_HUMAN_REVIEW = "needs_human_review"
-    APPROVED = "approved"
-    REJECTED = "rejected"
-
-@dataclass(frozen=True)
-class InstanceSlot:
-    name: str                  # target_0, receiver_0, gripper_left
-    role: AnnotationRole
-    arm: Literal["left", "right"] | None = None
-
-@dataclass(frozen=True)
-class FrameWindow:
-    first: int                 # inclusive
-    last: int                  # inclusive
-
-@dataclass(frozen=True)
-class KeyframeRequest:
-    request_id: str
-    episode: EpisodeRef
-    slot: InstanceSlot
-    anchor_kind: AnchorKind
-    allowed_window: FrameWindow
-    visual_query: str
-    exclusions: tuple[str, ...]
-    revision: int
-
-@dataclass(frozen=True)
-class ApprovedSeed:
-    request_id: str
-    candidate_id: str
-    frame_index: int
-    slot: InstanceSlot
-    mask_artifact: MaskArtifactRef
-    approval_revision: int
-```
-
-其中 `MaskArtifactRef` 只是 artifact 的稳定引用和 hash，不把图像数组塞进 domain 对象。像素
-mask 和几何统计属于 vision adapter 的输出 `SegmentationCandidate`，再由 application 写入
-artifact。
-
-### 5.1 角色不靠大量 `if/else`，而靠策略对象
-
-三种角色确实有不同的 seed 规则，因此使用小而明确的策略，而不是一个越来越长的
-`generate_pilot_masks()`：
-
-```python
-class KeyframePolicy(Protocol):
-    def create_requests(
-        self, semantic: SemanticPlan, timeline: InteractionTimeline
-    ) -> list[KeyframeRequest]: ...
-
-class TargetSeedPolicy(KeyframePolicy):
-    # pre-grasp、可见、与夹爪重叠尽量小
-
-class StaticReceiverSeedPolicy(KeyframePolicy):
-    # receiver 完整且无遮挡；不要求与 target 同帧
-
-class GripperAnchorPolicy(KeyframePolicy):
-    # 后续 1B：pre-close open + post-open 两个 anchor，带 target/wrist exclusion
-```
-
-`RolePolicyRegistry` 根据 `InstanceSlot` 选择 policy。新增“动态 receiver”或“relation place”
-时新增对应 policy，不修改 target/receiver 的已有逻辑。
-
-### 5.2 关键对象的拥有关系
-
-```text
-EpisodeContext
- ├─ SemanticPlan                 # target/receiver 的文本角色，不含 mask
- ├─ InteractionTimeline          # 事件边界和窗口
- └─ KeyframePackage
-     ├─ KeyframeRequest (1..N)
-     │   ├─ FrameCandidate (0..N)
-     │   ├─ GroundingEvidence
-     │   ├─ SegmentationCandidate (0..N)
-     │   └─ KeyframeReview
-     └─ ApprovedSeed (0..N)
-```
-
-一个 episode 没有 `ApprovedSeed` 是有效结果；系统不能为了凑齐 channel 而伪造 mask。
-
----
-
-## 6. 外部能力接口（Ports）
-
-下表是 v2 的稳定边界。实现可以替换，但 application 对它们的调用方式不变。
-
-| Port | 关键方法 | 阶段 1 实现 | 后续用途 |
-|---|---|---|---|
-| `EpisodeRepository` | `load_context(ref)` | RoboTwin metadata/state/video 索引 adapter | 全流程共用 |
-| `FrameSource` | `read(frame_index)` | 按需解码单帧，带 cache | 视频传播可读取 clip |
-| `SemanticPlanner` | `plan(context)` | Qwen/规则 adapter | 复用，不重新猜角色 |
-| `TimelineDetector` | `detect(context)` | gripper/EEF state adapter | 给 propagation/QC 时间窗 |
-| `KeyframeSelector` | `rank(request, frames)` | 清晰度、遮挡、合法窗口策略 | 重试时复用 |
-| `GroundingService` | `ground(frame, request)` | Qwen 输出 query + tight bbox | 重新播种 |
-| `SingleFrameSegmenter` | `segment(frame, prompt, method)` | SAM3 one-frame adapter | 阶段 1 专用 |
-| `KeyframeReviewer` | `review(request, candidates)` | 几何 + Qwen reviewer；人工为最终 gate | 可复审历史包 |
-| `ArtifactRepository` | `save/load(package)` | 文件系统、JSON、PNG/NPZ/RLE adapter | 所有阶段共用 |
-| `PropagationEngine` | `propagate(track_request)` | **仅定义 Protocol** | 阶段 2 才实现 |
-| `VideoQCService` | `evaluate(video_run)` | **仅定义 Protocol** | 阶段 3 才实现 |
-
-`SingleFrameSegmenter` 和未来的 `PropagationEngine` 必须是两个 port。这样可从类型和测试上
-防止“为了生成 keyframe 顺便跑了一遍全视频”。
-
-一个建议的 prompt 类型如下：
-
-```python
-@dataclass(frozen=True)
-class VisualPrompt:
-    text: str | None
-    bbox_xyxy_normalized: Box | None
-    positive_points: tuple[Point, ...] = ()
-    negative_points: tuple[Point, ...] = ()
-
-class SegmentationMethod(StrEnum):
-    BOX_ONLY = "box_only"
-    TEXT_ONLY = "text_only"
-    TEXT_BOX = "text_box"
-```
-
-阶段 1 对每个 instance 可以导出 `box_only / text_only / text_box` 三种候选；`TEXT_BOX` 的
-adapter 将 text 与 bbox 合为一次 SAM3 请求。候选比较本身不改变原图，也不触发传播。
-
----
-
-## 7. 阶段 1 的用例流程
-
-### 7.1 `PrepareKeyframes`：唯一的主流程
-
-```text
-EpisodeRef
-  │
-  ├─ EpisodeRepository.load_context
-  ├─ SemanticPlanner.plan                    → SemanticPlan
-  ├─ TimelineDetector.detect                 → InteractionTimeline
-  ├─ RolePolicyRegistry.create_requests      → KeyframeRequest[]
-  │       （每个角色有自己的合法 seed window）
-  ├─ KeyframeSelector.rank                   → FrameCandidate[]
-  ├─ GroundingService.ground                 → query + tight bbox evidence
-  ├─ SingleFrameSegmenter.segment × methods  → MaskCandidate[]
-  ├─ KeyframeReviewer.auto_review            → 建议 / reject_all / QC report
-  ├─ ArtifactRepository.save_candidate_package
-  └─ 返回 NEEDS_HUMAN_REVIEW，不自动进入传播
-```
-
-关键点：
-
-- 先获得 `InteractionTimeline`，是为了限定搜索窗口，并不是开始做全视频 QC。
-- `KeyframeSelector` 可以提出多个 frame；grounding 和分割候选均要记录各自 frame，
-  不允许把不同帧的 bbox/mask 混在一起。
-- 一个 receiver 可选比 target 更早或更晚的帧；不共享“episode 的唯一 seed frame”。
-- 任意关键步骤失败只产生可读 failure artifact（例如 `no_clear_frame`、`reject_all`），
-  不写一个假 selected mask。
-
-### 7.2 `ReviewKeyframes`：审批与版本化
-
-人工 review UI/CLI 读取 contact sheet，并只能做三种动作：
-
-```text
-approve(candidate_id, reviewer, note)
-reject_all(reason, reviewer)
-request_revision(reason, reviewer)  # 生成下一 revision 的 request，不改旧记录
-```
-
-`approve` 会创建 `ApprovedSeed`；阶段 2 查询时只接受这个对象。Qwen 的推荐结果、阈值、
-reviewer、时间、候选 hash 都进入 `review.json`。
-
-### 7.3 阶段 1 的 keyframe 内容定义
-
-| slot / anchor | 合法候选窗口 | 要生成的内容 | 必须排除/注意 |
-|---|---|---|---|
-| `target_0 / pre_grasp_visible` | `[t_move_start, t_close_start)` | 完整可见药瓶、精确 query、tight bbox、单帧候选 mask | 夹爪主体、邻近同类、背景；不要求抓取后继续可见 |
-| `receiver_0 / static_receiver_visible` | 优先 action 前、receiver 完整可见的窗口 | 完整 pad 区域、内部点、单帧候选 mask | target/夹爪遮挡；不强迫与 target 同帧 |
-| `gripper_<arm> / pre_close_open`（1B） | 接近 close 前 | 两指及必要短掌部的 anchor | target、wrist/forearm、另一臂 |
-| `gripper_<arm> / post_open`（1B） | `t_open_done` 附近 | 释放后重新张开的第二 anchor | 同上；不能用一个宽大 arm bbox 替代 |
-
-`target_0` 和 `receiver_0` 是 1A 的最小闭环。只有它们的 contact sheet 和人工 review
-稳定后，才引入视觉上明显更难的 gripper anchors；不会让 gripper 问题掩盖物体 seed 的问题。
-
----
-
-## 8. 阶段 1 的 QC：只检查关键帧，不越界检查整段视频
-
-`KeyframeReviewer` 组合三个独立 checker，输出结构化 `KeyframeQCReport`。每条 finding 必须
-带 `severity`、`evidence`、`candidate_id` 与可读 reason。
-
-| Checker | 当前是否执行 | 典型问题 | 结论 |
-|---|---:|---|---|
-| `RequestContractChecker` | 是 | frame 不在窗口、角色/相机/尺寸不匹配 | hard fail |
-| `PromptContractChecker` | 是 | `text_box` 没有在同一 SAM3 request 发送 text+bbox | hard fail |
-| `MaskGeometryChecker` | 是 | 空 mask、面积极端、主连通域异常、与 bbox 交集太小 | reject / warn |
-| `RoleLocalChecker` | 是 | 药瓶 mask 覆盖背景；pad 不完整；gripper 含长前臂 | reject / needs review |
-| `SemanticCandidateReviewer` | 是 | 几何过关但分到错误物体 | 建议候选或 `reject_all` |
-| `HumanApprovalChecker` | 是（初期） | Qwen 不确定、三个候选都错、部分遮挡 | 最终 approve/reject |
-| `TemporalContinuityChecker` | **否** | mask 是否连续、是否漂移 | 阶段 3 |
-| `CoMotion/PlaceChecker` | **否** | 是否抓住、是否放到 pad | 阶段 3 |
-| `VideoCoverageChecker` | **否** | 全视频是否有缺口 | 阶段 3 |
-
-几何检查只能作**拒绝器**，不是正确性证明。例如“mask 大部分在 Qwen bbox 内”只能说明它
-没有明显跑远，不能证明那就是药瓶。因此，阶段 1 artifact 始终保留原图、每种候选 overlay、
-contact sheet 与 reviewer 的理由。
-
-### 8.1 阶段 1 的验收标准
-
-以 `move_pillbottle_pad / cam_high` 的 10 条 pilot 为准：
-
-1. 每条 episode 均有 target 与 receiver 的可审阅 artifact，成功或显式拒绝均可；
-2. 每个 `APPROVED` seed 都可追溯到 exact frame、RGB hash、query、bbox、SAM3 method、
-   candidate mask hash、QC 和人工 reviewer；
-3. `APPROVED` mask 由人工逐张确认是目标物/完整 receiver，而非“bbox 内的漂亮区域”；
-4. `reject_all` 不会输出伪造 selected mask；
-5. 自动与单元/contract 测试证明阶段 1 **从未调用** `propagate_in_video`，也不生成
-   `[T,H,W]` 全视频 mask 或 video QC 结论；
-6. 旧的 `process_data/output/key_masks*` 和 annotations 完全不被覆盖。
-
----
-
-## 9. Artifact 契约与目录布局
-
-所有输出按 run 隔离，默认不纳入 Git。下面是计划中的结构，不代表本轮创建这些文件：
-
-```text
-process_data_v2/
-  artifacts/                                      # .gitignore
-    keyframes/
-      runs/<run_id>/
-        run_manifest.json
-        move_pillbottle_pad/
-          episode_007152/
-            cam_high/
-              episode_context.json                # 输入引用/哈希、image size
-              semantic_plan.json
-              interaction_timeline.json
-              keyframe_package.json               # requests、状态、引用
-              target_0/
-                request_r001.json
-                frame_000049.rgb.png
-                grounding.json
-                box_only.mask.png
-                text_only.mask.png
-                text_box.mask.png
-                box_only.overlay.png
-                text_only.overlay.png
-                text_box.overlay.png
-                contact_sheet.png
-                qc.json
-                review_r001.json
-              receiver_0/
-                ...
-```
-
-`run_manifest.json` 至少记录：
-
-```json
-{
-  "format": "robotwin_keyframe_run/v1",
-  "run_id": "kf-20260729-...",
-  "algorithm_version": "process_data_v2-keyframe-v1",
-  "stage": "keyframe",
-  "video_propagation": false,
-  "video_qc": false,
-  "input": {"dataset_root": "...", "episode_hash": "..."},
-  "models": {"qwen": "...", "sam3_checkpoint": "..."},
-  "config_sha256": "..."
-}
-```
-
-`keyframe_package.json` 不嵌入 mask 像素；它引用文件和 SHA-256。每一个 candidate 至少有：
-
-```json
-{
-  "candidate_id": "target_0-r001-f0049-text_box",
-  "slot": "target_0",
-  "anchor_kind": "pre_grasp_visible",
-  "frame_index": 49,
-  "image_size_hw": [240, 320],
-  "query": "white pill bottle with orange label",
-  "bbox_xyxy_normalized": [0.46, 0.32, 0.61, 0.62],
-  "method": "text_box",
-  "video_propagation": false,
-  "mask_sha256": "...",
-  "metrics": {"area_fraction": 0.012, "bbox_overlap": 0.91},
-  "review_status": "needs_human_review"
-}
-```
-
-原则：**阶段 1 写的是单帧证据包，不是 `masks.npz` 的半成品。** 全视频数据格式和
-`frame_provenance` 留给阶段 2 的独立 artifact schema，避免把两类产物混淆。
-
----
-
-## 10. 未来视频传播如何接入，而不破坏阶段 1
-
-阶段 2 的接口现在定义、以后实现：
-
-```python
-@dataclass(frozen=True)
-class TrackRequest:
-    approved_seed: ApprovedSeed
-    tracking_window: FrameWindow
-    strategy: PropagationStrategyName
-    exclusions: tuple[MaskArtifactRef, ...]
-
-class PropagationEngine(Protocol):
-    def propagate(self, request: TrackRequest) -> VideoTrack: ...
-```
-
-### 10.1 传播服务的硬边界
-
-- 输入必须是 `ApprovedSeed`，不能直接消费某个 Qwen bbox 或 `MaskCandidate`。
-- 输出是新的 `VideoTrack` artifact，逐帧记录 `FrameMask`、`MaskProvenance` 和失败片段；
-  绝不回写/修改 keyframe mask。
-- 若传播漂移，产生 `RecoveryRequest`（需要新关键帧或第二 anchor），而不是在传播模块中
-  偷偷重新 grounding。
-- `VideoQCService` 只读取 `VideoTrack + InteractionTimeline + ApprovedSeed`；它不负责
-  重新定义关键帧正确性。
-
-### 10.2 首轮传播策略的预留
-
-| 角色 | 阶段 2 的候选 strategy | 阶段 1 需要先准备什么 |
-|---|---|---|
-| target | SAM3 在 `target_window` 内传播；必要时多 anchor | `pre_grasp_visible` 已批准 seed |
-| 静态 receiver | `StaticMaskReplicator` 在固定相机有效窗口复制已批准 mask | 静态 receiver seed + camera 静态性证据 |
-| gripper | 双 anchor + CoTracker 动态 finger ROI + wrist/target exclusion | `pre_close_open`、`post_open` 两个已批准 seed |
-| 动态 receiver / relation place | 新的 role policy 和 strategy | 不进入当前 pilot |
-
-因此“考虑视频 mask 扩展”不等于现在提前把传播、persistence 和全视频 QC 混进关键帧代码；
-而是确保 seed 的 ID、窗口、角色、anchor kind、exclusion 和 revision 都足以让后续模块使用。
-
-### 10.3 阶段 3 的视频 QC（现在只定义责任）
-
-未来 `VideoQCService` 将分为：
-
-1. **结构 QC**：时间窗外为空、active/inactive arm、artifact 完整性；
-2. **时序 QC**：coverage、断裂、漂移、provenance 比例；
-3. **跨角色 QC**：target/gripper 排斥、动态 ROI、receiver 稳定性；
-4. **任务结果 QC**：抓取共动、release 后 target 与 receiver 的关系；
-5. **人工复核选择**：只从 QC 标记的可疑帧生成 review package。
-
-这与当前 keyframe QC 的输入、失败原因和验收目标完全不同，必须保持成两个服务。
-
----
-
-## 11. 计划中的目录与模块划分
-
-`process_data_v2` 初始项目结构建议如下。`robotwin_annotation_v2` 是新的 Python package 名，
-避免与旧 `robotwin_annotate` 发生 import/产物混淆。
-
-```text
-process_data_v2/
-  pyproject.toml
-  README.md
-  src/robotwin_annotation_v2/
-    domain/
-      models.py                 # EpisodeRef, Slot, Window, Request, Review state
-      policies.py               # Target/Receiver/Gripper keyframe policy
-      errors.py
-    application/
-      prepare_keyframes.py      # PrepareKeyframes use case
-      review_keyframes.py       # approve/reject/revision use case
-      dto.py
-    ports/
-      dataset.py
-      vision.py                 # frame source, grounding, single-frame segmenter
-      artifacts.py
-      propagation.py            # Protocol only in phase 1
-      video_qc.py               # Protocol only in phase 1
-    adapters/
-      robotwin_dataset.py
-      qwen_grounding.py
-      sam3_single_frame.py
-      filesystem_artifacts.py
-      image_rendering.py
-      human_review.py           # CLI/HTML review input adapter
-    bootstrap/
-      container.py              # 唯一 composition root
-      settings.py
-    cli/
-      keyframes.py              # thin CLI only
-  configs/
-    pilot_move_pillbottle_pad.yaml
-    keyframe_thresholds.yaml
-  tests/
-    unit/
-    contract/
-    integration/
-    fixtures/
-  artifacts/                    # ignored runtime output
-```
-
-### 11.1 禁止重新出现的结构问题
-
-- 不建 `v2_pipeline.py` 这种同时读数据、调模型、写 NPZ、跑 QC、渲染的上帝模块。
-- 不让 CLI 脚本直接 import SAM3/Qwen 并拼接业务规则。
-- 不让任何外部 JSON `dict` 直接流入 domain；adapter 必须校验并转成 typed DTO/value object。
-- 不让通用 `target/receiver/gripper` 三角色在同一个长函数里由大量 task 特判处理。
-- 不以 `skip-existing` 之类的文件存在性代替 artifact version/status 判断。
-- 不让阶段 1 的 package 依赖或输出阶段 2 的全视频 mask。
-
----
-
-## 12. 测试和可维护性要求
-
-| 测试层 | 重点 | 不需要真实模型 |
+| purpose | 用途 | 是否允许作为 seed |
 |---|---|---:|
-| `unit/domain` | window 不变量、状态转换、policy 产生正确 request | 是 |
-| `unit/application` | fake ports 下的流程顺序、拒绝不产生 seed | 是 |
-| `contract/sam3` | `TEXT_BOX` 在一次 request 中发送 text+bbox；阶段 1 无传播调用 | adapter mock/spy |
-| `contract/artifact` | JSON schema、hash、revision、不可变引用 | 是 |
-| `integration/pilot` | 真实 Qwen/SAM3 生成 2–3 条 contact sheet | 否 |
-| `manual acceptance` | 10 条 × target/receiver 的视觉审核 | 否 |
+| `pre_grasp_seed_candidate` | 目标/接收物无遮挡的早期帧 | 是 |
+| `post_grasp_context` | 判断哪个物体随夹爪移动 | 否 |
+| `place_context` | 判断物体最终放置到哪里 | 否 |
 
-每个阶段 1 运行还应输出一个简短 summary：`approved / needs_review / rejected / blocked` 数量和
-原因聚合，帮助先修 keyframe 问题，而不是被全视频 QC 指标淹没。
+每个帧必须保存原始 frame id，不能只使用在数组中的位置：
+
+```json
+{
+  "frame_id": 0,
+  "purpose": "pre_grasp_seed_candidate",
+  "eligible_roles": ["target", "receiver"]
+}
+```
+
+### 4.4 Stage 1 输出：`LoopContext`
+
+```json
+{
+  "episode": "move_pillbottle_pad/episode_007152",
+  "camera": "cam_high",
+  "active_arm": "left",
+  "events": {
+    "move_start": 4,
+    "close_start": 54,
+    "close_done": 68,
+    "open_start": 120,
+    "open_done": 136
+  },
+  "output_windows": {
+    "target_0": [4, 68],
+    "receiver_0": [68, 136]
+  },
+  "semantic_frames": [
+    {
+      "frame_id": 0,
+      "purpose": "pre_grasp_seed_candidate",
+      "eligible_roles": ["target", "receiver"]
+    },
+    {
+      "frame_id": 50,
+      "purpose": "post_grasp_context",
+      "eligible_roles": ["target"]
+    },
+    {
+      "frame_id": 128,
+      "purpose": "place_context",
+      "eligible_roles": ["receiver"]
+    }
+  ]
+}
+```
+
+上面的数值仅用于说明 schema；实际事件帧由 state detector 计算，不在代码中写死任何 episode 的数字。
 
 ---
 
-## 13. 实施顺序（等待本设计确认后）
+## 5. 阶段二：Qwen Semantic Plan
 
-### P0：项目骨架与纯领域测试
+### 5.1 Client / Server 分工
 
-1. 在空的 `process_data_v2/` 建独立 `pyproject`、package、测试框架和 `.gitignore`；
-2. 实现 domain value objects、状态机、role policies、ports；
-3. 用 fake adapter 写 `PrepareKeyframes` 的单元测试；此时不接模型、不读旧 annotations。
+```text
+Qwen Server
+  - 加载 Qwen 模型
+  - 启动 HTTP / OpenAI-compatible endpoint
+  - 接收多模态请求
+  - 返回原始模型响应
 
-### P1：关键帧最小闭环（当前目标）
+Qwen Client
+  - 读取 prompt 配置文件
+  - 填充 task、LoopContext 和帧目录
+  - 编码并发送图像
+  - 解析严格 JSON
+  - 保存 rendered prompt、raw response 和 hash
+```
 
-1. 实现 RoboTwin 单帧读取、state timeline、target/receiver policy；
-2. 实现 Qwen grounding 和 SAM3 `SingleFrameSegmenter`（`box_only/text_only/text_box`）；
-3. 实现 candidate artifact、overlay/contact sheet、geometry + semantic auto review；
-4. 实现人工 approve/reject/revision；
-5. 在 `move_pillbottle_pad/cam_high` 的 3 条失败样本做消融，再扩到 10 条。
+Server 是独立运行的基础设施，不由每个 episode 的 client 重复启动。实验入口可以在运行前启动 server，并在 client 调用前检查 health endpoint。
 
-**P1 的完成条件就是第 8.1 节；不会开始视频传播。**
+### 5.2 Qwen 输入
 
-### P1B：夹爪关键帧（仍然只做单帧）
+Qwen 一次联合判断 target 和 receiver，输入包括：
 
-1. 增加 `GripperAnchorPolicy` 和两个 anchor kind；
-2. 增加 finger/palm 与 target/wrist/forearm exclusion 的 keyframe QC；
-3. 对少量人工样本确认双 anchor 可用。
+- 任务文本或 coarse task；
+- `LoopContext` 中的动作边界；
+- 带 `frame_id` 和 `purpose` 的 sparse RGB 帧；
+- target / receiver 的角色定义。
 
-### P2：视频传播
+target 和 receiver 不应该由两个完全独立的请求决定，否则可能出现角色交换或两个角色指向同一个物体。
 
-在 P1/P1B seed 被批准后，才实现 `PropagationEngine`、`VideoTrack` 与逐帧 provenance；
-先从 target 和静态 receiver 开始，再做 gripper 动态 ROI。
+### 5.3 Prompt 配置与实验依据
 
-### P3：全视频 QC 与最终导出
+这里不再沿用 v4.1 的“把物体扩写成更长视觉描述”思路：31 例实验中，v4.1 与当前 expanded
+query 都只有 19/31 个非空结果，而且长描述会让部分原本非空的物体退化为空。后续 v4.2
+说明短候选 bank 能补充覆盖，但 `food`、无颜色 `block` 等宽泛候选也会命中错误物体。
+因此这里同时采用“Qwen 动态短候选”和“只信任 Qwen 事前排序、不按 SAM 结果自动选”两条
+约束。
 
-仅当已有真实 video track 后，增加连续性、共同运动、place、渲染与 NPZ/下游导出。
+prompt 模板放在配置文件中，例如：
+
+```yaml
+qwen:
+  endpoint: "http://127.0.0.1:18086/v1/chat/completions"
+  model: "qwen3.5-27b"
+  prompt_template: "configs/prompts/target_receiver_semantic.txt"
+  max_tokens: 800
+  query_selection: "first_recommended"
+  allow_query_fallback: false
+```
+
+prompt 模板可以修改，但模板中的输出字段和类型必须保持稳定。具体的物体类别、颜色、形状等
+不能写死在模板中，由 Qwen 根据当前 episode 动态生成。模板只规定输出合同和选择规则；
+详细视觉理由保存在 `SemanticPlan`，不发送给 SAM3。
+
+建议 prompt 模板如下：
+
+```text
+你是机器人操作视频的语义规划器。你的工作是联合确定 target 和 receiver，
+为每个角色选择一个可见 seed frame，并生成供 SAM3 使用的短英文 query 候选池。
+你不画框、不输出 mask，也不评价 SAM3 的 mask。
+
+任务描述：
+{task_text}
+
+相机：{camera}
+
+事件上下文：
+- move_start: {move_start}
+- close_done: {close_done}
+- open_done: {open_done}
+
+下面是带原始 frame id 和用途标签的图像：
+{labeled_multimodal_frames}
+
+角色定义：
+- target：随后被夹爪抓取并移动的物体。
+- receiver：target 最终被放置到的承接物或目标位置。
+
+请利用任务文本和多帧动作关系联合判断 target 与 receiver，不要只凭一张静态图猜测。
+
+对每个角色：
+1. 只能从允许的 seed 候选中选择一个完整、清晰、遮挡最少的 seed frame；
+2. 输出一个有序的 query candidate bank，而不是一条长 referring expression；
+3. 每条非空 query 必须是 1–4 个小写英文词组成的、指向完整物体的单数名词短语；
+4. 必须保留完整类别名（例如 bottle、pad、basket）。可加入一个颜色、形状或材质
+   修饰词；如果两个紧凑修饰词都确有区分力，可以使用类似 blue square pad 的短语，
+   但总词数仍不得超过 4；
+5. 只使用多帧中稳定可见、能区分实例的属性，不猜测无法确认的属性；
+6. 禁止冠词/所有格、品牌或 OCR 文字、数字、动作、位置、空间关系、比较级以及包含
+   with 的长属性串；禁止只描述 cap、logo、label、handle 等子部件；
+7. category_query 必须是最具体且常见的无修饰类别名；有颜色或形状证据时分别填写
+   color_category_query、shape_category_query。若规则 4 的第二个紧凑线索不可缺少，
+   color_category_query 可同时保留它；可选的 general_fallback_query 必须更一般但仍指向
+   完整物体，且永远排在最后；
+8. 所有非空候选必须互不相同，recommended_order 必须列出所有非空候选字段且不重复；
+9. 不返回 bbox，不返回 mask，不评价任何 mask。不要为了让两个角色的文字不同而编造
+   视觉属性；如果身份仍有歧义，在 reason 中说明。
+
+只返回一个 JSON 对象，不要输出 Markdown 或额外说明：
+{
+  "target": {
+    "status": "ok" | "no_clear_seed",
+    "seed_frame_id": <原始 frame id 或 null>,
+    "category_query": "<1-4 lowercase English words 或 null>",
+    "color_category_query": "<1-4 lowercase English words 或 null>",
+    "shape_category_query": "<1-4 lowercase English words 或 null>",
+    "general_fallback_query": "<1-4 lowercase English words 或 null>",
+    "recommended_order": ["<candidate field>", "..."],
+    "exclude": ["<other visible object>", "..."],
+    "reason": "<简短中文语义理由，不发送给 SAM3>"
+  },
+  "receiver": {
+    "status": "ok" | "no_clear_seed",
+    "seed_frame_id": <原始 frame id 或 null>,
+    "category_query": "<1-4 lowercase English words 或 null>",
+    "color_category_query": "<1-4 lowercase English words 或 null>",
+    "shape_category_query": "<1-4 lowercase English words 或 null>",
+    "general_fallback_query": "<1-4 lowercase English words 或 null>",
+    "recommended_order": ["<candidate field>", "..."],
+    "exclude": ["<other visible object>", "..."],
+    "reason": "<简短中文语义理由，不发送给 SAM3>"
+  }
+}
+```
+
+字段约束补充说明：`category_query` 在 `status=ok` 时必填；其余 query 可以为 `null`。
+`status=no_clear_seed` 时四个 query 均为 `null`，`recommended_order` 为空。候选顺序由
+Qwen 根据证据给出，但当前小实验的执行策略固定为使用顺序第一项作为
+`primary_query`；其余候选只写入 artifact 供追溯，不根据非空像素数自动切换，也不把多个
+候选的 mask 做并集。未来若要启用回退，必须通过配置显式打开，而不能隐式改变语义。
+
+### 5.4 Qwen 输出：`SemanticPlan`
+
+```json
+{
+  "target": {
+    "status": "ok",
+    "seed_frame_id": 0,
+    "category_query": "bottle",
+    "color_category_query": "orange bottle",
+    "shape_category_query": "plastic bottle",
+    "general_fallback_query": "container",
+    "recommended_order": [
+      "color_category_query",
+      "shape_category_query",
+      "category_query",
+      "general_fallback_query"
+    ],
+    "exclude": ["blue square pad", "black robot gripper", "table shadow"],
+    "reason": "该物体在后续帧中被夹爪抓取并移动；颜色和类别在多帧中稳定可见。"
+  },
+  "receiver": {
+    "status": "ok",
+    "seed_frame_id": 0,
+    "category_query": "pad",
+    "color_category_query": "blue square pad",
+    "shape_category_query": "square pad",
+    "general_fallback_query": "mat",
+    "recommended_order": [
+      "color_category_query",
+      "shape_category_query",
+      "category_query",
+      "general_fallback_query"
+    ],
+    "exclude": ["white pill bottle", "black robot gripper", "table shadow"],
+    "reason": "该区域是 target 最终被放置的位置；蓝色和方形是稳定的区分线索。"
+  }
+}
+```
+
+`primary_query` 是 `recommended_order[0]` 对应的候选值，运行时动态解析，不写入通用代码。
+`exclude` 和 `reason` 只作为语义记录，不拼接到 SAM3 的正向 text prompt。候选 bank 的
+字段名与 v4.2 实验保持一致；若组合短语（如 `blue square pad`）比拆开的候选更稳定，允许
+将其放在首位，但仍须满足 1–4 词合同。
+
+### 5.5 Box 的处理
+
+当前主流程不要求 Qwen 返回 bbox：
+
+- v4.1 实验显示 Qwen initial bbox 可能过紧、偏移或只覆盖局部；
+- `text_box` 可能裁掉正确物体，扩框又可能引入背景；
+- v4.1 历史 ep0 的 target 和 receiver 都以 `text_only` 作为有效 seed。
+
+因此 Stage 2 的正式 schema 不包含 bbox。未来遇到多个视觉上相同的实例时，可以另行增加可选 coarse ROI，但不作为当前主路径。
 
 ---
 
-## 14. 本设计需要保持的默认决策
+## 6. 阶段三：SAM Mask and Propagation
 
-若按本稿执行，默认采用以下决策：
+Stage 3 使用 Qwen 的 `SemanticPlan`，不再向 Qwen 询问每一帧。
 
-1. `process_data_v2` 是独立、干净的项目；旧 `process_data` 不作为运行时依赖；
-2. 当前 pilot 只做 `move_pillbottle_pad + cam_high + target_0/receiver_0` 的关键帧；
-3. 阶段 1 的输出是 versioned keyframe artifacts，不是全视频 NPZ；
-4. Qwen review 只做候选筛选，**人工 review 才生成 `ApprovedSeed`**；
-5. 任何未通过的结果明确保留为 `needs_review/rejected/blocked`，绝不静默兜底；
-6. 阶段 2/3 的接口和数据字段现在预留，但实现工作在 P1 验收后才开始。
+### 6.1 3A：Seed Mask
 
-这使当前最重要的问题——“关键帧内容是否正确”——成为一个小、清楚、可验收的闭环；
-同时不会堵死之后的 video mask 传播与全视频 QC 扩展。
+对 target 和 receiver 分别执行：
+
+1. 读取 Qwen 选择的 `seed_frame_id`；
+2. 将 `recommended_order[0]` 对应的候选解析为 `primary_query`；
+3. 在 seed frame 创建独立的单帧 SAM3 session；
+4. 只发送 `text=primary_query`；
+5. 保存返回的 seed mask 和实际使用的 query；
+6. 以 seed mask 作为 native tracking 的 mask prompt。
+
+如果 Qwen 返回 `no_clear_seed`、响应无法解析、首选 query 不合法或 SAM3 无法生成 seed，
+则显式记录该角色失败，不生成默认 box 或默认 mask。当前阶段不因 mask 为空而静默尝试更宽的
+fallback；这能避免 `food`、`toy`、`container` 等候选命中错误物体。
+
+### 6.2 3B：Native Video Propagation
+
+使用 seed mask 进行 SAM3 native-mask tracking：
+
+- target 从 seed frame 跟踪到 `t_close_done`；
+- receiver 从 seed frame 跟踪到 `t_open_done`；
+- receiver 可以从动作前 seed 开始跟踪，但只在 `[t_close_done, t_open_done]` 写出结果。
+
+native tracking 的作用是保持实例身份，不是补全被遮挡像素。
+
+### 6.3 3C：Same-frame Text Observation
+
+在每个角色的活动输出窗口内，继续使用 seed 阶段已经确定的 `primary_query` 运行 SAM3
+text-only：
+
+```text
+target_text_t   = SAM3(frame_t, target.primary_query)
+receiver_text_t = SAM3(frame_t, receiver.primary_query)
+```
+
+不调用 Qwen，不重新生成 bbox，也不在传播过程中切换 query。
+
+### 6.4 Visible Mask Composition
+
+最终 mask 采用：
+
+```text
+final_role_mask[t]
+  = native_track[t]
+  ∩ same_frame_text_mask[t]
+  ∩ canonical_envelope[role]
+```
+
+规则：
+
+- 时间窗外为空；
+- native track 不支持的像素为空；
+- 同帧 text 没有可见证据的像素为空；
+- target 被夹爪遮挡的部分不补全；
+- receiver 被 target 遮挡的部分不保留；
+- 不使用静态复制完整 receiver 的旧策略。
+
+这里的交集是 mask 生成规则，不引入独立的人工或 QC 阶段。
+
+---
+
+## 7. 阶段输出和产物
+
+### 7.1 阶段产物
+
+```text
+Stage 1 → loop.json
+Stage 2 → semantic_plan.json
+Stage 3 → seed masks + tracks + masks.npz
+```
+
+### 7.2 建议目录
+
+```text
+artifacts/
+  runs/<run_id>/
+    <task>/
+      episode_<id>/
+        <camera>/
+          loop.json
+          semantic_plan.json
+          target_0/
+            seed.rgb.png
+            seed.mask.png
+            canonical_envelope.png
+            native_track.npz
+            text_observations.npz
+          receiver_0/
+            seed.rgb.png
+            seed.mask.png
+            canonical_envelope.png
+            native_track.npz
+            text_observations.npz
+          masks.npz
+          frame_provenance.json
+          run_manifest.json
+```
+
+`semantic_plan.json` 保存 Qwen model、prompt hash、输入 frame ids、raw response 和解析后的结果。这样 prompt 可以修改，但每次运行仍然可追溯。
+
+### 7.3 Mask channel
+
+当前可以继续保持既有四通道 NPZ 兼容格式：
+
+```text
+channel 0: target_0       valid
+channel 1: receiver_0     valid
+channel 2: gripper_left   not_annotated
+channel 3: gripper_right  not_annotated
+```
+
+manifest 必须记录 gripper 通道为 `not_annotated`。全零 gripper 通道不是负样本，当前下游不能把它当作真实标注。
+
+### 7.4 测试数据集
+
+本项目的真实数据测试集固定为：
+
+```text
+/DATA/disk8/xuran/add_mask_robotwin/dataset/move_pillbottle_pad_coverage20_original
+```
+
+当前目录中实际存在 20 个 `move_pillbottle_pad` episode：
+
+```text
+7152, 7156, 7157, 7163, 7168, 7179, 7181, 7185, 7187, 7188,
+7274, 7317, 7335, 7367, 7424, 7464, 7571, 7621, 7673, 7674
+```
+
+每个测试 episode 应至少能找到：
+
+```text
+data/chunk-007/episode_<id>.parquet
+videos/chunk-007/observation.images.cam_high/episode_<id>.mp4
+sidecars/episode_<id>.hdf5
+```
+
+前 10 个 episode 是 clean 样本，后 10 个是 randomized 样本。建议测试分两级：
+
+| 测试级别 | 数据 | 用途 |
+|---|---|---|
+| smoke | `7152` | 每次改动后的快速端到端检查 |
+| regression | 上述全部 20 个 episode | 阶段完成后的完整回归 |
+
+原始视频和 Parquet 不复制到 Git。v2 project 通过 dataset config、固定 episode manifest 和 preflight 测试引用这份外部数据；这样既能把数据集纳入项目测试契约，又不会把二进制数据提交到仓库。
+
+推荐配置：
+
+```yaml
+dataset:
+  root: /DATA/disk8/xuran/add_mask_robotwin/dataset/move_pillbottle_pad_coverage20_original
+  task: move_pillbottle_pad
+  camera: cam_high
+  smoke_episode_ids: [7152]
+  regression_episode_ids: [7152, 7156, 7157, 7163, 7168, 7179, 7181, 7185, 7187, 7188,
+                           7274, 7317, 7335, 7367, 7424, 7464, 7571, 7621, 7673, 7674]
+```
+
+运行时允许通过 `--dataset-root` 或环境变量覆盖绝对路径，但测试 manifest 中的 episode id 不应随意改变。
+
+---
+
+## 8. 配置
+
+建议一个 pilot 配置包含数据、Qwen、SAM3 和输出设置：
+
+```yaml
+task: move_pillbottle_pad
+camera: cam_high
+
+dataset:
+  root: /DATA/disk8/xuran/add_mask_robotwin/dataset/move_pillbottle_pad_coverage20_original
+  smoke_episode_ids: [7152]
+  regression_episode_ids: [7152, 7156, 7157, 7163, 7168, 7179, 7181, 7185, 7187, 7188,
+                            7274, 7317, 7335, 7367, 7424, 7464, 7571, 7621, 7673, 7674]
+
+qwen:
+  endpoint: http://127.0.0.1:18086/v1/chat/completions
+  model: qwen3.5-27b
+  prompt_template: configs/prompts/target_receiver_semantic.txt
+  timeout_seconds: 180
+  max_tokens: 800
+  query_selection: first_recommended
+  allow_query_fallback: false
+
+sam3:
+  checkpoint: /path/to/sam3.pt
+  device: cuda:0
+  seed_method: text_only
+
+mask:
+  target_envelope_padding_px: 4
+  receiver_envelope_padding_px: 4
+
+output:
+  root: artifacts
+```
+
+对象名称、颜色和视觉描述不放在 YAML 中；它们来自 Qwen 的 `SemanticPlan`。
+
+---
+
+## 9. 模块结构
+
+当前不需要复杂的 class 层级。建议使用少量 dataclass 和 stage function：
+
+```text
+src/robotwin_annotation_v2/
+  models/
+    loop_context.py
+    semantic_plan.py
+    mask_run.py
+
+  pipeline/
+    state_loop.py
+    qwen_stage.py
+    sam_stage.py
+    run_pipeline.py
+
+  adapters/
+    robotwin_dataset.py
+    qwen_client.py
+    sam3_adapter.py
+    artifact_store.py
+
+  config.py
+
+configs/
+  pilot_move_pillbottle_pad.yaml
+  prompts/
+    target_receiver_semantic.txt
+
+scripts/
+  serve_qwen.py
+  run_target_receiver.py
+```
+
+`run_pipeline.py` 只做编排：
+
+```python
+loop = extract_loop(episode, config)
+semantic = run_qwen(loop, config)
+mask_run = run_sam(loop, semantic, config)
+save_run(mask_run, config)
+```
+
+Qwen HTTP 细节、SAM3 session 细节和文件格式不进入编排函数。
+
+---
+
+## 10. 阶段间错误处理
+
+本版本只做必要的输入和运行错误处理，不建立独立的质量评审流程。
+
+### Stage 1
+
+- state 缺失或无法形成合法 loop：保存失败原因，不调用 Qwen/SAM；
+- 事件顺序非法：保存 `loop_failed`。
+
+### Stage 2
+
+- Qwen server 不可用：保存请求失败信息；
+- JSON 无法解析：保存 raw response，不伪造语义计划；
+- `seed_frame_id` 不在候选列表：拒绝该语义计划；
+- `category_query` 缺失，或任一 query 不满足 1–4 个小写英文词：拒绝该角色的 seed 请求；
+- `recommended_order` 与非空候选不一致，或首项无法解析为 `primary_query`：拒绝该角色的
+  seed 请求。
+
+### Stage 3
+
+- seed mask 为空：该角色没有可用 mask；
+- tracking 无输出：保留已有阶段产物，不生成假的连续 mask；
+- 输出帧尺寸不一致：停止写出该 run。
+
+所有失败都要可追溯，但不转换为人工 review 状态。
+
+---
+
+## 11. 测试计划
+
+### Stage 1 测试
+
+- state 输入能得到合法 `LoopContext`；
+- target / receiver 输出窗口正确；
+- seed candidate 和 context frame 的用途标签正确；
+- 事件顺序异常时显式失败。
+
+### Stage 2 测试
+
+- prompt 模板变量能正确填充；
+- 输入帧 id 和 purpose 与图像一一对应；
+- Qwen JSON schema 能解析 target / receiver；
+- 不接受 bbox 作为必填字段；
+- 每条 query 都通过 1–4 个小写英文词及禁用词校验；
+- `category_query` 必填、候选互异、general fallback 最后；
+- `primary_query` 来自 Qwen 的 `recommended_order[0]`，而不是代码中的 task-specific 常量；
+- 默认不会因首选 mask 为空而按像素数自动切换候选或合并候选 mask。
+
+### Stage 3 测试
+
+- seed 使用 `text_only`；
+- native tracking 的 seed frame 和方向正确；
+- target / receiver 的输出窗口互不混淆；
+- visible composition 正确执行三者交集；
+- 窗口外始终为空；
+- gripper 通道被标记为 `not_annotated`。
+
+### 集成测试
+
+先在测试数据集的 `episode_007152 / cam_high` 上完成一次完整运行，再扩展到 20 个 episode。检查：
+
+```text
+loop.json
+semantic_plan.json
+target/receiver seed masks
+native tracks
+final masks.npz
+frame_provenance.json
+```
+
+---
+
+## 12. 实施顺序
+
+### P0：确定数据契约
+
+1. 确定 `LoopContext`、`SemanticPlan`、`MaskRun` schema；
+2. 确定 prompt 配置文件格式；
+3. 确定 artifact 目录和 NPZ channel metadata。
+
+### P1：实现 State Loop
+
+1. 读取 episode state；
+2. 检测 active arm 和事件边界；
+3. 采样带用途标签的 Qwen 输入帧；
+4. 保存 `loop.json`。
+
+### P2：实现 Qwen Client / Server
+
+1. 整理 server 启动入口和 health endpoint；
+2. 实现 client 的 prompt 文件读取和变量填充；
+3. 实现多帧请求和 JSON 解析；
+4. 保存 `semantic_plan.json`；
+5. 在 smoke episode `7152` 上确认 Qwen 生成合法的短 query bank，并正确解析
+   `primary_query`。
+
+### P3：实现 SAM seed 和传播
+
+1. 使用 Qwen text-only 生成 seed mask；
+2. 实现 native-mask tracking；
+3. 实现活动窗口内的 same-frame text observation；
+4. 实现 visible mask composition；
+5. 导出 `masks.npz` 和 provenance。
+
+### P4：端到端运行
+
+1. 运行 smoke episode `007152`；
+2. 检查三阶段中间产物；
+3. 修正 prompt、时间窗口或 SAM 参数；
+4. 通过 smoke 测试后运行全部 20 个 regression episode。
+
+### 测试与 Git 保存节奏
+
+每完成一个可独立验证的阶段，先运行对应测试，再保存一个小而清晰的 commit：
+
+```text
+P0 schema/config tests       → test pass → commit
+P1 state-loop unit + smoke   → test pass → commit
+P2 Qwen client contract      → test pass → commit
+P2 Qwen smoke episode 7152   → test pass → commit
+P3 SAM seed/propagation      → test pass → commit
+P4 20-episode regression     → test pass → commit
+```
+
+commit 只包含代码、配置、测试和文档，不包含外部 dataset 的视频、Parquet 或 HDF5 原文件。
+
+---
+
+## 13. 未来扩展边界
+
+后续增加 gripper mask 时，只增加新的 role 配置和 SAM 策略，不修改 Stage 1/Stage 2 的基本接口：
+
+```text
+LoopContext → SemanticPlan → MaskRun
+```
+
+后续如果需要 bbox，可以将 coarse ROI 作为 `SemanticPlan` 的可选字段，但不能让它重新成为默认的 mask 边界。
+
+本架构暂不定义 QC、人工审批或全任务通用化方案。
+
+---
+
+## 14. 与旧架构的迁移关系
+
+旧架构中的以下概念不再属于当前主流程：
+
+```text
+KeyframeRequest
+MaskCandidate
+ReviewStatus
+KeyframeReviewer
+ApprovedSeed
+HumanReview
+VideoQCService
+GripperAnchorPolicy
+box_only / text_box candidate bank
+```
+
+可以继续复用的底层能力包括：
+
+- RoboTwin episode / frame 读取；
+- state timeline 的基础算法；
+- SAM3 session 和 native mask prompt 的底层封装；
+- 文件 hash、run manifest 和 artifact 存储；
+- 测试框架与 fake adapter。
+
+代码按本文 P0–P4 顺序迁移，每个阶段通过测试后单独提交。
+
+---
+
+## 15. 当前默认决策
+
+本文暂按以下默认值编写：
+
+1. Qwen 一次联合规划 target 和 receiver；
+2. Qwen 默认不返回 bbox；
+3. SAM3 seed 默认使用 `text_only`；
+4. target 输出窗口为 `[move_start, close_done]`；
+5. receiver 输出窗口为 `[close_done, open_done]`；
+6. 继续保留四通道 NPZ 的兼容结构，但 gripper 通道标记为 `not_annotated`；
+7. Qwen server 独立启动，client 只调用和解析；
+8. prompt 模板可通过配置文件替换，具体 query bank 由 Qwen 动态生成；
+9. 当前只使用 Qwen 排名第一的 `primary_query`，不按 mask 非空或像素数自动切换候选。
