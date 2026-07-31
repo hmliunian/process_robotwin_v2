@@ -623,6 +623,33 @@ dataset:
 
 运行时允许通过 `--dataset-root` 或环境变量覆盖绝对路径，但测试 manifest 中的 episode id 不应随意改变。
 
+### 7.5 全长 overlay 视频
+
+`scripts/render_coverage20_videos.py` 是 Stage 3 之后的只读可视化工具。它从每个 episode
+已有的 `masks.npz` 中选择 target/receiver 有效角色数最多、同分时修改时间最新的 run，逐帧
+叠加到原始 `cam_high` 视频。它不调用 Qwen 或 SAM3，也不修改 mask 数据。
+
+默认渲染样式为：
+
+- mask 内部按 `alpha=0.32` 半透明填充，保留物体纹理；
+- mask 外侧 `3 px` 使用对应角色颜色绘制高亮轮廓；
+- 从轮廓继续向外扩张到总计 `5 px`，使用黑色衬边保持复杂背景下的对比度；
+- 彩色轮廓和黑色衬边都严格位于 mask 外部，不占用 mask 像素。
+
+完整 coverage20 渲染命令：
+
+```bash
+.venv/bin/python scripts/render_coverage20_videos.py --overwrite
+```
+
+默认输出到 `artifacts/rendered_videos/coverage20_best_current/`。脚本原子替换每个 MP4，并在
+全部 episode 成功后更新 `manifest.json`；manifest 记录输入 mask hash、输出视频 hash、编码
+信息和实际渲染参数。`--alpha`、`--outline-radius`、`--halo-radius` 可以显式覆盖默认值，且
+`halo-radius` 必须不小于 `outline-radius`。
+
+overlay 只负责提高可见性。已有 mask 的断帧、漂移或目标身份错误会被原样显示，不能把轮廓
+增强视为时序传播或目标选择的修复。
+
 ---
 
 ## 8. 配置
