@@ -1,0 +1,38 @@
+{
+  "format_version": "robotwin_role_identity_review_v1",
+  "dataset": "move_pillbottle_pad_coverage20_original",
+  "camera": "cam_high",
+  "review_basis": "manual comparison of the SAM3 native track with the grasped object at close_done",
+  "episodes": {
+    "7274": {
+      "target": {
+        "decision": "reject",
+        "reason": "track stays on the upper-left yellow bottle while the gripper closes on the center brown bottle"
+      }
+    },
+    "7317": {
+      "target": {
+        "decision": "reject",
+        "reason": "track stays on the upper-right bottle while the gripper closes on the center orange bottle"
+      }
+    },
+    "7464": {
+      "target": {
+        "decision": "reject",
+        "reason": "seed includes the robot gripper and the propagated mask collapses onto a moving gripper part"
+      }
+    },
+    "7571": {
+      "target": {
+        "decision": "reject",
+        "reason": "track stays on the narrow green bottle while the gripper closes on the adjacent teal-and-white bottle"
+      }
+    },
+    "7621": {
+      "target": {
+        "decision": "reject",
+        "reason": "track follows the left green bottle while the gripper closes on the right orange-labeled bottle"
+      }
+    }
+  }
+}

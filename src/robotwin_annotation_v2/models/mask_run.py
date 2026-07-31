@@ -12,6 +12,7 @@ from .loop_context import FrameWindow
 class MaskStatus(StrEnum):
     OK = "ok"
     FAILED = "failed"
+    QUARANTINED = "quarantined"
 
 
 @dataclass(frozen=True)
@@ -25,7 +26,7 @@ class RoleMaskResult:
     seed_mask_path: str | None
     canonical_envelope_path: str | None
     native_track_path: str | None
-    text_observation_path: str | None
+    temporal_qc_path: str | None
     nonempty_frames: int
     failure: str | None = None
 
@@ -34,8 +35,8 @@ class RoleMaskResult:
             raise ValueError("nonempty_frames must be non-negative")
         if self.status is MaskStatus.OK and self.failure is not None:
             raise ValueError("successful role result cannot contain failure")
-        if self.status is MaskStatus.FAILED and not self.failure:
-            raise ValueError("failed role result must contain failure")
+        if self.status is not MaskStatus.OK and not self.failure:
+            raise ValueError("failed or quarantined role result must contain failure")
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -48,7 +49,7 @@ class RoleMaskResult:
             "seed_mask_path": self.seed_mask_path,
             "canonical_envelope_path": self.canonical_envelope_path,
             "native_track_path": self.native_track_path,
-            "text_observation_path": self.text_observation_path,
+            "temporal_qc_path": self.temporal_qc_path,
             "nonempty_frames": self.nonempty_frames,
             "failure": self.failure,
         }
@@ -63,7 +64,7 @@ class MaskRun:
     frame_count: int
     roles: tuple[RoleMaskResult, ...]
     artifact_dir: str
-    format_version: str = "robotwin_mask_run_v1"
+    format_version: str = "robotwin_mask_run_v2"
 
     def __post_init__(self) -> None:
         if not self.run_id.strip():

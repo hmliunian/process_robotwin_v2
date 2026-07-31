@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from robotwin_annotation_v2.config import ConfigError, Sam3Config, load_config
+from robotwin_annotation_v2.config import ConfigError, MaskConfig, Sam3Config, load_config
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -53,8 +53,13 @@ output:
         load_config(config_path)
 
 
-def test_sam_config_requires_one_gpu_and_same_frame_text() -> None:
+def test_sam_config_requires_one_gpu() -> None:
     with pytest.raises(ConfigError, match="exactly one"):
         Sam3Config(Path("sam3.pt"), gpus=(0, 1))
-    with pytest.raises(ConfigError, match="same-frame"):
-        Sam3Config(Path("sam3.pt"), gpus=(0,), same_frame_text=False)
+
+
+def test_temporal_qc_thresholds_are_validated() -> None:
+    with pytest.raises(ConfigError, match="IoU"):
+        MaskConfig(temporal_qc_min_adjacent_iou_p05=1.1)
+    with pytest.raises(ConfigError, match="signal count"):
+        MaskConfig(temporal_qc_quarantine_signal_count=4)
