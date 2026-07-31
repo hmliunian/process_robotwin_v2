@@ -1,6 +1,8 @@
 # 文档索引
 
 - `docs/process_data_v2_architecture_design.md`：当前唯一生效的三阶段架构设计。
+- `docs/gripper_pose_roi_coverage20_experiment.md`：独立实验分支上的 gripper pose ROI
+  可行性验证；不是当前生效架构。
 - `README.md`：范围、目录和常用入口。
 - `QUICKSTART.md`：最短运行步骤。
 
