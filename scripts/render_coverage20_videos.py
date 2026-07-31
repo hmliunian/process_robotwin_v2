@@ -72,6 +72,10 @@ def _parse_args() -> argparse.Namespace:
         help="Saved run root; defaults to output.root from the pipeline config",
     )
     parser.add_argument(
+        "--run-id",
+        help="Render only this exact run instead of selecting across all saved runs",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=PROJECT_ROOT / "artifacts" / "rendered_videos" / "coverage20_best_current",
@@ -139,11 +143,14 @@ def select_best_masks(
     task: str,
     camera: str,
     episode_ids: tuple[int, ...],
+    run_id: str | None = None,
 ) -> dict[int, MaskCandidate]:
     wanted = set(episode_ids)
     candidates: dict[int, list[MaskCandidate]] = {episode_id: [] for episode_id in episode_ids}
     pattern = f"*/{task}/episode_*/{camera}/masks.npz"
     for path in runs_root.glob(pattern):
+        if run_id is not None and path.relative_to(runs_root).parts[0] != run_id:
+            continue
         episode_name = path.parents[1].name
         try:
             episode_id = int(episode_name.removeprefix("episode_"))
@@ -415,6 +422,7 @@ def main() -> None:
         task=config.dataset.task,
         camera=config.dataset.camera,
         episode_ids=episode_ids,
+        run_id=args.run_id,
     )
 
     records: list[dict[str, Any]] = []
@@ -473,7 +481,12 @@ def main() -> None:
     manifest = {
         "format": "robotwin_coverage20_overlay_videos_v2",
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "selection_rule": "maximize valid target/receiver roles, then newest masks.npz mtime",
+        "selection_rule": (
+            f"exact run_id={args.run_id}"
+            if args.run_id is not None
+            else "maximize valid target/receiver roles, then newest masks.npz mtime"
+        ),
+        "requested_run_id": args.run_id,
         "config": str(config.config_path),
         "dataset_root": str(config.dataset.root),
         "runs_root": str(runs_root),

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -9,6 +11,7 @@ from scripts.render_coverage20_videos import (
     MaskArtifact,
     _external_outline_layers,
     overlay_frame,
+    select_best_masks,
 )
 
 
@@ -64,3 +67,35 @@ def test_halo_must_cover_the_outline_radius() -> None:
             outline_radius=4,
             halo_radius=3,
         )
+
+
+def _write_candidate(root: Path, run_id: str, statuses: tuple[str, ...]) -> None:
+    path = (
+        root
+        / run_id
+        / "move_pillbottle_pad"
+        / "episode_007152"
+        / "cam_high"
+        / "masks.npz"
+    )
+    path.parent.mkdir(parents=True)
+    np.savez_compressed(
+        path,
+        roles=np.asarray(("target", "receiver")),
+        annotation_status=np.asarray(statuses),
+    )
+
+
+def test_select_best_masks_can_pin_an_exact_run(tmp_path: Path) -> None:
+    _write_candidate(tmp_path, "old-valid", ("valid", "valid"))
+    _write_candidate(tmp_path, "native-v1", ("valid", "quarantined"))
+
+    selected = select_best_masks(
+        tmp_path,
+        task="move_pillbottle_pad",
+        camera="cam_high",
+        episode_ids=(7152,),
+        run_id="native-v1",
+    )
+
+    assert selected[7152].run_id == "native-v1"

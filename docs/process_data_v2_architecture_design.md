@@ -70,7 +70,7 @@ RoboTwin episode
 ┌──────────────────────────────┐
 │ Stage 3: SAM                  │
 │ seed mask → native propagation│
-│ → same-frame text → 合成输出   │
+│ → role window → temporal QC   │
 └──────────────┬───────────────┘
                │ MaskRun
                ▼
@@ -472,52 +472,44 @@ fallback；这能避免 `food`、`toy`、`container` 等候选命中错误物体
 
 native tracking 的作用是保持实例身份，不是补全被遮挡像素。
 
-### 6.3 3C：Same-frame Text Observation
-
-在每个角色的活动输出窗口内，继续使用 seed 阶段已经确定的 `primary_query` 运行 SAM3
-text-only：
-
-```text
-target_text_t   = SAM3(frame_t, target.primary_query)
-receiver_text_t = SAM3(frame_t, receiver.primary_query)
-```
-
-不调用 Qwen，不重新生成 bbox，也不在传播过程中切换 query。
-
-### 6.4 Visible Mask Composition
+### 6.3 3C：Role-window Composition
 
 最终 mask 采用：
 
 ```text
-final_role_mask[t]
-  = native_track[t]
-  ∩ same_frame_text_mask[t]
-  ∩ canonical_envelope[role]
+final_role_mask[t] = native_track[t], t in role_output_window
+final_role_mask[t] = empty,           otherwise
 ```
 
 规则：
 
 - 时间窗外为空；
-- native track 不支持的像素为空；
-- 同帧 text 没有可见证据的像素为空；
+- 时间窗内直接保留 native tracker 的实例 mask；
+- 不再逐帧创建 text-only session，因此单帧 text detection 失败不会造成闪烁；
+- `canonical_envelope` 仅保存为 seed 几何诊断，不再裁剪后续帧；
 - target 被夹爪遮挡的部分不补全；
 - receiver 被 target 遮挡的部分不保留；
 - 不使用静态复制完整 receiver 的旧策略。
 
-这里的交集是 mask 生成规则，不引入独立的人工或 QC 阶段。
+### 6.4 Temporal QC
+
+对每个角色的输出窗口计算：coverage、存在性切换、内部断帧、相邻 IoU、质心跳变、面积比例
+跳变以及相对 seed 的最大质心距离。单一异常或连续遮挡只标记为 `review`；IoU、质心、面积
+三类严重跳变中至少两类同时越界时标记为 `quarantined`，对应像素不进入发布 NPZ。QC 只判断
+传播连续性，稳定传播到错误实例仍需独立的 identity review。
 
 ### 6.5 episode 7152 真实 smoke
 
 使用 Qwen 动态生成的 `bottle@frame0` 与 `blue square pad@frame0` 完成了真实 GPU smoke：
 
-- target native track 在 `[0,67]` 全部非空；same-frame text 在活动窗口内支持 22 帧，最终
-  target 为 22/64 帧非空；frame 27 后没有可靠 text evidence，因此按 visible-only 合同置空；
+- target native track 在活动窗口 `[4,67]` 的 64 帧全部非空，最终 target 为 64/64 帧非空；
 - receiver native track 在 `[0,132]` 全部非空；活动窗口 `[67,132]` 的 66 帧全部有最终
   visible mask；瓶子放到 pad 后，只保留未被瓶子遮挡的 pad 边缘；
+- 两个角色的存在性切换和内部断帧均为 0；
 - 四通道 `masks.npz` 中两个 gripper 通道全零且 metadata 明确为 `not_annotated`；
 - overlay 抽查确认 target 没有漂到夹爪，receiver 没有保留瓶子覆盖区域。
 
-这是实现 smoke 和算法行为核对，不是 QC 阶段，也不宣称存在像素级 ground truth。
+这是实现 smoke、时序 QC 和算法行为核对，不宣称存在像素级 ground truth。
 
 ---
 
@@ -546,13 +538,13 @@ artifacts/
             seed.mask.png
             canonical_envelope.png
             native_track.npz
-            text_observations.npz
+            temporal_qc.json
           receiver_0/
             seed.rgb.png
             seed.mask.png
             canonical_envelope.png
             native_track.npz
-            text_observations.npz
+            temporal_qc.json
           masks.npz
           frame_provenance.json
           run_manifest.json
@@ -642,6 +634,15 @@ dataset:
 .venv/bin/python scripts/render_coverage20_videos.py --overwrite
 ```
 
+实验或发布检查应使用 `--run-id <exact_run>` 固定输入，避免选择器退回较旧但状态仍为 valid 的
+错误 mask：
+
+```bash
+.venv/bin/python scripts/render_coverage20_videos.py \
+  --run-id coverage20-sam3-native-v1 \
+  --output-dir artifacts/rendered_videos/coverage20_sam3_native_v1
+```
+
 默认输出到 `artifacts/rendered_videos/coverage20_best_current/`。脚本原子替换每个 MP4，并在
 全部 episode 成功后更新 `manifest.json`；manifest 记录输入 mask hash、输出视频 hash、编码
 信息和实际渲染参数。`--alpha`、`--outline-radius`、`--halo-radius` 可以显式覆盖默认值，且
@@ -678,11 +679,14 @@ qwen:
 sam3:
   checkpoint: /path/to/sam3.pt
   gpus: [0]
-  same_frame_text: true
 
 mask:
   target_envelope_padding_px: 4
   receiver_envelope_padding_px: 4
+  temporal_qc_min_adjacent_iou_p05: 0.5
+  temporal_qc_max_centroid_jump_p95_px: 5.0
+  temporal_qc_max_area_ratio_jump_p95: 0.4
+  temporal_qc_quarantine_signal_count: 2
 
 output:
   root: artifacts
@@ -762,9 +766,10 @@ Qwen HTTP 细节、SAM3 session 细节和文件格式不进入编排函数。
 
 - seed mask 为空：该角色没有可用 mask；
 - tracking 无输出：保留已有阶段产物，不生成假的连续 mask；
+- 多个独立时序信号同时严重异常：保留 native track 诊断，但发布 mask 标为 `quarantined`；
 - 输出帧尺寸不一致：停止写出该 run。
 
-所有失败都要可追溯，但不转换为人工 review 状态。
+所有失败和隔离原因都必须可追溯。
 
 ---
 
@@ -793,7 +798,9 @@ Qwen HTTP 细节、SAM3 session 细节和文件格式不进入编排函数。
 - seed 使用 `text_only`；
 - native tracking 的 seed frame 和方向正确；
 - target / receiver 的输出窗口互不混淆；
-- visible composition 正确执行三者交集；
+- visible composition 原样保留窗口内 native mask；
+- Stage 3 不调用逐帧 text observation；
+- 时序 QC 区分单一 review 信号与多信号 quarantine；
 - 窗口外始终为空；
 - gripper 通道被标记为 `not_annotated`。
 
@@ -840,9 +847,9 @@ frame_provenance.json
 
 1. 使用 Qwen text-only 生成 seed mask；
 2. 实现 native-mask tracking；
-3. 实现活动窗口内的 same-frame text observation；
-4. 实现 visible mask composition；
-5. 导出 `masks.npz` 和 provenance。
+3. 按角色活动窗口裁剪 native track；
+4. 计算 temporal QC 并隔离严重异常；
+5. 导出 `masks.npz`、temporal QC 和 provenance。
 
 ### P4：端到端运行
 

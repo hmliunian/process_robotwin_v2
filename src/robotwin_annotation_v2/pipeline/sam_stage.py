@@ -1,10 +1,10 @@
-"""Stage 3: SAM3 text seed, native propagation, and visible composition."""
+"""Stage 3: one SAM3 text seed followed by native video propagation."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Mapping, Protocol
+from typing import Any, Literal, Mapping, Protocol
 
 import numpy as np
 from PIL import Image
@@ -42,16 +42,6 @@ class SamBackend(Protocol):
         frame_shape: tuple[int, int],
     ) -> np.ndarray: ...
 
-    def text_masks(
-        self,
-        resource_path: Path,
-        text: str,
-        *,
-        frame_ids: tuple[int, ...],
-        frame_count: int,
-        frame_shape: tuple[int, int],
-    ) -> dict[int, np.ndarray]: ...
-
     def propagate_mask(
         self,
         resource_path: Path,
@@ -66,6 +56,41 @@ class SamBackend(Protocol):
 
 
 @dataclass(frozen=True)
+class TemporalMaskQc:
+    status: Literal["pass", "review", "quarantine"]
+    window_frames: int
+    nonempty_frames: int
+    coverage: float
+    presence_transitions: int
+    internal_missing_frames: int
+    adjacent_iou_mean: float | None
+    adjacent_iou_p05: float | None
+    centroid_jump_p95_px: float | None
+    area_ratio_jump_p95: float | None
+    max_reference_centroid_distance_px: float | None
+    issues: tuple[str, ...]
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "format_version": "robotwin_temporal_mask_qc_v1",
+            "status": self.status,
+            "window_frames": self.window_frames,
+            "nonempty_frames": self.nonempty_frames,
+            "coverage": self.coverage,
+            "presence_transitions": self.presence_transitions,
+            "internal_missing_frames": self.internal_missing_frames,
+            "adjacent_iou_mean": self.adjacent_iou_mean,
+            "adjacent_iou_p05": self.adjacent_iou_p05,
+            "centroid_jump_p95_px": self.centroid_jump_p95_px,
+            "area_ratio_jump_p95": self.area_ratio_jump_p95,
+            "max_reference_centroid_distance_px": (
+                self.max_reference_centroid_distance_px
+            ),
+            "issues": list(self.issues),
+        }
+
+
+@dataclass(frozen=True)
 class RoleMaskData:
     role: Literal["target", "receiver"]
     status: MaskStatus
@@ -75,8 +100,8 @@ class RoleMaskData:
     seed_mask: np.ndarray | None
     canonical_envelope: np.ndarray | None
     native_track: np.ndarray
-    text_observations: np.ndarray
     visible_mask: np.ndarray
+    temporal_qc: TemporalMaskQc | None
     failure: str | None
 
     @property
@@ -132,25 +157,141 @@ def dilate_envelope(mask: np.ndarray, padding: int) -> np.ndarray:
 
 def compose_visible_mask(
     native_track: np.ndarray,
-    text_observations: np.ndarray,
-    canonical_envelope: np.ndarray,
     output_window: FrameWindow,
 ) -> np.ndarray:
-    """Keep pixels supported by identity, same-frame visibility, and seed geometry."""
+    """Crop a native identity track to the role's inclusive output window."""
 
     native = np.asarray(native_track, dtype=bool)
-    observed = np.asarray(text_observations, dtype=bool)
-    envelope = np.asarray(canonical_envelope, dtype=bool)
-    if native.shape != observed.shape or native.ndim != 3:
-        raise ValueError("native and text masks must have the same [T,H,W] shape")
-    if envelope.shape != native.shape[1:]:
-        raise ValueError("canonical envelope must match the video frame shape")
+    if native.ndim != 3:
+        raise ValueError("native mask must have [T,H,W] shape")
     if output_window.end >= native.shape[0]:
         raise ValueError("output window extends beyond the mask stack")
-    visible = native & observed & envelope[None, :, :]
+    visible = native.copy()
     visible[: output_window.start] = False
     visible[output_window.end + 1 :] = False
     return visible
+
+
+def _centroid(mask: np.ndarray) -> np.ndarray | None:
+    rows, columns = np.nonzero(mask)
+    if not rows.size:
+        return None
+    return np.asarray([columns.mean(), rows.mean()], dtype=np.float64)
+
+
+def _p95(values: list[float]) -> float | None:
+    return None if not values else float(np.quantile(values, 0.95))
+
+
+def evaluate_temporal_mask(
+    mask_stack: np.ndarray,
+    output_window: FrameWindow,
+    mask_config: MaskConfig,
+    *,
+    reference_mask: np.ndarray | None = None,
+) -> TemporalMaskQc:
+    """Measure continuity and quarantine tracks with several severe jump signals."""
+
+    masks = np.asarray(mask_stack, dtype=bool)
+    if masks.ndim != 3:
+        raise ValueError("temporal mask must have [T,H,W] shape")
+    if output_window.end >= masks.shape[0]:
+        raise ValueError("output window extends beyond the temporal mask")
+    if reference_mask is not None and np.asarray(reference_mask).shape != masks.shape[1:]:
+        raise ValueError("reference mask must match the temporal mask frame shape")
+
+    window = masks[output_window.start : output_window.end + 1]
+    flattened = window.reshape(window.shape[0], -1)
+    present = flattened.any(axis=1)
+    nonempty_frames = int(present.sum())
+    presence_transitions = int(np.count_nonzero(present[1:] != present[:-1]))
+    present_indices = np.flatnonzero(present)
+    internal_missing_frames = (
+        0
+        if present_indices.size < 2
+        else int((~present[present_indices[0] : present_indices[-1] + 1]).sum())
+    )
+
+    adjacent_ious: list[float] = []
+    centroid_jumps: list[float] = []
+    area_ratio_jumps: list[float] = []
+    centroids: list[np.ndarray] = []
+    previous_centroid: np.ndarray | None = None
+    previous_area: int | None = None
+    for frame in window:
+        area = int(frame.sum())
+        centroid = _centroid(frame)
+        if centroid is not None:
+            centroids.append(centroid)
+        if previous_centroid is not None and centroid is not None:
+            centroid_jumps.append(float(np.linalg.norm(centroid - previous_centroid)))
+        if previous_area is not None and previous_area > 0 and area > 0:
+            area_ratio_jumps.append(abs(area - previous_area) / previous_area)
+        previous_centroid = centroid
+        previous_area = area
+    for left, right in zip(window, window[1:], strict=False):
+        if not left.any() or not right.any():
+            continue
+        union = int((left | right).sum())
+        adjacent_ious.append(int((left & right).sum()) / union)
+
+    adjacent_iou_mean = None if not adjacent_ious else float(np.mean(adjacent_ious))
+    adjacent_iou_p05 = (
+        None if not adjacent_ious else float(np.quantile(adjacent_ious, 0.05))
+    )
+    centroid_jump_p95_px = _p95(centroid_jumps)
+    area_ratio_jump_p95 = _p95(area_ratio_jumps)
+    reference_centroid = (
+        None if reference_mask is None else _centroid(np.asarray(reference_mask, dtype=bool))
+    )
+    max_reference_distance = (
+        None
+        if reference_centroid is None or not centroids
+        else max(float(np.linalg.norm(value - reference_centroid)) for value in centroids)
+    )
+
+    severe_signals: list[str] = []
+    if (
+        adjacent_iou_p05 is not None
+        and adjacent_iou_p05 < mask_config.temporal_qc_min_adjacent_iou_p05
+    ):
+        severe_signals.append("low_adjacent_iou_p05")
+    if (
+        centroid_jump_p95_px is not None
+        and centroid_jump_p95_px > mask_config.temporal_qc_max_centroid_jump_p95_px
+    ):
+        severe_signals.append("large_centroid_jump_p95")
+    if (
+        area_ratio_jump_p95 is not None
+        and area_ratio_jump_p95 > mask_config.temporal_qc_max_area_ratio_jump_p95
+    ):
+        severe_signals.append("large_area_ratio_jump_p95")
+
+    issues = list(severe_signals)
+    if nonempty_frames < len(window):
+        issues.append("incomplete_window_coverage")
+    if internal_missing_frames:
+        issues.append("internal_missing_frames")
+    if len(severe_signals) >= mask_config.temporal_qc_quarantine_signal_count:
+        status: Literal["pass", "review", "quarantine"] = "quarantine"
+    elif issues:
+        status = "review"
+    else:
+        status = "pass"
+    return TemporalMaskQc(
+        status=status,
+        window_frames=len(window),
+        nonempty_frames=nonempty_frames,
+        coverage=float(present.mean()),
+        presence_transitions=presence_transitions,
+        internal_missing_frames=internal_missing_frames,
+        adjacent_iou_mean=adjacent_iou_mean,
+        adjacent_iou_p05=adjacent_iou_p05,
+        centroid_jump_p95_px=centroid_jump_p95_px,
+        area_ratio_jump_p95=area_ratio_jump_p95,
+        max_reference_centroid_distance_px=max_reference_distance,
+        issues=tuple(issues),
+    )
 
 
 def _empty_role(
@@ -165,7 +306,6 @@ def _empty_role(
     seed_mask: np.ndarray | None = None,
     envelope: np.ndarray | None = None,
     native: np.ndarray | None = None,
-    text: np.ndarray | None = None,
 ) -> RoleMaskData:
     empty = np.zeros((frame_count, *frame_shape), dtype=bool)
     return RoleMaskData(
@@ -177,8 +317,8 @@ def _empty_role(
         seed_mask=seed_mask,
         canonical_envelope=envelope,
         native_track=empty if native is None else native,
-        text_observations=empty if text is None else text,
         visible_mask=empty,
+        temporal_qc=None,
         failure=failure,
     )
 
@@ -189,6 +329,7 @@ def _run_role(
     semantic: RoleSemanticPlan,
     output_window: FrameWindow,
     padding: int,
+    mask_config: MaskConfig,
     context: LoopContext,
     backend: SamBackend,
     resource_path: Path,
@@ -246,48 +387,36 @@ def _run_role(
     if native.shape != expected_shape:
         raise SamStageError(f"{role} native track has shape {native.shape}")
 
-    frame_ids = tuple(range(output_window.start, output_window.end + 1))
-    measurements = backend.text_masks(
-        resource_path,
-        query,
-        frame_ids=frame_ids,
-        frame_count=context.frame_count,
-        frame_shape=frame_shape,
+    visible = compose_visible_mask(native, output_window)
+    temporal_qc = evaluate_temporal_mask(
+        visible,
+        output_window,
+        mask_config,
+        reference_mask=seed_mask,
     )
-    text = np.zeros(expected_shape, dtype=bool)
-    for frame_id in frame_ids:
-        measurement = np.asarray(
-            measurements.get(frame_id, np.zeros(frame_shape, dtype=bool)),
-            dtype=bool,
-        )
-        if measurement.shape != frame_shape:
-            raise SamStageError(
-                f"{role} text observation frame {frame_id} has shape {measurement.shape}"
-            )
-        text[frame_id] = measurement
-    visible = compose_visible_mask(native, text, envelope, output_window)
 
     native_window = native[output_window.start : output_window.end + 1]
-    text_window = text[output_window.start : output_window.end + 1]
     if not native_window.any():
         failure = "native_track_empty_in_output_window"
-    elif not text_window.any():
-        failure = "same_frame_text_empty_in_output_window"
-    elif not visible.any():
-        failure = "visible_intersection_empty"
+        status = MaskStatus.FAILED
+    elif temporal_qc.status == "quarantine":
+        failure = "temporal_qc_quarantine:" + ",".join(temporal_qc.issues)
+        status = MaskStatus.QUARANTINED
+        visible[:] = False
     else:
         failure = None
+        status = MaskStatus.OK
     return RoleMaskData(
         role=role,
-        status=MaskStatus.OK if failure is None else MaskStatus.FAILED,
+        status=status,
         seed_frame_id=seed_frame,
         primary_query=query,
         output_window=output_window,
         seed_mask=seed_mask,
         canonical_envelope=envelope,
         native_track=native,
-        text_observations=text,
         visible_mask=visible,
+        temporal_qc=temporal_qc,
         failure=failure,
     )
 
@@ -310,6 +439,7 @@ def run_sam_stage(
         semantic=semantic_plan.target,
         output_window=context.events.target_window,
         padding=mask_config.target_envelope_padding_px,
+        mask_config=mask_config,
         context=context,
         backend=backend,
         resource_path=resource_path,
@@ -320,6 +450,7 @@ def run_sam_stage(
         semantic=semantic_plan.receiver,
         output_window=context.events.receiver_window,
         padding=mask_config.receiver_envelope_padding_px,
+        mask_config=mask_config,
         context=context,
         backend=backend,
         resource_path=resource_path,
@@ -354,7 +485,7 @@ def save_sam_artifacts(
         seed_mask_path: str | None = None
         envelope_path: str | None = None
         native_path: str | None = None
-        text_path: str | None = None
+        temporal_qc_path: str | None = None
         if data.seed_frame_id is not None and data.seed_mask is not None:
             seed_image = seed_images.get(data.seed_frame_id)
             if seed_image is None:
@@ -379,12 +510,13 @@ def save_sam_artifacts(
                 role_dir / "native_track.npz",
                 masks=data.native_track,
             )
-            text_file = store.write_npz(
-                role_dir / "text_observations.npz",
-                masks=data.text_observations,
-            )
             native_path = str(native_file.relative_to(episode_dir))
-            text_path = str(text_file.relative_to(episode_dir))
+            if data.temporal_qc is not None:
+                temporal_qc_file = store.write_json(
+                    role_dir / "temporal_qc.json",
+                    data.temporal_qc.to_json(),
+                )
+                temporal_qc_path = str(temporal_qc_file.relative_to(episode_dir))
         role_results.append(
             RoleMaskResult(
                 role=data.role,
@@ -396,32 +528,39 @@ def save_sam_artifacts(
                 seed_mask_path=seed_mask_path,
                 canonical_envelope_path=envelope_path,
                 native_track_path=native_path,
-                text_observation_path=text_path,
+                temporal_qc_path=temporal_qc_path,
                 nonempty_frames=len(data.nonempty_frame_ids),
                 failure=data.failure,
             )
         )
 
-    annotation_status = np.asarray(
+    def annotation_status(data: RoleMaskData) -> str:
+        if data.status is MaskStatus.OK:
+            return "valid"
+        if data.status is MaskStatus.QUARANTINED:
+            return "quarantined"
+        return "failed"
+
+    annotation_statuses = np.asarray(
         [
-            "valid" if result.target.status is MaskStatus.OK else "failed",
-            "valid" if result.receiver.status is MaskStatus.OK else "failed",
+            annotation_status(result.target),
+            annotation_status(result.receiver),
             "not_annotated",
             "not_annotated",
         ]
     )
     masks_path = store.write_npz(
         episode_dir / "masks.npz",
-        format_version=np.asarray("robotwin_visible_masks_v1"),
+        format_version=np.asarray("robotwin_visible_masks_v2"),
         frame_count=np.asarray(result.frame_count, dtype=np.int64),
         masks=result.masks,
         instance_names=np.asarray(INSTANCE_NAMES),
         roles=np.asarray(ROLES),
-        annotation_status=annotation_status,
+        annotation_status=annotation_statuses,
     )
     provenance = {
-        "format_version": "robotwin_frame_provenance_v1",
-        "composition": "native_track & same_frame_text & canonical_envelope",
+        "format_version": "robotwin_frame_provenance_v2",
+        "composition": "native_track clipped_to role_output_window",
         "channels": {
             "target_0": {
                 "status": result.target.status.value,
@@ -430,6 +569,11 @@ def save_sam_artifacts(
                 "failure": result.target.failure,
                 "output_window": result.target.output_window.to_json(),
                 "nonempty_frame_ids": list(result.target.nonempty_frame_ids),
+                "temporal_qc": (
+                    None
+                    if result.target.temporal_qc is None
+                    else result.target.temporal_qc.to_json()
+                ),
             },
             "receiver_0": {
                 "status": result.receiver.status.value,
@@ -438,6 +582,11 @@ def save_sam_artifacts(
                 "failure": result.receiver.failure,
                 "output_window": result.receiver.output_window.to_json(),
                 "nonempty_frame_ids": list(result.receiver.nonempty_frame_ids),
+                "temporal_qc": (
+                    None
+                    if result.receiver.temporal_qc is None
+                    else result.receiver.temporal_qc.to_json()
+                ),
             },
             "gripper_left": {"status": "not_annotated"},
             "gripper_right": {"status": "not_annotated"},
@@ -458,7 +607,9 @@ def save_sam_artifacts(
             "algorithm": {
                 "seed": "sam3_text_only_primary_query",
                 "propagation": "sam3_native_mask_forward_backward",
-                "visibility": "native_track & same_frame_text & canonical_envelope",
+                "visibility": "native_track clipped_to role_output_window",
+                "per_frame_text_observation": False,
+                "canonical_envelope_usage": "seed_diagnostic_only",
                 "automatic_query_fallback": False,
                 "amodal_completion": False,
             },
