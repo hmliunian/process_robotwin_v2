@@ -1,0 +1,773 @@
+"""Candidate generation contracts and Qwen QC for one gripper propagation seed."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import Any, Mapping, Protocol, Sequence
+
+import cv2
+import numpy as np
+from PIL import Image, ImageDraw
+
+from ..adapters.qwen_client import QwenCompletion, image_data_url
+from ..models.loop_context import EpisodeRef, LoopContext, LoopEvents
+from ..models.mask_qc import MaskQCStatus
+from ..pipeline.mask_qc import MaskQCError, parse_mask_qc_response
+from .gripper_pose_roi import (
+    ObjectExclusionResult,
+    ProjectedGripperRoi,
+    exclude_known_objects,
+)
+
+
+CYAN = np.asarray([15, 230, 185], dtype=np.uint8)
+ORANGE = np.asarray([255, 126, 35], dtype=np.uint8)
+BLUE = np.asarray([70, 105, 255], dtype=np.uint8)
+YELLOW_RGB = (255, 240, 68)
+RED_RGB = (255, 59, 59)
+
+
+class GripperQwenClient(Protocol):
+    model_id: str
+
+    def health(self) -> dict[str, Any]: ...
+
+    def complete(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        max_tokens: int,
+    ) -> QwenCompletion: ...
+
+
+@dataclass(frozen=True)
+class KnownObjectTracks:
+    target: np.ndarray
+    receiver: np.ndarray
+    target_seed_mask: np.ndarray
+    receiver_seed_mask: np.ndarray
+    target_seed_frame: int
+    receiver_seed_frame: int
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class GripperSeedCandidate:
+    candidate_id: str
+    frame_id: int
+    phase: str
+    prompt_mode: str
+    prompt_text: str | None
+    raw_mask: np.ndarray
+    roi_mask: np.ndarray
+    cropped_mask: np.ndarray
+    clean_mask: np.ndarray
+    target_removed: np.ndarray
+    receiver_removed: np.ndarray
+    raw_pixels: int
+    roi_pixels: int
+    cropped_pixels: int
+    clean_pixels: int
+    target_removed_pixels: int
+    receiver_removed_pixels: int
+    dark_fraction: float | None
+    component_count: int
+    largest_component_fraction: float | None
+    tcp_distance_px: float | None
+    basic_valid: bool
+    basic_reason: str | None = None
+    duplicate_of: str | None = None
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "candidate_id": self.candidate_id,
+            "frame_id": self.frame_id,
+            "phase": self.phase,
+            "prompt_mode": self.prompt_mode,
+            "prompt_text": self.prompt_text,
+            "raw_pixels": self.raw_pixels,
+            "roi_pixels": self.roi_pixels,
+            "cropped_pixels": self.cropped_pixels,
+            "clean_pixels": self.clean_pixels,
+            "target_removed_pixels": self.target_removed_pixels,
+            "receiver_removed_pixels": self.receiver_removed_pixels,
+            "dark_fraction": self.dark_fraction,
+            "component_count": self.component_count,
+            "largest_component_fraction": self.largest_component_fraction,
+            "tcp_distance_px": self.tcp_distance_px,
+            "basic_valid": self.basic_valid,
+            "basic_reason": self.basic_reason,
+            "duplicate_of": self.duplicate_of,
+        }
+
+
+@dataclass(frozen=True)
+class GripperSeedQCResult:
+    status: MaskQCStatus
+    selected_candidate: str | None
+    confidence: float | None
+    reason: str
+    candidates: tuple[GripperSeedCandidate, ...]
+    model: str | None = None
+    raw_response: str | None = None
+    rendered_prompt: str | None = None
+    health: dict[str, Any] | None = None
+    forced_fallback: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.reason.strip():
+            raise ValueError("gripper QC reason must be non-empty")
+        if self.confidence is not None and not 0.0 <= self.confidence <= 1.0:
+            raise ValueError("gripper QC confidence must be between 0 and 1")
+        if (self.status is MaskQCStatus.PASSED) != (
+            self.selected_candidate is not None
+        ):
+            raise ValueError("only passed gripper QC may select a candidate")
+        if self.forced_fallback and self.selected_candidate is None:
+            raise ValueError("a forced gripper fallback must select a candidate")
+
+    @property
+    def selected(self) -> GripperSeedCandidate | None:
+        if self.selected_candidate is None:
+            return None
+        return next(
+            candidate
+            for candidate in self.candidates
+            if candidate.candidate_id == self.selected_candidate
+        )
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "format_version": "robotwin_gripper_seed_qwen_qc_v1",
+            "status": self.status.value,
+            "selected_candidate": self.selected_candidate,
+            "confidence": self.confidence,
+            "reason": self.reason,
+            "model": self.model,
+            "raw_response": self.raw_response,
+            "rendered_prompt": self.rendered_prompt,
+            "health": self.health,
+            "forced_fallback": self.forced_fallback,
+            "candidates": [candidate.to_json() for candidate in self.candidates],
+        }
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def load_qc_native_object_tracks(
+    run_root: Path,
+    ref: EpisodeRef,
+    *,
+    expected_shape: tuple[int, int, int],
+) -> KnownObjectTracks:
+    """Load identity-QC-passed full native tracks by structured role metadata."""
+
+    episode_dir = (
+        run_root.expanduser().resolve()
+        / ref.task
+        / f"episode_{ref.episode_id}"
+        / ref.camera
+    )
+    manifest_path = episode_dir / "run_manifest.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"object run manifest does not exist: {manifest_path}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    episode = manifest.get("episode", {})
+    expected_episode = {
+        "task": ref.task,
+        "episode_index": ref.episode_index,
+        "episode_id": ref.episode_id,
+        "camera": ref.camera,
+    }
+    for key, expected in expected_episode.items():
+        if episode.get(key) != expected:
+            raise ValueError(
+                f"object manifest has {key}={episode.get(key)!r}, expected {expected!r}"
+            )
+    if manifest.get("frame_count") != expected_shape[0]:
+        raise ValueError("object manifest frame_count does not match the episode")
+
+    role_records = manifest.get("roles")
+    if not isinstance(role_records, list):
+        raise ValueError("object manifest roles must be a list")
+    tracks: dict[str, np.ndarray] = {}
+    seed_masks: dict[str, np.ndarray] = {}
+    seed_frames: dict[str, int] = {}
+    sources: dict[str, Any] = {}
+    root = episode_dir.resolve()
+    for role in ("target", "receiver"):
+        matches = [record for record in role_records if record.get("role") == role]
+        if len(matches) != 1:
+            raise ValueError(f"object manifest must contain exactly one {role} role")
+        record = matches[0]
+        if record.get("status") != "ok" or record.get("qc_status") != "passed":
+            raise ValueError(f"object manifest {role} is not status=ok and qc_status=passed")
+        relative_path = record.get("native_track_path")
+        if not isinstance(relative_path, str) or not relative_path.strip():
+            raise ValueError(f"object manifest {role} native_track_path is invalid")
+        track_path = (episode_dir / relative_path).resolve()
+        try:
+            track_path.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(f"object manifest {role} track escapes episode directory") from exc
+        if not track_path.is_file():
+            raise FileNotFoundError(f"object native track does not exist: {track_path}")
+        with np.load(track_path, allow_pickle=False) as archive:
+            if "masks" not in archive.files:
+                raise ValueError(f"object native track has no masks array: {track_path}")
+            track = np.asarray(archive["masks"], dtype=bool)
+        if track.shape != expected_shape:
+            raise ValueError(
+                f"object native track {track_path} has shape {track.shape}, "
+                f"expected {expected_shape}"
+            )
+        tracks[role] = track
+        seed_frame = record.get("seed_frame_id")
+        seed_relative_path = record.get("seed_mask_path")
+        if not isinstance(seed_frame, int) or not 0 <= seed_frame < expected_shape[0]:
+            raise ValueError(f"object manifest {role} seed_frame_id is invalid")
+        if not isinstance(seed_relative_path, str) or not seed_relative_path.strip():
+            raise ValueError(f"object manifest {role} seed_mask_path is invalid")
+        seed_path = (episode_dir / seed_relative_path).resolve()
+        try:
+            seed_path.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(f"object manifest {role} seed escapes episode directory") from exc
+        if not seed_path.is_file():
+            raise FileNotFoundError(f"object seed mask does not exist: {seed_path}")
+        with Image.open(seed_path) as image:
+            seed_mask = np.asarray(image.convert("L"), dtype=np.uint8) != 0
+        if seed_mask.shape != expected_shape[1:] or not seed_mask.any():
+            raise ValueError(f"object {role} seed mask is empty or has the wrong shape")
+        seed_masks[role] = seed_mask
+        seed_frames[role] = seed_frame
+        sources[role] = {
+            "native_track_path": str(track_path),
+            "native_track_sha256": _sha256(track_path),
+            "seed_frame_id": seed_frame,
+            "seed_mask_path": str(seed_path),
+            "seed_mask_sha256": _sha256(seed_path),
+            "seed_pixels": int(seed_mask.sum()),
+            "primary_query": record.get("primary_query"),
+            "qc_selected_candidate": record.get("qc_selected_candidate"),
+            "qc_reason": record.get("qc_reason"),
+        }
+    return KnownObjectTracks(
+        target=tracks["target"],
+        receiver=tracks["receiver"],
+        target_seed_mask=seed_masks["target"],
+        receiver_seed_mask=seed_masks["receiver"],
+        target_seed_frame=seed_frames["target"],
+        receiver_seed_frame=seed_frames["receiver"],
+        provenance={
+            "run_id": manifest.get("run_id"),
+            "manifest": str(manifest_path),
+            "manifest_sha256": _sha256(manifest_path),
+            "roles": sources,
+        },
+    )
+
+
+def phase_for_frame(frame_id: int, events: LoopEvents) -> str:
+    if frame_id < events.t_close_start:
+        return "approach"
+    if frame_id <= events.t_close_done:
+        return "close"
+    if frame_id < events.t_open_start:
+        return "transport"
+    return "release"
+
+
+def gripper_keyframes(
+    rois: Mapping[int, ProjectedGripperRoi],
+    events: LoopEvents,
+    *,
+    frame_shape: tuple[int, int],
+) -> tuple[int, ...]:
+    """Return the same seven state-derived review frames used by the experiment."""
+
+    height, width = frame_shape
+    visible = [
+        frame_id
+        for frame_id, roi in sorted(rois.items())
+        if 0 <= roi.tcp_pixel_xy[0] < width and 0 <= roi.tcp_pixel_xy[1] < height
+    ]
+    first_tcp = visible[0] if visible else events.t_close_start
+    values = (
+        first_tcp,
+        max(first_tcp, events.t_close_start - 1),
+        events.t_close_done,
+        (events.t_close_done + events.t_open_start) // 2,
+        max(events.t_close_done + 1, events.t_open_start - 1),
+        events.t_open_start,
+        events.t_open_done,
+    )
+    return tuple(dict.fromkeys(int(value) for value in values))
+
+
+def normalized_roi_box(
+    roi: ProjectedGripperRoi,
+    frame_shape: tuple[int, int],
+) -> tuple[float, float, float, float] | None:
+    height, width = frame_shape
+    x0 = max(0, min(width, int(np.floor(roi.bbox_xyxy[0]))))
+    y0 = max(0, min(height, int(np.floor(roi.bbox_xyxy[1]))))
+    x1 = max(0, min(width, int(np.ceil(roi.bbox_xyxy[2]))))
+    y1 = max(0, min(height, int(np.ceil(roi.bbox_xyxy[3]))))
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return (x0 / width, y0 / height, x1 / width, y1 / height)
+
+
+def _component_metrics(mask: np.ndarray) -> tuple[int, float | None]:
+    value = np.asarray(mask, dtype=np.uint8)
+    if not value.any():
+        return 0, None
+    count, labels, stats, _centroids = cv2.connectedComponentsWithStats(value, 8)
+    areas = stats[1:, cv2.CC_STAT_AREA]
+    component_count = max(0, count - 1)
+    return component_count, float(areas.max() / areas.sum())
+
+
+def _tcp_distance(mask: np.ndarray, tcp_xy: np.ndarray) -> float | None:
+    rows, columns = np.nonzero(mask)
+    if not rows.size:
+        return None
+    x, y = (float(value) for value in tcp_xy)
+    squared = (columns.astype(np.float64) - x) ** 2 + (rows.astype(np.float64) - y) ** 2
+    return float(np.sqrt(squared.min()))
+
+
+def build_gripper_seed_candidate(
+    *,
+    candidate_id: str,
+    frame_id: int,
+    events: LoopEvents,
+    prompt_mode: str,
+    prompt_text: str | None,
+    raw_mask: np.ndarray,
+    roi_mask: np.ndarray,
+    target_mask: np.ndarray,
+    receiver_mask: np.ndarray,
+    rgb: np.ndarray,
+    tcp_pixel_xy: np.ndarray,
+    minimum_pixels: int = 24,
+) -> GripperSeedCandidate:
+    raw = np.asarray(raw_mask, dtype=bool)
+    roi = np.asarray(roi_mask, dtype=bool)
+    target = np.asarray(target_mask, dtype=bool)
+    receiver = np.asarray(receiver_mask, dtype=bool)
+    image = np.asarray(rgb, dtype=np.uint8)
+    if raw.shape != roi.shape or target.shape != raw.shape or receiver.shape != raw.shape:
+        raise ValueError("gripper candidate and constraint masks must have identical shapes")
+    if image.shape != (*raw.shape, 3):
+        raise ValueError("gripper candidate RGB must match mask shape")
+    cropped = raw & roi
+    excluded: ObjectExclusionResult = exclude_known_objects(cropped, target, receiver)
+    clean = excluded.gripper_mask
+    clean_pixels = int(clean.sum())
+    components, largest_fraction = _component_metrics(clean)
+    dark_fraction = (
+        None
+        if not clean_pixels
+        else float((image[clean].max(axis=1) < 70).mean())
+    )
+    if clean_pixels == 0:
+        reason = "empty_after_pose_and_object_constraints"
+    elif clean_pixels < minimum_pixels:
+        reason = "too_few_pixels_after_constraints"
+    else:
+        reason = None
+    return GripperSeedCandidate(
+        candidate_id=candidate_id,
+        frame_id=frame_id,
+        phase=phase_for_frame(frame_id, events),
+        prompt_mode=prompt_mode,
+        prompt_text=prompt_text,
+        raw_mask=raw,
+        roi_mask=roi,
+        cropped_mask=cropped,
+        clean_mask=clean,
+        target_removed=excluded.target_removed,
+        receiver_removed=excluded.receiver_removed,
+        raw_pixels=int(raw.sum()),
+        roi_pixels=int(roi.sum()),
+        cropped_pixels=int(cropped.sum()),
+        clean_pixels=clean_pixels,
+        target_removed_pixels=int(excluded.target_removed.sum()),
+        receiver_removed_pixels=int(excluded.receiver_removed.sum()),
+        dark_fraction=dark_fraction,
+        component_count=components,
+        largest_component_fraction=largest_fraction,
+        tcp_distance_px=_tcp_distance(clean, tcp_pixel_xy),
+        basic_valid=reason is None,
+        basic_reason=reason,
+    )
+
+
+def mark_same_frame_duplicates(
+    candidates: Sequence[GripperSeedCandidate],
+    *,
+    iou_threshold: float = 0.98,
+) -> tuple[GripperSeedCandidate, ...]:
+    if not 0.0 <= iou_threshold <= 1.0:
+        raise ValueError("duplicate IoU threshold must be in [0, 1]")
+    result: list[GripperSeedCandidate] = []
+    for candidate in candidates:
+        duplicate_of: str | None = None
+        if candidate.basic_valid:
+            for previous in result:
+                if not previous.basic_valid or previous.frame_id != candidate.frame_id:
+                    continue
+                union = previous.clean_mask | candidate.clean_mask
+                iou = 1.0 if not union.any() else float(
+                    (previous.clean_mask & candidate.clean_mask).sum() / union.sum()
+                )
+                if iou >= iou_threshold:
+                    duplicate_of = previous.candidate_id
+                    break
+        if duplicate_of is None:
+            result.append(candidate)
+        else:
+            result.append(
+                replace(
+                    candidate,
+                    basic_valid=False,
+                    basic_reason="duplicate_same_frame_candidate",
+                    duplicate_of=duplicate_of,
+                )
+            )
+    return tuple(result)
+
+
+def _outline(mask: np.ndarray, radius: int = 2) -> np.ndarray:
+    value = np.asarray(mask, dtype=np.uint8)
+    if not value.any():
+        return value.astype(bool)
+    kernel_size = 2 * radius + 1
+    kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
+    dilated = cv2.dilate(value, kernel, iterations=1)
+    eroded = cv2.erode(value, np.ones((3, 3), dtype=np.uint8), iterations=1)
+    return (dilated != eroded)
+
+
+def render_gripper_candidate_panel(
+    rgb: np.ndarray | Image.Image,
+    candidate: GripperSeedCandidate,
+    roi: ProjectedGripperRoi,
+) -> Image.Image:
+    source = np.asarray(
+        rgb.convert("RGB") if isinstance(rgb, Image.Image) else rgb,
+        dtype=np.uint8,
+    )
+    if source.shape != (*candidate.clean_mask.shape, 3):
+        raise ValueError("candidate panel RGB shape does not match candidate mask")
+    canvas = source.copy()
+    canvas[_outline(candidate.target_removed)] = ORANGE
+    canvas[_outline(candidate.receiver_removed)] = BLUE
+    canvas[_outline(candidate.clean_mask)] = CYAN
+    polygon = np.rint(roi.hull_pixels_xy).astype(np.int32).reshape(-1, 1, 2)
+    if len(polygon) >= 3:
+        cv2.polylines(canvas, [polygon], True, YELLOW_RGB, 1, cv2.LINE_AA)
+    x, y = np.rint(roi.tcp_pixel_xy).astype(int)
+    cv2.line(canvas, (x - 4, y), (x + 4, y), RED_RGB, 1, cv2.LINE_AA)
+    cv2.line(canvas, (x, y - 4), (x, y + 4), RED_RGB, 1, cv2.LINE_AA)
+    panel = Image.fromarray(canvas, mode="RGB")
+    draw = ImageDraw.Draw(panel)
+    draw.rectangle((0, 0, panel.width, 20), fill=(0, 0, 0))
+    text = (
+        f"{candidate.candidate_id} f{candidate.frame_id} {candidate.phase} "
+        f"{candidate.prompt_mode} clean={candidate.clean_pixels}"
+    )
+    draw.text((4, 4), text, fill=(255, 255, 255))
+    return panel
+
+
+def render_gripper_candidate_sheet(
+    candidates: Sequence[GripperSeedCandidate],
+    panels: Mapping[str, Image.Image],
+    *,
+    columns: int = 4,
+) -> Image.Image:
+    if columns < 1 or not candidates:
+        raise ValueError("candidate sheet requires candidates and positive columns")
+    panel_width, panel_height = next(iter(panels.values())).size
+    rows = math.ceil(len(candidates) / columns)
+    sheet = Image.new("RGB", (panel_width * columns, panel_height * rows), "#111111")
+    for index, candidate in enumerate(candidates):
+        sheet.paste(
+            panels[candidate.candidate_id],
+            ((index % columns) * panel_width, (index // columns) * panel_height),
+        )
+    return sheet
+
+
+def _candidate_record(candidate: GripperSeedCandidate) -> str:
+    dark = "null" if candidate.dark_fraction is None else f"{candidate.dark_fraction:.3f}"
+    tcp = "null" if candidate.tcp_distance_px is None else f"{candidate.tcp_distance_px:.1f}"
+    return (
+        f"- {candidate.candidate_id}: frame={candidate.frame_id}, phase={candidate.phase}, "
+        f"method={candidate.prompt_mode}, clean_pixels={candidate.clean_pixels}, "
+        f"target_removed={candidate.target_removed_pixels}, "
+        f"receiver_removed={candidate.receiver_removed_pixels}, "
+        f"dark_fraction={dark}, tcp_distance_px={tcp}"
+    )
+
+
+def _fallback_candidate(candidates: Sequence[GripperSeedCandidate]) -> GripperSeedCandidate:
+    """Select a deterministic least-bad seed when Qwen cannot decide.
+
+    The experiment intentionally keeps this fallback simple and auditable.  A
+    basic-valid candidate wins over an invalid one, then candidates with more
+    usable pixels, a larger connected component, and a darker visible region
+    are preferred.  The final terms discourage fragmented masks and prefer a
+    component close to the projected TCP.  ``max`` is stable for ties, so the
+    original candidate order remains the last tie breaker.
+    """
+
+    if not candidates:
+        raise ValueError("gripper fallback requires at least one candidate")
+
+    def score(candidate: GripperSeedCandidate) -> tuple[float, ...]:
+        return (
+            float(candidate.basic_valid),
+            float(candidate.clean_pixels),
+            float(candidate.largest_component_fraction or 0.0),
+            float(candidate.dark_fraction or 0.0),
+            float(-candidate.component_count),
+            float(-(candidate.tcp_distance_px or 1e9)),
+        )
+
+    return max(candidates, key=score)
+
+
+def build_gripper_qwen_request(
+    context: LoopContext,
+    candidates: Sequence[GripperSeedCandidate],
+    panels: Mapping[str, Image.Image],
+    context_images: Mapping[int, Image.Image],
+    *,
+    prompt_template: str,
+) -> tuple[str, list[dict[str, Any]]]:
+    valid = tuple(candidate for candidate in candidates if candidate.basic_valid)
+    if not valid:
+        raise ValueError("Qwen request requires at least one valid gripper candidate")
+    candidate_marker = "{candidate_panels}"
+    context_marker = "{context_frames}"
+    if prompt_template.count(candidate_marker) != 1:
+        raise ValueError("gripper QC template must contain {candidate_panels} once")
+    if prompt_template.count(context_marker) != 1:
+        raise ValueError("gripper QC template must contain {context_frames} once")
+    records = "\n".join(_candidate_record(candidate) for candidate in valid)
+    context_ids = tuple(sorted(context_images))
+    replacements = {
+        "task_text": context.task_text,
+        "active_arm": context.events.active_arm,
+        "candidate_ids": ", ".join(candidate.candidate_id for candidate in valid),
+        "candidate_records": records,
+        "move_start": str(context.events.t_move_start),
+        "close_start": str(context.events.t_close_start),
+        "close_done": str(context.events.t_close_done),
+        "open_start": str(context.events.t_open_start),
+        "open_done": str(context.events.t_open_done),
+    }
+    partial = prompt_template
+    for key, value in replacements.items():
+        partial = partial.replace(f"{{{key}}}", value)
+    candidate_prefix, remainder = partial.split(candidate_marker)
+    candidate_suffix, context_suffix = remainder.split(context_marker)
+    content: list[dict[str, Any]] = [{"type": "text", "text": candidate_prefix}]
+    for candidate in valid:
+        content.append(
+            {
+                "type": "text",
+                "text": (
+                    f"[candidate {candidate.candidate_id}; frame={candidate.frame_id}; "
+                    f"phase={candidate.phase}; method={candidate.prompt_mode}]"
+                ),
+            }
+        )
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": image_data_url(panels[candidate.candidate_id])},
+            }
+        )
+    content.append({"type": "text", "text": candidate_suffix})
+    for frame_id in context_ids:
+        content.append(
+            {"type": "text", "text": f"[raw context frame_id={frame_id}]"}
+        )
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": image_data_url(context_images[frame_id])},
+            }
+        )
+    content.append({"type": "text", "text": context_suffix})
+    rendered = partial.replace(
+        candidate_marker,
+        "[candidate images: " + replacements["candidate_ids"] + "]",
+    ).replace(
+        context_marker,
+        "[raw context images: " + ", ".join(map(str, context_ids)) + "]",
+    )
+    return rendered, [{"role": "user", "content": content}]
+
+
+def run_gripper_seed_qc(
+    context: LoopContext,
+    candidates: Sequence[GripperSeedCandidate],
+    panels: Mapping[str, Image.Image],
+    context_images: Mapping[int, Image.Image],
+    *,
+    prompt_template_path: Path,
+    client: GripperQwenClient,
+    max_tokens: int = 200,
+    max_attempts: int = 2,
+    minimum_confidence: float = 0.70,
+) -> GripperSeedQCResult:
+    candidate_tuple = tuple(candidates)
+    valid = tuple(candidate for candidate in candidate_tuple if candidate.basic_valid)
+
+    def forced_result(
+        reason: str,
+        *,
+        confidence: float | None = None,
+        model: str | None = None,
+        raw_response: str | None = None,
+        rendered_prompt: str | None = None,
+        health: dict[str, Any] | None = None,
+    ) -> GripperSeedQCResult:
+        pool = valid or candidate_tuple
+        if not pool:
+            return GripperSeedQCResult(
+                status=MaskQCStatus.REJECTED,
+                selected_candidate=None,
+                confidence=confidence,
+                reason=reason,
+                candidates=candidate_tuple,
+                model=model,
+                raw_response=raw_response,
+                rendered_prompt=rendered_prompt,
+                health=health,
+            )
+        selected = _fallback_candidate(pool)
+        return GripperSeedQCResult(
+            status=MaskQCStatus.PASSED,
+            selected_candidate=selected.candidate_id,
+            confidence=confidence,
+            reason=(
+                f"forced fallback candidate {selected.candidate_id}; {reason}"
+            ),
+            candidates=candidate_tuple,
+            model=model,
+            raw_response=raw_response,
+            rendered_prompt=rendered_prompt,
+            health=health,
+            forced_fallback=True,
+        )
+
+    if not valid:
+        return forced_result(
+            "all_gripper_candidates_failed_basic_checks",
+        )
+    if max_tokens < 1 or max_attempts < 1:
+        raise ValueError("gripper QC token and attempt limits must be positive")
+    if not 0.0 <= minimum_confidence <= 1.0:
+        raise ValueError("gripper QC minimum confidence must be in [0, 1]")
+    if not prompt_template_path.is_file():
+        return forced_result(
+            f"gripper QC prompt is missing: {prompt_template_path}",
+        )
+    try:
+        health = client.health()
+    except Exception as exc:
+        return forced_result(
+            f"gripper QC health failed: {exc}",
+        )
+    rendered, messages = build_gripper_qwen_request(
+        context,
+        valid,
+        panels,
+        context_images,
+        prompt_template=prompt_template_path.read_text(encoding="utf-8"),
+    )
+    completion: QwenCompletion | None = None
+    request_error: Exception | None = None
+    for _attempt in range(max_attempts):
+        try:
+            completion = client.complete(messages, max_tokens=max_tokens)
+            break
+        except Exception as exc:
+            request_error = exc
+    if completion is None:
+        assert request_error is not None
+        return forced_result(
+            f"gripper QC request failed after {max_attempts} attempt(s): {request_error}",
+            rendered_prompt=rendered,
+            health=health,
+        )
+    try:
+        decision, selected, confidence, reason = parse_mask_qc_response(
+            completion.content,
+            candidate_ids=tuple(candidate.candidate_id for candidate in valid),
+        )
+    except MaskQCError as exc:
+        return forced_result(
+            str(exc),
+            model=completion.model,
+            raw_response=completion.content,
+            rendered_prompt=rendered,
+            health=health,
+        )
+    if decision == "reject_all":
+        return forced_result(
+            f"Qwen decision was reject_all: {reason}",
+            confidence=confidence,
+            model=completion.model,
+            raw_response=completion.content,
+            rendered_prompt=rendered,
+            health=health,
+        )
+    elif decision == "ambiguous":
+        return forced_result(
+            f"Qwen decision was ambiguous: {reason}",
+            confidence=confidence,
+            model=completion.model,
+            raw_response=completion.content,
+            rendered_prompt=rendered,
+            health=health,
+        )
+    elif confidence < minimum_confidence:
+        return forced_result(
+            f"Qwen confidence {confidence:.3f} is below minimum "
+            f"{minimum_confidence:.3f}: {reason}",
+            confidence=confidence,
+            model=completion.model,
+            raw_response=completion.content,
+            rendered_prompt=rendered,
+            health=health,
+        )
+    return GripperSeedQCResult(
+        status=MaskQCStatus.PASSED,
+        selected_candidate=selected,
+        confidence=confidence,
+        reason=reason,
+        candidates=candidate_tuple,
+        model=completion.model,
+        raw_response=completion.content,
+        rendered_prompt=rendered,
+        health=health,
+        forced_fallback=False,
+    )

@@ -369,9 +369,49 @@ there. The final manifests and hashes above refer only to the persistent reruns.
 ### 10.4 Current verification
 
 ```text
-60 passed
+84 passed
 python -m py_compile: passed
 git diff --check: passed
 ```
 
 `ruff` is not installed in the repository environment.
+
+## 11. Mandatory Qwen seed selection (current batch policy)
+
+The batch producer now requires a seed whenever at least one SAM3 candidate was
+generated. The Qwen prompt asks for exactly one candidate and disallows
+`reject_all`/`ambiguous`. The runtime also enforces this contract so a model
+that still rejects all candidates, returns malformed JSON, falls below the
+confidence threshold, or is temporarily unavailable cannot leave an episode
+without a seed.
+
+The fallback is deterministic and recorded as `selection_source:
+"forced_fallback"` in `seed_qc.json` and the episode manifest. It ranks basic-
+valid candidates first, then usable pixel count, connected-component quality,
+dark-pixel fraction, fragmentation, and TCP distance. If every candidate fails
+basic checks, it still selects the least-bad generated candidate so the result
+can be reviewed instead of silently dropping the episode. This is an interim
+availability policy; later iterations should improve the candidate/QC score
+without changing the review-required status.
+
+## 12. Coverage20 Qwen-QC batch result
+
+The current generated batch is stored at:
+
+```text
+artifacts/gripper_pose_roi_coverage20/videos_native_qwen_qc_v2/
+```
+
+Its `batch_manifest.json` reports `completed`, with 20 episodes and 0
+failures. Every episode has an `episode_gripper_review.mp4`,
+`episode_contact_sheet.jpg`, `gripper_masks.npz`, candidate sheet, Qwen raw
+response, and per-episode manifest. The first run left episode 7673 as a
+Qwen-rejected failure; after the mandatory-choice prompt was installed, a
+resume run selected candidate M at frame 191 with confidence 0.85 and produced
+the missing video.
+
+Across the 20 artifacts, the final gripper mask is nonempty in a mean 86.5% of
+the episode frames (outside the active pose window it is intentionally empty),
+and native SAM3 propagation averages 13.85 fps. These are feasibility and
+review numbers, not pixel-accuracy scores; the masks remain
+`review_required` because no robot-part ground truth is available.

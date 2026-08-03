@@ -5,6 +5,8 @@ from typing import Any, Iterator
 
 import numpy as np
 
+import pytest
+
 from robotwin_annotation_v2.adapters import Sam3Adapter
 
 
@@ -103,6 +105,60 @@ def test_text_query_masks_reuses_one_video_session() -> None:
         for request in predictor.requests
         if request["type"] == "add_prompt"
     ] == ["bottle", "orange bottle"]
+
+
+def test_visual_box_masks_submit_box_and_optional_text_together() -> None:
+    predictor = FakePredictor()
+    adapter = Sam3Adapter(
+        checkpoint_path=Path("unused.pt"),
+        gpus=(0,),
+        predictor=predictor,
+    )
+
+    box_result = adapter.box_mask(
+        Path("resource"),
+        (0.1, 0.2, 0.8, 0.9),
+        frame_id=1,
+        frame_count=4,
+        frame_shape=SHAPE,
+    )
+    text_result = adapter.text_box_mask(
+        Path("resource"),
+        "  black   robot gripper ",
+        (0.1, 0.2, 0.8, 0.9),
+        frame_id=2,
+        frame_count=4,
+        frame_shape=SHAPE,
+    )
+
+    assert np.array_equal(box_result, predictor.mask)
+    assert np.array_equal(text_result, predictor.mask)
+    prompts = [
+        request for request in predictor.requests if request["type"] == "add_prompt"
+    ]
+    assert prompts[0]["bounding_boxes"] == [[0.1, 0.2, 0.7000000000000001, 0.7]]
+    assert "text" not in prompts[0]
+    assert prompts[1]["text"] == "black robot gripper"
+    assert prompts[1]["bounding_boxes"] == [[0.1, 0.2, 0.7000000000000001, 0.7]]
+    assert all(prompt["bounding_box_labels"] == [1] for prompt in prompts)
+    assert all(prompt["rel_coordinates"] is True for prompt in prompts)
+
+
+def test_visual_box_masks_validate_normalized_box() -> None:
+    adapter = Sam3Adapter(
+        checkpoint_path=Path("unused.pt"),
+        gpus=(0,),
+        predictor=FakePredictor(),
+    )
+
+    with pytest.raises(ValueError, match="normalized box"):
+        adapter.box_mask(
+            Path("resource"),
+            (0.4, 0.2, 0.3, 0.9),
+            frame_id=1,
+            frame_count=4,
+            frame_shape=SHAPE,
+        )
 
 
 def test_native_mask_propagation_keeps_exact_seed() -> None:
