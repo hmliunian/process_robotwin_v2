@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from robotwin_annotation_v2.experiments import (
+    compose_gripper_track,
     exclude_known_objects,
     project_gripper_roi,
     rotation_from_rpy,
@@ -67,4 +68,58 @@ def test_known_object_exclusion_rejects_shape_mismatch() -> None:
             np.zeros((2, 2), dtype=bool),
             np.zeros((2, 3), dtype=bool),
             np.zeros((2, 2), dtype=bool),
+        )
+
+
+def test_compose_gripper_track_crops_window_roi_and_known_objects() -> None:
+    native = np.ones((4, 2, 3), dtype=bool)
+    roi = np.asarray(
+        [
+            [[1, 1, 1], [1, 1, 1]],
+            [[1, 1, 0], [0, 0, 0]],
+            [[1, 1, 1], [0, 0, 0]],
+            [[1, 1, 1], [1, 1, 1]],
+        ],
+        dtype=bool,
+    )
+    target = np.zeros_like(native)
+    receiver = np.zeros_like(native)
+    target[1, 0, 0] = True
+    receiver[2, 0, 1] = True
+
+    result = compose_gripper_track(
+        native,
+        roi,
+        target,
+        receiver,
+        active_window=(1, 2),
+    )
+
+    assert not result.gripper_mask[0].any()
+    assert not result.gripper_mask[3].any()
+    assert result.target_removed[1, 0, 0]
+    assert result.receiver_removed[2, 0, 1]
+    assert np.array_equal(
+        result.gripper_mask | result.removed_mask,
+        result.candidate_mask,
+    )
+
+
+def test_compose_gripper_track_rejects_invalid_inputs() -> None:
+    track = np.zeros((3, 2, 2), dtype=bool)
+    with pytest.raises(ValueError, match="must match"):
+        compose_gripper_track(
+            track,
+            track[:, :, :1],
+            track,
+            track,
+            active_window=(0, 2),
+        )
+    with pytest.raises(ValueError, match="active_window"):
+        compose_gripper_track(
+            track,
+            track,
+            track,
+            track,
+            active_window=(0, 3),
         )

@@ -72,6 +72,18 @@ class ObjectExclusionResult:
     receiver_removed: np.ndarray
 
 
+@dataclass(frozen=True)
+class GripperTrackResult:
+    """Exact visible-track partition after pose cropping and object exclusion."""
+
+    roi_mask: np.ndarray
+    candidate_mask: np.ndarray
+    gripper_mask: np.ndarray
+    removed_mask: np.ndarray
+    target_removed: np.ndarray
+    receiver_removed: np.ndarray
+
+
 CAM_HIGH_CALIBRATION = CameraCalibration(
     intrinsic_cv=np.asarray(
         [
@@ -123,6 +135,44 @@ def exclude_known_objects(
         removed_mask=removed,
         target_removed=target_removed,
         receiver_removed=receiver_removed,
+    )
+
+
+def compose_gripper_track(
+    native_track: np.ndarray,
+    roi_track: np.ndarray,
+    target_track: np.ndarray,
+    receiver_track: np.ndarray,
+    *,
+    active_window: tuple[int, int],
+) -> GripperTrackResult:
+    """Crop one propagated gripper track and subtract visible known objects."""
+
+    native = np.asarray(native_track, dtype=bool)
+    roi = np.asarray(roi_track, dtype=bool)
+    target = np.asarray(target_track, dtype=bool)
+    receiver = np.asarray(receiver_track, dtype=bool)
+    if native.ndim != 3:
+        raise ValueError("gripper tracks must have [T,H,W] shape")
+    if any(value.shape != native.shape for value in (roi, target, receiver)):
+        raise ValueError("native, ROI, target, and receiver tracks must match")
+
+    start, end = active_window
+    if not 0 <= start <= end < native.shape[0]:
+        raise ValueError("active_window must be inclusive and inside the track")
+    active = np.zeros(native.shape[0], dtype=bool)
+    active[start : end + 1] = True
+    active_pixels = active[:, None, None]
+    visible_roi = roi & active_pixels
+    candidate = native & visible_roi
+    excluded = exclude_known_objects(candidate, target, receiver)
+    return GripperTrackResult(
+        roi_mask=visible_roi,
+        candidate_mask=candidate,
+        gripper_mask=excluded.gripper_mask,
+        removed_mask=excluded.removed_mask,
+        target_removed=excluded.target_removed,
+        receiver_removed=excluded.receiver_removed,
     )
 
 

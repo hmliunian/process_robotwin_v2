@@ -223,6 +223,7 @@ Branch-local files:
 src/robotwin_annotation_v2/experiments/gripper_pose_roi.py
 src/robotwin_annotation_v2/experiments/__init__.py
 scripts/experiment_gripper_pose_roi_coverage20.py
+scripts/generate_gripper_mask_video_preview.py
 tests/unit/test_gripper_pose_roi.py
 ```
 
@@ -257,3 +258,120 @@ known_target_exclusion: a46ffe7f52c01f5bad59eace1da28223d4b16ab10ad0a8123d4ace93
 To avoid oversized responses and the earlier HTTP 413 failure mode, model logs
 were redirected to `/tmp`, review JPEGs were kept around 52..100 KB, and only
 small summaries were inspected in the conversation.
+
+## 10. Native full-trajectory video previews
+
+The branch merged `origin/master@f24d72e` in merge commit `69caa61`, including
+the native mask propagation added by `8a472d8`. A branch-local preview producer
+then tested the following full-frame contract:
+
+```text
+reviewed visible gripper seed
+  -> SAM3 native forward/backward propagation
+  -> per-frame pose ROI intersection
+  -> exact visible target/receiver exclusion
+  -> visible gripper preview mask
+```
+
+No morphology, interpolation, temporal fill, or amodal completion is applied.
+Frames outside the active action window are empty. An active-window frame can
+also remain empty when the propagated gripper is not visible in the image.
+
+The four review-video panels are RGB, native propagation plus pose crop, final
+colored overlay, and the binary visible-gripper mask. Native pixels outside the
+pose ROI are magenta, the pose-cropped/final gripper is cyan, removed target
+pixels are orange, removed receiver pixels are blue, and the pose ROI is yellow.
+
+### 10.1 Two-episode results
+
+| Metric | ep7152 | ep7317 |
+|---|---:|---:|
+| Variant / active arm | clean / right | randomized / left |
+| Usable frames | 138 | 140 |
+| Active window | 4..132 | 4..134 |
+| Final nonempty coverage | 117/129 (90.7%) | 131/131 (100%) |
+| Final median nonempty area | 1663 px | 1599 px |
+| Final maximum area | 3386 px | 3272 px |
+| Final adjacent-IoU mean | 0.824 | 0.844 |
+| Final adjacent-IoU p05 | 0.340 | 0.604 |
+| Median dark-pixel fraction | 93.5% | 97.7% |
+| Maximum target pixels removed/frame | 141 | 117 |
+| Receiver pixels removed | 0 | 0 |
+| Native propagation time | 10.76 s | 10.78 s |
+| Native propagation throughput | 11.99 fps | 12.15 fps |
+
+ep7152 uses the reviewed 1600-pixel frame-20 gripper residual. Its 12 empty
+active-window frames are exactly frames 4..15, before the gripper enters the
+image. ep7317 uses the reviewed 1863-pixel frame-20 residual plus the controlled,
+identity-correct target track from
+`object_exclusion_ep7317_known_target_box_v1`.
+
+Both H.264 review videos are 1280x240 at 50 fps. ep7152 has 138 frames and lasts
+2.76 seconds; ep7317 has 140 frames and lasts 2.80 seconds.
+
+### 10.2 Visual audit
+
+The native SAM3 track visibly extends along long wrist/forearm segments in both
+episodes. These pixels appear magenta in the second panel. The per-frame pose
+intersection removes those long arm segments, while the final mask retains the
+visible fingers and part of the end-effector/gripper base.
+
+No reviewed frame shows SAM3 switching from the gripper to the bottle. Known
+target exclusion removes at most 141 pixels in ep7152 and 117 pixels in ep7317,
+which is much smaller than the 2000-pixel bottle contamination observed in the
+earlier same-frame text+box candidates. This supports using a reviewed gripper
+mask seed plus native propagation rather than independently re-detecting the
+gripper on every frame.
+
+The result remains `review_required`, not accepted ground truth:
+
+1. There is no pixel-level robot-part ground truth to define the exact boundary
+   between gripper base and wrist.
+2. The visual audit supports exclusion of long arm segments, but it does not
+   prove a zero-arm-pixel guarantee.
+3. Receiver subtraction is inactive in both full trajectories, so difficult
+   gripper/receiver overlap remains unvalidated.
+4. ep7317's identity-correct target track uses a controlled manual box seed and
+   is not evidence that automatic target localization is solved.
+
+### 10.3 Artifacts
+
+Generated artifacts are ignored by Git and remain in the persistent branch
+worktree under:
+
+```text
+artifacts/gripper_pose_roi_coverage20/videos_native_v1/episode_7152/
+  episode_007152_gripper_review.mp4
+  episode_007152_contact_sheet.jpg
+  episode_007152_gripper_masks.npz
+  manifest.json
+
+artifacts/gripper_pose_roi_coverage20/videos_native_v1/episode_7317/
+  episode_007317_gripper_review.mp4
+  episode_007317_contact_sheet.jpg
+  episode_007317_gripper_masks.npz
+  manifest.json
+```
+
+Manifest SHA-256 values:
+
+```text
+ep7152: 9b00420eee6e864381e0ecfaf347655e4403b6a8ab911e19a6b5b3575f320e08
+ep7317: 5e68ab9116212fbf5ac5a8afa3273b4f17d3dc9c7a9895a295225ce82f2d50ab
+```
+
+The first preview was temporarily produced in a `/tmp` worktree and was lost
+when that directory was cleaned before the changes were committed. The branch
+was recreated under
+`/DATA/disk8/xuran/add_mask_robotwin/.worktrees/`, and both episodes were rerun
+there. The final manifests and hashes above refer only to the persistent reruns.
+
+### 10.4 Current verification
+
+```text
+60 passed
+python -m py_compile: passed
+git diff --check: passed
+```
+
+`ruff` is not installed in the repository environment.
