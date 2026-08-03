@@ -26,6 +26,7 @@ from robotwin_annotation_v2.models import (
 from robotwin_annotation_v2.pipeline import (
     compose_visible_mask,
     dilate_envelope,
+    evaluate_temporal_mask,
     run_sam_stage,
     save_sam_artifacts,
 )
@@ -129,24 +130,102 @@ class FakeSamBackend:
         frame_ids: tuple[int, ...],
         **_kwargs: Any,
     ) -> dict[int, np.ndarray]:
-        self.calls.append(("observe", text))
-        masks = {frame_id: self.seed_masks[text].copy() for frame_id in frame_ids}
-        masks[frame_ids[len(frame_ids) // 2]] = np.zeros(FRAME_SHAPE, dtype=bool)
-        return masks
+        raise AssertionError("production Stage 3 must not run per-frame text masks")
 
 
-def test_visible_composition_is_strict_intersection_and_windowed() -> None:
-    native = np.ones((4, 3, 3), dtype=bool)
-    observed = np.zeros_like(native)
-    observed[:, 1, 1] = True
-    envelope = np.zeros((3, 3), dtype=bool)
-    envelope[1, 1:] = True
+class DiscontinuousSamBackend(FakeSamBackend):
+    def propagate_mask(
+        self,
+        resource_path: Path,
+        seed_mask: np.ndarray,
+        *,
+        frame_count: int,
+        tracking_window: tuple[int, int],
+        **kwargs: Any,
+    ) -> np.ndarray:
+        output = super().propagate_mask(
+            resource_path,
+            seed_mask,
+            frame_count=frame_count,
+            tracking_window=tracking_window,
+            **kwargs,
+        )
+        if int(seed_mask.sum()) != 4:
+            return output
+        for frame_id in range(tracking_window[0], tracking_window[1] + 1):
+            output[frame_id] = False
+            if frame_id % 2:
+                output[frame_id, 0, 0] = True
+            else:
+                output[frame_id, 3:5, 3:6] = True
+        return output
 
-    visible = compose_visible_mask(native, observed, envelope, FrameWindow(1, 2))
+
+def test_visible_composition_preserves_native_pixels_and_applies_window() -> None:
+    native = np.zeros((4, 3, 3), dtype=bool)
+    native[:, 0:2, 1:3] = True
+
+    visible = compose_visible_mask(native, FrameWindow(1, 2))
 
     assert not visible[0].any() and not visible[3].any()
-    assert visible[1, 1, 1] and visible[2, 1, 1]
-    assert int(visible.sum()) == 2
+    assert np.array_equal(visible[1:3], native[1:3])
+    assert int(visible.sum()) == 8
+
+
+def test_temporal_qc_reviews_gaps_without_quarantining_occlusion() -> None:
+    masks = np.zeros((4, 5, 5), dtype=bool)
+    masks[0, 1:3, 1:3] = True
+    masks[2:, 1:3, 1:3] = True
+
+    qc = evaluate_temporal_mask(masks, FrameWindow(0, 3), MaskConfig())
+
+    assert qc.status == "review"
+    assert qc.coverage == 0.75
+    assert qc.presence_transitions == 2
+    assert qc.internal_missing_frames == 1
+    assert "internal_missing_frames" in qc.issues
+
+
+def test_temporal_qc_quarantines_multiple_severe_jump_signals() -> None:
+    masks = np.zeros((4, 12, 12), dtype=bool)
+    masks[0, 0, 0] = True
+    masks[1, 8:12, 8:12] = True
+    masks[2, 0, 0] = True
+    masks[3, 8:12, 8:12] = True
+
+    qc = evaluate_temporal_mask(masks, FrameWindow(0, 3), MaskConfig())
+
+    assert qc.status == "quarantine"
+    assert set(qc.issues) == {
+        "low_adjacent_iou_p05",
+        "large_centroid_jump_p95",
+        "large_area_ratio_jump_p95",
+    }
+
+
+def test_sam_stage_does_not_publish_a_quarantined_track() -> None:
+    result = run_sam_stage(
+        _context(),
+        _plan(),
+        DiscontinuousSamBackend(),
+        Path("/tmp/fake-resource"),
+        frame_shape=FRAME_SHAPE,
+        mask_config=MaskConfig(
+            0,
+            0,
+            temporal_qc_min_adjacent_iou_p05=0.9,
+            temporal_qc_max_centroid_jump_p95_px=0.1,
+            temporal_qc_max_area_ratio_jump_p95=0.01,
+        ),
+    )
+
+    assert result.target.status is MaskStatus.QUARANTINED
+    assert result.target.failure is not None
+    assert result.target.failure.startswith("temporal_qc_quarantine:")
+    assert not result.target.visible_mask.any()
+    assert result.target.native_track.any()
+    assert not result.masks[0].any()
+    assert result.receiver.status is MaskStatus.OK
 
 
 def test_dilate_envelope_expands_seed_by_configured_radius() -> None:
@@ -176,12 +255,10 @@ def test_sam_stage_uses_only_primary_queries_and_role_windows() -> None:
     assert result.target.primary_query == "orange bottle"
     assert result.receiver.primary_query == "blue pad"
     submitted_queries = [value for kind, value in backend.calls if value]
-    assert submitted_queries == [
-        "orange bottle",
-        "orange bottle",
-        "blue pad",
-        "blue pad",
-    ]
+    assert submitted_queries == ["orange bottle", "blue pad"]
+    assert all(kind != "observe" for kind, _value in backend.calls)
+    assert result.target.temporal_qc is not None
+    assert result.target.temporal_qc.status == "pass"
     assert not result.target.visible_mask[:2].any()
     assert not result.target.visible_mask[9:].any()
     assert not result.receiver.visible_mask[:8].any()
@@ -238,7 +315,7 @@ def test_save_sam_artifacts_marks_grippers_not_annotated(tmp_path: Path) -> None
 
     episode_dir = Path(mask_run.artifact_dir)
     with np.load(episode_dir / "masks.npz", allow_pickle=False) as archive:
-        assert archive["format_version"].item() == "robotwin_visible_masks_v1"
+        assert archive["format_version"].item() == "robotwin_visible_masks_v2"
         assert archive["frame_count"].item() == 20
         assert archive["masks"].shape == (4, 20, *FRAME_SHAPE)
         assert not archive["masks"][2:].any()
@@ -249,6 +326,11 @@ def test_save_sam_artifacts_marks_grippers_not_annotated(tmp_path: Path) -> None
             "not_annotated",
         ]
     manifest = json.loads((episode_dir / "run_manifest.json").read_text())
+    assert manifest["format_version"] == "robotwin_mask_run_v2"
+    assert not manifest["algorithm"]["per_frame_text_observation"]
+    assert manifest["algorithm"]["canonical_envelope_usage"] == "seed_diagnostic_only"
     assert manifest["channels"]["gripper_left"] == "not_annotated"
     assert (episode_dir / "target_0/seed.mask.png").is_file()
     assert (episode_dir / "receiver_0/canonical_envelope.png").is_file()
+    assert (episode_dir / "target_0/temporal_qc.json").is_file()
+    assert not (episode_dir / "target_0/text_observations.npz").exists()

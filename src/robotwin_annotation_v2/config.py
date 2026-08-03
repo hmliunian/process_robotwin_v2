@@ -68,25 +68,34 @@ class QwenConfig:
 class Sam3Config:
     checkpoint: Path
     gpus: tuple[int, ...] = (0,)
-    same_frame_text: bool = True
 
     def __post_init__(self) -> None:
         if len(self.gpus) != 1:
             raise ConfigError("sam3.gpus must contain exactly one GPU")
         if any(gpu < 0 for gpu in self.gpus):
             raise ConfigError("sam3.gpus must contain non-negative integers")
-        if not self.same_frame_text:
-            raise ConfigError("same-frame text observation is required")
 
 
 @dataclass(frozen=True)
 class MaskConfig:
     target_envelope_padding_px: int = 4
     receiver_envelope_padding_px: int = 4
+    temporal_qc_min_adjacent_iou_p05: float = 0.5
+    temporal_qc_max_centroid_jump_p95_px: float = 5.0
+    temporal_qc_max_area_ratio_jump_p95: float = 0.4
+    temporal_qc_quarantine_signal_count: int = 2
 
     def __post_init__(self) -> None:
         if self.target_envelope_padding_px < 0 or self.receiver_envelope_padding_px < 0:
             raise ConfigError("mask envelope padding must be non-negative")
+        if not 0.0 <= self.temporal_qc_min_adjacent_iou_p05 <= 1.0:
+            raise ConfigError("temporal QC minimum adjacent IoU must be in [0, 1]")
+        if self.temporal_qc_max_centroid_jump_p95_px <= 0:
+            raise ConfigError("temporal QC maximum centroid jump must be positive")
+        if self.temporal_qc_max_area_ratio_jump_p95 <= 0:
+            raise ConfigError("temporal QC maximum area-ratio jump must be positive")
+        if not 1 <= self.temporal_qc_quarantine_signal_count <= 3:
+            raise ConfigError("temporal QC quarantine signal count must be in [1, 3]")
 
 
 @dataclass(frozen=True)
@@ -167,11 +176,22 @@ def load_config(path: Path) -> PipelineConfig:
             field="sam3.checkpoint",
         ),
         gpus=_integers(sam3_raw.get("gpus", [0]), field="sam3.gpus"),
-        same_frame_text=bool(sam3_raw.get("same_frame_text", True)),
     )
     mask = MaskConfig(
         target_envelope_padding_px=int(mask_raw.get("target_envelope_padding_px", 4)),
         receiver_envelope_padding_px=int(mask_raw.get("receiver_envelope_padding_px", 4)),
+        temporal_qc_min_adjacent_iou_p05=float(
+            mask_raw.get("temporal_qc_min_adjacent_iou_p05", 0.5)
+        ),
+        temporal_qc_max_centroid_jump_p95_px=float(
+            mask_raw.get("temporal_qc_max_centroid_jump_p95_px", 5.0)
+        ),
+        temporal_qc_max_area_ratio_jump_p95=float(
+            mask_raw.get("temporal_qc_max_area_ratio_jump_p95", 0.4)
+        ),
+        temporal_qc_quarantine_signal_count=int(
+            mask_raw.get("temporal_qc_quarantine_signal_count", 2)
+        ),
     )
     output_root = _path(
         output_raw.get("root", "../artifacts/runs"),
