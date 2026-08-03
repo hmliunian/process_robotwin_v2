@@ -27,6 +27,15 @@ mask:
   temporal_qc_max_centroid_jump_p95_px: 5.0
   temporal_qc_max_area_ratio_jump_p95: 0.4
   temporal_qc_quarantine_signal_count: 2
+  qc_enabled: true
+  qc_prompt_template: prompts/mask_candidate_qc.txt
+  qc_max_candidates: 3
+  qc_max_tokens: 160
+  qc_max_attempts: 2
+  qc_min_confidence: 0.70
+  qc_min_area_fraction: 0.0001
+  qc_max_area_fraction: 0.85
+  qc_duplicate_iou_threshold: 0.98
 
 output:
   root: ../artifacts/runs

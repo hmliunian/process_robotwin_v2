@@ -41,12 +41,22 @@ class MaskCandidate:
     path: Path
     run_id: str
     role_status: dict[str, str]
+    role_qc_status: dict[str, str]
     valid_role_count: int
+    qc_passed_role_count: int
     modified_ns: int
 
     @property
-    def score(self) -> tuple[int, int]:
-        return self.valid_role_count, self.modified_ns
+    def score(self) -> tuple[int, int, int, int]:
+        fully_qc_verified = int(
+            self.valid_role_count == 2 and self.qc_passed_role_count == 2
+        )
+        return (
+            fully_qc_verified,
+            self.valid_role_count,
+            self.qc_passed_role_count,
+            self.modified_ns,
+        )
 
 
 @dataclass(frozen=True)
@@ -57,6 +67,7 @@ class MaskArtifact:
     annotation_status: tuple[str, ...]
     frame_count: int
     format_version: str
+    qc_status: tuple[str, ...] = ()
 
 
 def _parse_args() -> argparse.Namespace:
@@ -120,19 +131,35 @@ def _candidate(path: Path, runs_root: Path) -> MaskCandidate:
     with np.load(path, allow_pickle=False) as archive:
         roles = _small_strings(archive, "roles")
         statuses = _small_strings(archive, "annotation_status")
-    if len(roles) != len(statuses):
-        raise ValueError(f"roles/status length mismatch: {path}")
+        qc_statuses = (
+            _small_strings(archive, "qc_status")
+            if "qc_status" in archive.files
+            else tuple("not_run" for _role in roles)
+        )
+    if len(roles) != len(statuses) or len(roles) != len(qc_statuses):
+        raise ValueError(f"roles/status/QC length mismatch: {path}")
     role_status = {
         role: status
         for role, status in zip(roles, statuses, strict=True)
         if role in {"target", "receiver"}
     }
+    role_qc_status = {
+        role: qc_status
+        for role, qc_status in zip(roles, qc_statuses, strict=True)
+        if role in {"target", "receiver"}
+    }
     valid_role_count = sum(role_status.get(role) == "valid" for role in ("target", "receiver"))
+    qc_passed_role_count = sum(
+        role_status.get(role) == "valid" and role_qc_status.get(role) == "passed"
+        for role in ("target", "receiver")
+    )
     return MaskCandidate(
         path=path.resolve(),
         run_id=run_id,
         role_status=role_status,
+        role_qc_status=role_qc_status,
         valid_role_count=valid_role_count,
+        qc_passed_role_count=qc_passed_role_count,
         modified_ns=path.stat().st_mtime_ns,
     )
 
@@ -184,15 +211,33 @@ def _load_masks(path: Path) -> MaskArtifact:
         names = _small_strings(archive, "instance_names")
         roles = _small_strings(archive, "roles")
         statuses = _small_strings(archive, "annotation_status")
+        qc_statuses = (
+            _small_strings(archive, "qc_status")
+            if "qc_status" in archive.files
+            else tuple("not_run" for _role in roles)
+        )
         frame_count = int(archive["frame_count"])
         format_version = str(archive["format_version"])
     if masks.ndim != 4:
         raise ValueError(f"masks must be [N,T,H,W], got {masks.shape}: {path}")
-    if masks.shape[0] != len(names) or len(names) != len(roles) or len(roles) != len(statuses):
+    if (
+        masks.shape[0] != len(names)
+        or len(names) != len(roles)
+        or len(roles) != len(statuses)
+        or len(roles) != len(qc_statuses)
+    ):
         raise ValueError(f"mask metadata length mismatch: {path}")
     if masks.shape[1] != frame_count:
         raise ValueError(f"mask frame_count mismatch: {path}")
-    return MaskArtifact(masks, names, roles, statuses, frame_count, format_version)
+    return MaskArtifact(
+        masks,
+        names,
+        roles,
+        statuses,
+        frame_count,
+        format_version,
+        qc_statuses,
+    )
 
 
 def _dilate_mask(mask: np.ndarray, radius: int) -> np.ndarray:
@@ -457,6 +502,9 @@ def main() -> None:
             "annotation_status": dict(
                 zip(artifact.instance_names, artifact.annotation_status, strict=True)
             ),
+            "qc_status": dict(
+                zip(artifact.instance_names, artifact.qc_status, strict=True)
+            ),
             "nonempty_frames": nonempty_frames,
             "output_video": output_path.name,
             "output_sha256": _sha256(output_path),
@@ -484,7 +532,10 @@ def main() -> None:
         "selection_rule": (
             f"exact run_id={args.run_id}"
             if args.run_id is not None
-            else "maximize valid target/receiver roles, then newest masks.npz mtime"
+            else (
+                "prefer runs with two valid and QC-passed target/receiver roles; then "
+                "maximize valid roles, QC-passed roles, and masks.npz mtime"
+            )
         ),
         "requested_run_id": args.run_id,
         "config": str(config.config_path),

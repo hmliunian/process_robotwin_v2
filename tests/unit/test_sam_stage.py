@@ -16,8 +16,11 @@ from robotwin_annotation_v2.models import (
     FrameWindow,
     LoopContext,
     LoopEvents,
+    MaskQCResult,
+    MaskQCStatus,
     MaskStatus,
     QueryBank,
+    RoleMaskQC,
     RoleSemanticPlan,
     SemanticFrame,
     SemanticPlan,
@@ -95,6 +98,7 @@ class FakeSamBackend:
         receiver = np.zeros(FRAME_SHAPE, dtype=bool)
         receiver[3:5, 3:6] = True
         self.seed_masks = {
+            "bottle": target,
             "orange bottle": target,
             "blue pad": receiver,
         }
@@ -291,6 +295,77 @@ def test_no_clear_seed_skips_target_sam_calls() -> None:
     assert all(value != "orange bottle" for _kind, value in backend.calls)
 
 
+def _qc_report(
+    role: str,
+    status: MaskQCStatus,
+    *,
+    query: str | None = None,
+) -> RoleMaskQC:
+    selected = "A" if status is MaskQCStatus.PASSED else None
+    return RoleMaskQC(
+        role=role,  # type: ignore[arg-type]
+        status=status,
+        selected_candidate=selected,
+        selected_query_field="category_query" if selected else None,
+        selected_query=query if selected else None,
+        confidence=0.95,
+        reason="test QC decision",
+    )
+
+
+def test_sam_stage_uses_qc_selected_query_and_cached_seed_mask() -> None:
+    backend = FakeSamBackend()
+    target_seed = backend.seed_masks["bottle"].copy()
+    receiver_seed = backend.seed_masks["blue pad"].copy()
+    mask_qc = MaskQCResult(
+        target=_qc_report("target", MaskQCStatus.PASSED, query="bottle"),
+        receiver=_qc_report("receiver", MaskQCStatus.PASSED, query="blue pad"),
+        selected_masks={"target": target_seed, "receiver": receiver_seed},
+        health={"status": "ok"},
+    )
+
+    result = run_sam_stage(
+        _context(),
+        _plan(),
+        backend,
+        Path("/tmp/fake-resource"),
+        frame_shape=FRAME_SHAPE,
+        mask_config=MaskConfig(0, 0),
+        mask_qc=mask_qc,
+    )
+
+    assert result.target.primary_query == "bottle"
+    assert result.target.qc_status is MaskQCStatus.PASSED
+    assert result.receiver.qc_status is MaskQCStatus.PASSED
+    assert not any(kind == "seed" for kind, _value in backend.calls)
+    assert [kind for kind, _value in backend.calls] == ["track", "track"]
+
+
+def test_sam_stage_does_not_propagate_rejected_qc_candidate() -> None:
+    backend = FakeSamBackend()
+    mask_qc = MaskQCResult(
+        target=_qc_report("target", MaskQCStatus.REJECTED),
+        receiver=_qc_report("receiver", MaskQCStatus.PASSED, query="blue pad"),
+        selected_masks={"receiver": backend.seed_masks["blue pad"].copy()},
+        health={"status": "ok"},
+    )
+
+    result = run_sam_stage(
+        _context(),
+        _plan(),
+        backend,
+        Path("/tmp/fake-resource"),
+        frame_shape=FRAME_SHAPE,
+        mask_config=MaskConfig(0, 0),
+        mask_qc=mask_qc,
+    )
+
+    assert result.target.status is MaskStatus.FAILED
+    assert result.target.failure == "mask_qc_rejected"
+    assert not result.target.visible_mask.any()
+    assert all(value != "orange bottle" for _kind, value in backend.calls)
+
+
 def test_save_sam_artifacts_marks_grippers_not_annotated(tmp_path: Path) -> None:
     context = _context()
     plan = _plan()
@@ -324,6 +399,12 @@ def test_save_sam_artifacts_marks_grippers_not_annotated(tmp_path: Path) -> None
             "valid",
             "not_annotated",
             "not_annotated",
+        ]
+        assert archive["qc_status"].tolist() == [
+            "not_run",
+            "not_run",
+            "not_run",
+            "not_run",
         ]
     manifest = json.loads((episode_dir / "run_manifest.json").read_text())
     assert manifest["format_version"] == "robotwin_mask_run_v2"

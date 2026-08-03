@@ -25,6 +25,9 @@ from robotwin_annotation_v2.pipeline import (
 )
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
 def _context() -> LoopContext:
     return LoopContext(
         episode=EpisodeRef("move_pillbottle_pad", 7152, "cam_high"),
@@ -142,6 +145,27 @@ def test_qwen_request_interleaves_frame_label_and_image() -> None:
     assert 'schema={"target": {}, "receiver": {}}' in request.rendered_prompt
 
 
+def test_semantic_prompt_defines_receiver_by_direct_contact() -> None:
+    template = (
+        PROJECT_ROOT / "configs/prompts/target_receiver_semantic.txt"
+    ).read_text(encoding="utf-8")
+
+    request = build_qwen_request(_context(), _frames(), template)
+    prompt_text = "\n".join(
+        part["text"]
+        for part in request.messages[0]["content"]
+        if part["type"] == "text"
+    )
+
+    assert "任务完成时应与 target 直接接触" in prompt_text
+    assert "核心判断依据是二者的直接接触关系" in prompt_text
+    assert "不要求位于\n  target 下方或承托 target" in prompt_text
+    assert "先用 place_context 确定任务完成时与 target" in prompt_text
+    assert "也不得因此返回 no_clear_seed" in prompt_text
+    assert "允许在\n   shape_category_query 中给出一个稳定可见的“颜色 + 形状”别名" in prompt_text
+    assert "例如 teal white bottle" in prompt_text
+
+
 def test_parse_semantic_plan_uses_first_qwen_recommendation() -> None:
     plan = parse_semantic_plan(
         _response(),
@@ -185,6 +209,30 @@ def test_parse_semantic_plan_canonicalizes_exact_duplicate_candidates() -> None:
         "general_fallback_query",
     )
     assert plan.receiver.primary_query == "blue square pad"
+
+
+def test_parse_semantic_plan_completes_omitted_candidate_order_entries() -> None:
+    payload = json.loads(_response())
+    payload["receiver"]["recommended_order"] = [
+        "color_category_query",
+        "shape_category_query",
+        "category_query",
+    ]
+
+    plan = parse_semantic_plan(
+        json.dumps(payload),
+        context=_context(),
+        model="fake-qwen",
+        rendered_prompt="rendered prompt",
+    )
+
+    assert plan.receiver.query_bank is not None
+    assert plan.receiver.query_bank.recommended_order == (
+        "color_category_query",
+        "shape_category_query",
+        "category_query",
+        "general_fallback_query",
+    )
 
 
 def test_parse_semantic_plan_rejects_bbox_and_non_candidate_seed() -> None:

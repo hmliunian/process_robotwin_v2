@@ -9,6 +9,7 @@ from scripts.render_coverage20_videos import (
     HALO_COLOR,
     ROLE_COLORS,
     MaskArtifact,
+    MaskCandidate,
     _external_outline_layers,
     overlay_frame,
     select_best_masks,
@@ -99,3 +100,26 @@ def test_select_best_masks_can_pin_an_exact_run(tmp_path: Path) -> None:
     )
 
     assert selected[7152].run_id == "native-v1"
+
+
+def test_fully_qc_verified_run_is_preferred_over_newer_unverified_run() -> None:
+    verified = MaskCandidate(
+        path=Path("verified.npz"),
+        run_id="verified",
+        role_status={"target": "valid", "receiver": "valid"},
+        role_qc_status={"target": "passed", "receiver": "passed"},
+        valid_role_count=2,
+        qc_passed_role_count=2,
+        modified_ns=1,
+    )
+    unverified = MaskCandidate(
+        path=Path("unverified.npz"),
+        run_id="unverified",
+        role_status={"target": "valid", "receiver": "valid"},
+        role_qc_status={"target": "not_run", "receiver": "not_run"},
+        valid_role_count=2,
+        qc_passed_role_count=0,
+        modified_ns=999,
+    )
+
+    assert verified.score > unverified.score
