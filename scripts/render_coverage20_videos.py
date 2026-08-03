@@ -91,6 +91,14 @@ def _parse_args() -> argparse.Namespace:
         type=Path,
         default=PROJECT_ROOT / "artifacts" / "rendered_videos" / "coverage20_best_current",
     )
+    parser.add_argument(
+        "--gripper-mask-root",
+        type=Path,
+        help=(
+            "Optional coverage20 gripper artifact root containing "
+            "episode_XXXXXX/gripper_masks.npz and manifest.json"
+        ),
+    )
     parser.add_argument("--episode-ids", type=int, nargs="*")
     parser.add_argument("--alpha", type=float, default=DEFAULT_FILL_ALPHA)
     parser.add_argument(
@@ -238,6 +246,156 @@ def _load_masks(path: Path) -> MaskArtifact:
         format_version,
         qc_statuses,
     )
+
+
+def _merge_gripper_track(
+    artifact: MaskArtifact,
+    gripper_track: np.ndarray,
+    *,
+    active_arm: str,
+    qc_status: str,
+) -> tuple[MaskArtifact, int]:
+    """Install one active-arm gripper track using object masks as final priority."""
+
+    if active_arm not in {"left", "right"}:
+        raise ValueError(f"active gripper arm must be left or right, got {active_arm!r}")
+    track = np.asarray(gripper_track, dtype=bool)
+    expected_shape = (artifact.frame_count, *artifact.masks.shape[2:])
+    if track.shape != expected_shape:
+        raise ValueError(
+            f"gripper track has shape {track.shape}, expected {expected_shape}"
+        )
+    active_name = f"gripper_{active_arm}"
+    try:
+        gripper_index = artifact.instance_names.index(active_name)
+    except ValueError as exc:
+        raise ValueError(f"mask artifact has no {active_name} slot") from exc
+    if artifact.roles[gripper_index] != "gripper":
+        raise ValueError(f"{active_name} slot does not have role=gripper")
+
+    object_union = np.zeros_like(track)
+    for index, (role, status) in enumerate(
+        zip(artifact.roles, artifact.annotation_status, strict=True)
+    ):
+        if role in {"target", "receiver"} and status == "valid":
+            object_union |= artifact.masks[index]
+    overlap_removed = int((track & object_union).sum())
+    clean_track = track & ~object_union
+
+    masks = artifact.masks.copy()
+    masks[gripper_index] = clean_track
+    statuses = list(artifact.annotation_status)
+    statuses[gripper_index] = "valid"
+    qc_statuses = list(
+        artifact.qc_status
+        if artifact.qc_status
+        else tuple("not_run" for _name in artifact.instance_names)
+    )
+    qc_statuses[gripper_index] = qc_status
+    return (
+        MaskArtifact(
+            masks=masks,
+            instance_names=artifact.instance_names,
+            roles=artifact.roles,
+            annotation_status=tuple(statuses),
+            frame_count=artifact.frame_count,
+            format_version="robotwin_visible_masks_with_gripper_v1",
+            qc_status=tuple(qc_statuses),
+        ),
+        overlap_removed,
+    )
+
+
+def _load_and_merge_gripper(
+    artifact: MaskArtifact,
+    gripper_root: Path,
+    *,
+    episode_id: int,
+) -> tuple[MaskArtifact, dict[str, Any]]:
+    episode_dir = gripper_root / f"episode_{episode_id:06d}"
+    archive_path = episode_dir / "gripper_masks.npz"
+    manifest_path = episode_dir / "manifest.json"
+    if not archive_path.is_file():
+        raise FileNotFoundError(f"gripper mask archive does not exist: {archive_path}")
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"gripper manifest does not exist: {manifest_path}")
+
+    with np.load(archive_path, allow_pickle=False) as archive:
+        required = {
+            "episode_index",
+            "active_window",
+            "seed_frame",
+            "selected_candidate",
+            "gripper_track",
+        }
+        missing = sorted(required - set(archive.files))
+        if missing:
+            raise ValueError(f"gripper archive is missing {missing}: {archive_path}")
+        archive_episode = int(archive["episode_index"])
+        active_window = tuple(int(value) for value in archive["active_window"].tolist())
+        seed_frame = int(archive["seed_frame"])
+        selected_candidate = str(archive["selected_candidate"])
+        gripper_track = np.asarray(archive["gripper_track"], dtype=bool)
+    if archive_episode != episode_id:
+        raise ValueError(
+            f"gripper archive episode={archive_episode}, expected {episode_id}"
+        )
+    if len(active_window) != 2:
+        raise ValueError(f"gripper active_window must contain two frames: {archive_path}")
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    episode = manifest.get("episode", {})
+    if episode.get("episode_index") != episode_id:
+        raise ValueError(f"gripper manifest episode does not match {episode_id}")
+    if episode.get("frame_count") != artifact.frame_count:
+        raise ValueError(
+            "gripper manifest/object mask frame_count mismatch: "
+            f"{episode.get('frame_count')} != {artifact.frame_count}"
+        )
+    active_arm = episode.get("active_arm")
+    seed = manifest.get("seed", {})
+    qc = seed.get("qc", {})
+    if seed.get("selected_candidate") != selected_candidate:
+        raise ValueError("gripper archive and manifest selected candidates differ")
+    if seed.get("frame") != seed_frame:
+        raise ValueError("gripper archive and manifest seed frames differ")
+    qc_status = str(qc.get("status", "not_run"))
+    if qc_status != "passed":
+        raise ValueError(
+            f"gripper seed QC must be passed before rendering, got {qc_status!r}"
+        )
+
+    merged, overlap_removed = _merge_gripper_track(
+        artifact,
+        gripper_track,
+        active_arm=str(active_arm),
+        qc_status=qc_status,
+    )
+    active_name = f"gripper_{active_arm}"
+    active_index = merged.instance_names.index(active_name)
+    rendered_track = merged.masks[active_index]
+    metadata = {
+        "source_gripper_masks": str(archive_path.resolve()),
+        "gripper_mask_sha256": _sha256(archive_path),
+        "source_gripper_manifest": str(manifest_path.resolve()),
+        "gripper_manifest_sha256": _sha256(manifest_path),
+        "gripper_review_status": manifest.get("status"),
+        "active_gripper": active_name,
+        "active_window": list(active_window),
+        "seed_frame": seed_frame,
+        "selected_candidate": selected_candidate,
+        "selection_source": seed.get("selection_source", "qwen_legacy"),
+        "seed_qc_status": qc_status,
+        "seed_qc_confidence": qc.get("confidence"),
+        "raw_nonempty_frames": int(
+            gripper_track.reshape(gripper_track.shape[0], -1).any(axis=1).sum()
+        ),
+        "rendered_nonempty_frames": int(
+            rendered_track.reshape(rendered_track.shape[0], -1).any(axis=1).sum()
+        ),
+        "object_overlap_removed_pixels": overlap_removed,
+    }
+    return merged, metadata
 
 
 def _dilate_mask(mask: np.ndarray, radius: int) -> np.ndarray:
@@ -461,6 +619,13 @@ def main() -> None:
     runs_root = (args.runs_root or config.output_root).expanduser().resolve()
     output_dir = args.output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    gripper_root = (
+        args.gripper_mask_root.expanduser().resolve()
+        if args.gripper_mask_root is not None
+        else None
+    )
+    if gripper_root is not None and not gripper_root.is_dir():
+        raise FileNotFoundError(f"gripper mask root does not exist: {gripper_root}")
     dataset = _dataset(config)
     selected = select_best_masks(
         runs_root,
@@ -474,6 +639,14 @@ def main() -> None:
     for position, episode_id in enumerate(episode_ids, start=1):
         candidate = selected[episode_id]
         artifact = _load_masks(candidate.path)
+        source_object_mask_format = artifact.format_version
+        gripper_metadata: dict[str, Any] | None = None
+        if gripper_root is not None:
+            artifact, gripper_metadata = _load_and_merge_gripper(
+                artifact,
+                gripper_root,
+                episode_id=episode_id,
+            )
         ref = EpisodeRef(config.dataset.task, episode_id, config.dataset.camera)
         video_path = dataset.paths(ref).video
         output_path = output_dir / f"episode_{episode_id:06d}_{config.dataset.camera}_overlay.mp4"
@@ -499,6 +672,7 @@ def main() -> None:
             "source_masks": str(candidate.path),
             "mask_sha256": _sha256(candidate.path),
             "mask_format": artifact.format_version,
+            "source_object_mask_format": source_object_mask_format,
             "annotation_status": dict(
                 zip(artifact.instance_names, artifact.annotation_status, strict=True)
             ),
@@ -511,6 +685,8 @@ def main() -> None:
             "output_bytes": output_path.stat().st_size,
             **video,
         }
+        if gripper_metadata is not None:
+            record["gripper"] = gripper_metadata
         records.append(record)
         print(
             json.dumps(
@@ -527,7 +703,11 @@ def main() -> None:
         )
 
     manifest = {
-        "format": "robotwin_coverage20_overlay_videos_v2",
+        "format": (
+            "robotwin_coverage20_overlay_videos_with_gripper_v1"
+            if gripper_root is not None
+            else "robotwin_coverage20_overlay_videos_v2"
+        ),
         "created_at": datetime.now(timezone.utc).isoformat(),
         "selection_rule": (
             f"exact run_id={args.run_id}"
@@ -541,9 +721,15 @@ def main() -> None:
         "config": str(config.config_path),
         "dataset_root": str(config.dataset.root),
         "runs_root": str(runs_root),
+        "gripper_mask_root": None if gripper_root is None else str(gripper_root),
         "task": config.dataset.task,
         "camera": config.dataset.camera,
         "episode_count": len(records),
+        "rendered_roles": (
+            ["target", "receiver", "gripper"]
+            if gripper_root is not None
+            else ["target", "receiver"]
+        ),
         "alpha": args.alpha,
         "colors_rgb": {key: list(value) for key, value in ROLE_COLORS.items()},
         "render_style": {

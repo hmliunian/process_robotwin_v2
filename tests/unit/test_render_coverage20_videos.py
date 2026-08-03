@@ -11,6 +11,7 @@ from scripts.render_coverage20_videos import (
     MaskArtifact,
     MaskCandidate,
     _external_outline_layers,
+    _merge_gripper_track,
     overlay_frame,
     select_best_masks,
 )
@@ -68,6 +69,73 @@ def test_halo_must_cover_the_outline_radius() -> None:
             outline_radius=4,
             halo_radius=3,
         )
+
+
+def test_active_gripper_uses_same_fill_outline_and_halo_as_other_roles() -> None:
+    frame = np.full((17, 17, 3), 200, dtype=np.uint8)
+    masks = np.zeros((4, 1, 17, 17), dtype=bool)
+    artifact = MaskArtifact(
+        masks=masks,
+        instance_names=("target_0", "receiver_0", "gripper_left", "gripper_right"),
+        roles=("target", "receiver", "gripper", "gripper"),
+        annotation_status=("valid", "valid", "not_annotated", "not_annotated"),
+        frame_count=1,
+        format_version="test",
+        qc_status=("passed", "passed", "not_run", "not_run"),
+    )
+    gripper = np.zeros((1, 17, 17), dtype=bool)
+    gripper[0, 7:10, 7:10] = True
+
+    merged, removed = _merge_gripper_track(
+        artifact,
+        gripper,
+        active_arm="left",
+        qc_status="passed",
+    )
+    result = overlay_frame(
+        frame,
+        merged,
+        frame_id=0,
+        alpha=0.25,
+        outline_radius=3,
+        halo_radius=5,
+    )
+
+    gripper_color = np.asarray(ROLE_COLORS["gripper"], dtype=np.uint8)
+    expected_fill = (200 * 0.75 + gripper_color * 0.25).astype(np.uint8)
+    assert removed == 0
+    assert merged.annotation_status[2] == "valid"
+    assert merged.qc_status[2] == "passed"
+    np.testing.assert_array_equal(result[8, 8], expected_fill)
+    np.testing.assert_array_equal(result[8, 12], gripper_color)
+    np.testing.assert_array_equal(result[8, 13], HALO_COLOR)
+
+
+def test_object_masks_keep_priority_over_gripper_pixels() -> None:
+    masks = np.zeros((4, 1, 7, 7), dtype=bool)
+    masks[0, 0, 3, 3] = True
+    artifact = MaskArtifact(
+        masks=masks,
+        instance_names=("target_0", "receiver_0", "gripper_left", "gripper_right"),
+        roles=("target", "receiver", "gripper", "gripper"),
+        annotation_status=("valid", "valid", "not_annotated", "not_annotated"),
+        frame_count=1,
+        format_version="test",
+        qc_status=("passed", "passed", "not_run", "not_run"),
+    )
+    gripper = np.zeros((1, 7, 7), dtype=bool)
+    gripper[0, 3, 3:5] = True
+
+    merged, removed = _merge_gripper_track(
+        artifact,
+        gripper,
+        active_arm="left",
+        qc_status="passed",
+    )
+
+    assert removed == 1
+    assert not merged.masks[2, 0, 3, 3]
+    assert merged.masks[2, 0, 3, 4]
 
 
 def _write_candidate(root: Path, run_id: str, statuses: tuple[str, ...]) -> None:

@@ -369,7 +369,7 @@ there. The final manifests and hashes above refer only to the persistent reruns.
 ### 10.4 Current verification
 
 ```text
-84 passed
+86 passed
 python -m py_compile: passed
 git diff --check: passed
 ```
@@ -415,3 +415,44 @@ the episode frames (outside the active pose window it is intentionally empty),
 and native SAM3 propagation averages 13.85 fps. These are feasibility and
 review numbers, not pixel-accuracy scores; the masks remain
 `review_required` because no robot-part ground truth is available.
+
+## 13. Combined target/receiver/gripper overlay videos
+
+The existing target/receiver coverage20 render directory was regenerated in
+place with the final active-gripper track:
+
+```text
+/DATA/disk8/xuran/add_mask_robotwin/process_data_v2/artifacts/rendered_videos/
+  coverage20_qc_contact_v5_native/
+```
+
+Each 320x240 H.264 video now renders target in green, receiver in blue, and the
+active gripper in red. All three roles use the same render contract: 0.32 fill
+alpha, a 3-pixel external colored outline, and a 5-pixel black halo. The
+gripper input is `gripper_masks.npz["gripper_track"]`; before rendering it is
+intersected with the inverse of the saved target/receiver masks so object
+pixels retain attribution priority.
+
+The replacement manifest format is
+`robotwin_coverage20_overlay_videos_with_gripper_v1`. It records the source
+gripper archive and manifest hashes, active arm, seed candidate/frame, Qwen
+selection source/confidence, nonempty-frame counts, and any object-overlap
+pixels removed at render time. The manifest contains 20 episodes, and every
+active gripper slot is `annotation_status=valid` and `qc_status=passed`; mask
+quality remains separately marked `review_required` in the source gripper
+manifest.
+
+Reproduction from this experiment worktree:
+
+```bash
+PYTHONPATH=src /DATA/disk8/xuran/add_mask_robotwin/process_data_v2/.venv/bin/python \
+  scripts/render_coverage20_videos.py \
+  --config configs/pilot_move_pillbottle_pad.yaml \
+  --runs-root /DATA/disk8/xuran/add_mask_robotwin/process_data_v2/artifacts/runs \
+  --run-id coverage20-qc-contact-v5-native \
+  --gripper-mask-root \
+    artifacts/gripper_pose_roi_coverage20/videos_native_qwen_qc_v2 \
+  --output-dir \
+    /DATA/disk8/xuran/add_mask_robotwin/process_data_v2/artifacts/rendered_videos/coverage20_qc_contact_v5_native \
+  --overwrite
+```
