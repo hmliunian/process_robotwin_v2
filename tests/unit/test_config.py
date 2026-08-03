@@ -23,6 +23,11 @@ def test_pilot_config_loads_new_pipeline_contract() -> None:
     assert config.dataset.manifest.is_file()
     assert config.sam3.checkpoint.name == "sam3.pt"
     assert config.sam3.gpus == (2,)
+    assert config.mask.qc_enabled
+    assert config.mask.qc_prompt_template is not None
+    assert config.mask.qc_prompt_template.is_file()
+    assert config.mask.qc_max_candidates == 3
+    assert config.mask.qc_max_attempts == 2
 
 
 def test_config_rejects_automatic_query_fallback(tmp_path: Path) -> None:

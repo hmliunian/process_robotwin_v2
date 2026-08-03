@@ -234,6 +234,34 @@ def _canonicalize_duplicate_candidates(
     return normalized, tuple(normalized_order)
 
 
+def _complete_candidate_order(
+    candidate_values: dict[str, str | None],
+    order: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Repair an otherwise valid Qwen bank with omitted/null order entries."""
+
+    unknown = sorted(set(order) - set(CANDIDATE_FIELDS))
+    if unknown:
+        raise QwenStageError(
+            f"recommended_order contains unknown candidate field(s): {', '.join(unknown)}"
+        )
+    completed = [
+        field
+        for field in order
+        if candidate_values[field] is not None
+    ]
+    completed.extend(
+        field
+        for field in CANDIDATE_FIELDS
+        if candidate_values[field] is not None and field not in completed
+    )
+    fallback = "general_fallback_query"
+    if fallback in completed:
+        completed.remove(fallback)
+        completed.append(fallback)
+    return tuple(completed)
+
+
 def _parse_role(
     role: str,
     payload: Any,
@@ -273,6 +301,7 @@ def _parse_role(
         candidate_values,
         order,
     )
+    order = _complete_candidate_order(candidate_values, order)
 
     if status is SemanticStatus.NO_CLEAR_SEED:
         if seed_frame_id is not None or any(

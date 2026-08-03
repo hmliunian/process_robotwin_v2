@@ -77,6 +77,34 @@ def test_text_masks_select_highest_probability_object() -> None:
     assert any(request["type"] == "reset_session" for request in predictor.requests)
 
 
+def test_text_query_masks_reuses_one_video_session() -> None:
+    predictor = FakePredictor()
+    adapter = Sam3Adapter(
+        checkpoint_path=Path("unused.pt"),
+        gpus=(0,),
+        predictor=predictor,
+    )
+
+    result = adapter.text_query_masks(
+        Path("resource"),
+        ("bottle", "orange bottle", "bottle"),
+        frame_id=0,
+        frame_count=4,
+        frame_shape=SHAPE,
+    )
+
+    assert tuple(result) == ("bottle", "orange bottle")
+    request_types = [request["type"] for request in predictor.requests]
+    assert request_types.count("start_session") == 1
+    assert request_types.count("reset_session") == 1
+    assert request_types.count("close_session") == 1
+    assert [
+        request["text"]
+        for request in predictor.requests
+        if request["type"] == "add_prompt"
+    ] == ["bottle", "orange bottle"]
+
+
 def test_native_mask_propagation_keeps_exact_seed() -> None:
     predictor = FakePredictor()
     adapter = NativeTestAdapter(

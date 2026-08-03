@@ -1,11 +1,12 @@
 # `process_data_v2` 简化架构设计
 
 > **状态：已确认，当前生效架构；代码按 P0–P4 实施。**
-> 本架构将流程收缩为三个阶段：`State Loop → Qwen → SAM`。
+> 本架构将流程收缩为三个主阶段，并在 SAM seed 与传播之间加入候选 mask QC：
+> `State Loop → Qwen Semantic Plan → SAM Candidates → Qwen Mask QC → SAM Propagation`。
 > 当前实验范围：`move_pillbottle_pad / cam_high / target_0 + receiver_0`。
 > 测试数据集：`/DATA/disk8/xuran/add_mask_robotwin/dataset/move_pillbottle_pad_coverage20_original`。
-> 实施进度：P0–P3 已完成；P4 的 episode 7152 真实端到端 smoke 已完成，20 条全量
-> Qwen/SAM regression 待运行。
+> 实施进度：P0–P4 已完成；run `coverage20-qc-contact-v5-native` 的 20 条全量
+> Qwen/SAM regression、overlay 渲染和视觉抽查均已完成。
 
 本文已经替代旧的“单帧 keyframe 候选 → 人工审批 → 后续传播”设计。旧文档只保留在 Git
 历史中，不再作为实现依据。
@@ -17,7 +18,7 @@
 给定一个 RoboTwin episode，自动输出：
 
 - target：被机械臂抓取并移动的物体；
-- receiver：target 最终被放置到的承接物或目标位置；
+- receiver：任务完成时应与 target 直接接触的完整物体或目标区域；
 - 两个角色在各自活动时间窗口内的 visible mask。
 
 当前方案的重点不是建立一个通用标注平台，而是先把一个小实验跑通，并让每个阶段都能独立检查输入和输出。
@@ -31,6 +32,7 @@
 - 通过 Qwen 联合确定 target / receiver 的语义，并为每个角色生成有序的
   SAM3-native 短 query 候选池；
 - 使用 SAM3 生成 seed mask 并进行视频传播；
+- 对 query bank 的实际 seed mask 候选进行 Qwen 实例身份检查，并 fail closed；
 - 生成 target / receiver 的 visible-only mask；
 - 保存每个阶段的中间结果和来源信息。
 
@@ -41,7 +43,6 @@
 - Qwen 逐帧重新框或逐帧修补 mask；
 - gripper mask；
 - hidden / amodal mask 补全；
-- QC 设计；
 - 多任务、多相机、动态相机的通用化处理。
 
 gripper state 仍然可以用于判断动作边界；这不等于本版本要生成 gripper mask。
@@ -69,7 +70,8 @@ RoboTwin episode
                ▼
 ┌──────────────────────────────┐
 │ Stage 3: SAM                  │
-│ seed mask → native propagation│
+│ seed candidates → Qwen mask QC│
+│ → native propagation          │
 │ → role window → temporal QC   │
 └──────────────┬───────────────┘
                │ MaskRun
@@ -80,7 +82,7 @@ RoboTwin episode
 三个阶段之间只传递三个主要对象：
 
 ```text
-LoopContext → SemanticPlan → MaskRun
+LoopContext → SemanticPlan → MaskQCResult → MaskRun
 ```
 
 `run_pipeline.py` 可以作为一个很薄的编排入口，只负责按顺序调用三个阶段，不在其中实现 Qwen、SAM3 或 mask 算法细节。
@@ -293,7 +295,13 @@ prompt 模板可以修改，但模板中的输出字段和类型必须保持稳�
 
 角色定义：
 - target：随后被夹爪抓取并移动的物体。
-- receiver：target 最终被放置到的承接物或目标位置。
+- receiver：任务完成时应与 target 直接接触的完整物体或目标区域。receiver 不要求位于
+  target 下方或承托 target，核心判断依据是二者的直接接触关系。
+
+receiver 的身份判断与 seed 选择分成两个步骤：先用 `place_context` 确定任务完成时与 target
+直接接触的对象或区域，再回到 receiver 允许的 seed 候选中选择同一对象最清晰的一帧。seed
+中二者不需要已经接触；只要该对象在任一允许候选中清晰可见，即使它在 `place_context` 中被
+target 或夹爪部分遮挡，也不能仅因此返回 `no_clear_seed`。
 
 请利用任务文本和多帧动作关系联合判断 target 与 receiver，不要只凭一张静态图猜测。
 
@@ -303,9 +311,10 @@ prompt 模板可以修改，但模板中的输出字段和类型必须保持稳�
    跨相邻候选外观稳定、曝光正常且夹爪尚未接触主体的帧，并在 reason 中写明比较依据；
 2. 输出一个有序的 query candidate bank，而不是一条长 referring expression；
 3. 每条非空 query 必须是 1–4 个小写英文词组成的、指向完整物体的单数名词短语；
-4. 必须保留完整类别名（例如 bottle、pad、basket）。可加入一个颜色、形状或材质
-   修饰词；如果两个紧凑修饰词都确有区分力，可以使用类似 blue square pad 的短语，
-   但总词数仍不得超过 4；
+4. 必须保留完整类别名（例如 bottle、pad、basket）。颜色词或形状词不能充当 head noun，
+   例如 square、blue square 都不是完整物体 query，必须补上真实对象类别。可加入一个颜色、
+   形状或材质修饰词；如果两个紧凑修饰词都确有区分力，可以使用类似 blue square pad 的
+   短语，但总词数仍不得超过 4；
 5. 只使用多帧中稳定可见、能区分实例的属性，不猜测无法确认的属性；
 6. 禁止冠词/所有格、品牌或 OCR 文字、数字、动作、位置、空间关系、比较级以及包含
    with 的长属性串；禁止只描述 cap、logo、label、handle 等子部件；
@@ -319,7 +328,7 @@ prompt 模板可以修改，但模板中的输出字段和类型必须保持稳�
 8. `recommended_order` 排的是预计 SAM3 分割鲁棒性，不是描述详细程度。对于 target 这类常见
    三维可操作物体，若提交帧中没有第二个同类别实例，第一项必须是无修饰类别；只有确实存在
    多个同类别实例并需要消歧时，才让颜色/形状候选优先；
-9. 对 `pad`、`mat` 等薄平面承接区域，如果颜色和形状都稳定清晰，应保留“颜色 + 形状 +
+9. 对 `pad`、`mat` 等薄平面接触区域，如果颜色和形状都稳定清晰，应保留“颜色 + 形状 +
    类别”的紧凑组合并优先排序，不机械拆成两条更弱的提示；具体短语仍由 Qwen 根据图像生成；
 10. 所有非空候选必须互不相同。若某个可选字段只能生成与已有候选相同的短语，或没有独立的
     真实视觉依据，必须将该字段写为 null，绝不能复制短语来凑满字段；recommended_order 只列
@@ -427,9 +436,9 @@ text-only 短 query 矩阵。以下像素数只表示 SAM3 非空；结合 centr
 | receiver `square pad` | 1068 | 0 | 0 | 0 |
 | receiver `pad` / `mat` | 0 | 0 | 0 | 0 |
 
-这个隔离实验只用于改进 Qwen 的事前排序规则：单一常见三维物体优先 category，薄平面承接区
-保留稳定的颜色+形状组合。正式运行仍只调用 `recommended_order[0]`，没有读取上述 SAM 结果
-后自动切换候选，也没有在 Python 中写死 `bottle` 或 `blue square pad`。
+事前排序仍决定候选生成顺序，但正式运行会对 `recommended_order` 的前若干个 query 分别生成
+SAM seed mask，再由独立 Qwen mask-QC prompt 比较实际结果。Python 中不写死 `bottle`、
+`brown bottle` 或 `blue square pad`，也不会因为 mask 非空或面积较大而自动接受候选。
 
 ### 5.6 Box 的处理
 
@@ -445,22 +454,24 @@ text-only 短 query 矩阵。以下像素数只表示 SAM3 非空；结合 centr
 
 ## 6. 阶段三：SAM Mask and Propagation
 
-Stage 3 使用 Qwen 的 `SemanticPlan`，不再向 Qwen 询问每一帧。
+Stage 3 使用 Qwen 的 `SemanticPlan`。Qwen 仅在 seed 候选生成后执行角色实例 QC，不逐帧
+重新分割或修补 mask。
 
 ### 6.1 3A：Seed Mask
 
 对 target 和 receiver 分别执行：
 
 1. 读取 Qwen 选择的 `seed_frame_id`；
-2. 将 `recommended_order[0]` 对应的候选解析为 `primary_query`；
-3. 在 seed frame 创建独立的单帧 SAM3 session；
-4. 只发送 `text=primary_query`；
-5. 保存返回的 seed mask 和实际使用的 query；
-6. 以 seed mask 作为 native tracking 的 mask prompt。
+2. 取 `recommended_order` 的前 `mask.qc_max_candidates` 个非空 query；
+3. 在 seed frame 对每个 query 生成独立 SAM3 candidate mask；
+4. 先检查空 mask、异常面积，并按 IoU 去除近重复候选，再生成只画轮廓、不遮盖物体纹理的
+   A/B/C 图；
+5. Qwen 结合任务文本、候选图和动作上下文返回 `accept / reject_all / ambiguous`；
+6. 只有 `qc_status=passed` 的候选才能成为实际 seed 并进入 native tracking。
 
-如果 Qwen 返回 `no_clear_seed`、响应无法解析、首选 query 不合法或 SAM3 无法生成 seed，
-则显式记录该角色失败，不生成默认 box 或默认 mask。当前阶段不因 mask 为空而静默尝试更宽的
-fallback；这能避免 `food`、`toy`、`container` 等候选命中错误物体。
+如果语义 Qwen 返回 `no_clear_seed`、所有候选为空、QC Qwen 响应无法解析、置信度不足、
+返回 `reject_all/ambiguous`，则显式记录 `rejected/ambiguous/error` 并停止该角色传播，不生成
+默认 box 或静默接受更宽泛候选。
 
 ### 6.2 3B：Native Video Propagation
 
@@ -471,6 +482,11 @@ fallback；这能避免 `food`、`toy`、`container` 等候选命中错误物体
 - receiver 可以从动作前 seed 开始跟踪，但只在 `[t_close_done, t_open_done]` 写出结果。
 
 native tracking 的作用是保持实例身份，不是补全被遮挡像素。
+
+批量运行使用 `sam-batch`：一个 worker 在配置指定的一张 GPU 上顺序处理 episode，整个 batch
+只初始化和关闭一次 `Sam3Adapter`，候选 query 也复用同一 episode 的视频 session。每个
+episode 的 session 和临时帧目录仍独立清理；CUDA 初始化或 launch 级故障会 fail fast，普通
+episode 失败则记录后继续。这个常驻范围是一次 batch 进程，不额外部署长期运行的 SAM3 服务。
 
 ### 6.3 3C：Role-window Composition
 
@@ -498,6 +514,9 @@ final_role_mask[t] = empty,           otherwise
 三类严重跳变中至少两类同时越界时标记为 `quarantined`，对应像素不进入发布 NPZ。QC 只判断
 传播连续性，稳定传播到错误实例仍需独立的 identity review。
 
+候选 mask QC 在传播前判断 seed 的角色身份；temporal QC 在传播后判断轨迹连续性。两者分别
+覆盖不同失败模式，均不引入人工审批。
+
 ### 6.5 episode 7152 真实 smoke
 
 使用 Qwen 动态生成的 `bottle@frame0` 与 `blue square pad@frame0` 完成了真实 GPU smoke：
@@ -509,7 +528,8 @@ final_role_mask[t] = empty,           otherwise
 - 四通道 `masks.npz` 中两个 gripper 通道全零且 metadata 明确为 `not_annotated`；
 - overlay 抽查确认 target 没有漂到夹爪，receiver 没有保留瓶子覆盖区域。
 
-这是实现 smoke、时序 QC 和算法行为核对，不宣称存在像素级 ground truth。
+这是候选 QC 引入前的历史 smoke，不宣称存在像素级 ground truth；新流程需要重新生成
+`mask_qc.json` 后才视为已验证结果。
 
 ---
 
@@ -520,7 +540,7 @@ final_role_mask[t] = empty,           otherwise
 ```text
 Stage 1 → loop.json
 Stage 2 → semantic_plan.json
-Stage 3 → seed masks + tracks + masks.npz
+Stage 3 → candidate seed masks + mask_qc.json + selected seed + tracks + masks.npz
 ```
 
 ### 7.2 建议目录
@@ -687,6 +707,15 @@ mask:
   temporal_qc_max_centroid_jump_p95_px: 5.0
   temporal_qc_max_area_ratio_jump_p95: 0.4
   temporal_qc_quarantine_signal_count: 2
+  qc_enabled: true
+  qc_prompt_template: prompts/mask_candidate_qc.txt
+  qc_max_candidates: 3
+  qc_max_tokens: 160
+  qc_max_attempts: 2
+  qc_min_confidence: 0.70
+  qc_min_area_fraction: 0.0001
+  qc_max_area_fraction: 0.85
+  qc_duplicate_iou_threshold: 0.98
 
 output:
   root: artifacts
@@ -705,11 +734,13 @@ src/robotwin_annotation_v2/
   models/
     loop_context.py
     semantic_plan.py
+    mask_qc.py
     mask_run.py
 
   pipeline/
     state_loop.py
     qwen_stage.py
+    mask_qc.py
     sam_stage.py
     run_pipeline.py
 
@@ -746,7 +777,7 @@ Qwen HTTP 细节、SAM3 session 细节和文件格式不进入编排函数。
 
 ## 10. 阶段间错误处理
 
-本版本只做必要的输入和运行错误处理，不建立独立的质量评审流程。
+本版本做必要的输入、运行错误处理和自动候选 mask QC，不建立人工评审流程。
 
 ### Stage 1
 
@@ -764,6 +795,9 @@ Qwen HTTP 细节、SAM3 session 细节和文件格式不进入编排函数。
 
 ### Stage 3
 
+- 所有候选 seed mask 为空或面积异常：记录 `qc_status=rejected`；
+- QC Qwen 返回 `reject_all`、`ambiguous` 或低于阈值：停止该角色传播；
+- QC 服务或响应合同错误：记录 `qc_status=error`，不回退到第一候选；
 - seed mask 为空：该角色没有可用 mask；
 - tracking 无输出：保留已有阶段产物，不生成假的连续 mask；
 - 多个独立时序信号同时严重异常：保留 native track 诊断，但发布 mask 标为 `quarantined`；
@@ -791,10 +825,14 @@ Qwen HTTP 细节、SAM3 session 细节和文件格式不进入编排函数。
 - 每条 query 都通过 1–4 个小写英文词及禁用词校验；
 - `category_query` 必填、候选互异、general fallback 最后；
 - `primary_query` 来自 Qwen 的 `recommended_order[0]`，而不是代码中的 task-specific 常量；
-- 默认不会因首选 mask 为空而按像素数自动切换候选或合并候选 mask。
+- query bank 保持语义排序，不在 Stage 2 按像素数自动切换或合并候选 mask。
 
 ### Stage 3 测试
 
+- query bank 前若干项分别生成独立 seed 候选；
+- Qwen 只能从 A/B/C 中选择或拒绝全部，且看不到候选 query 名；
+- `rejected/ambiguous/error` 均 fail closed，不进入 propagation；
+- `qc_status=passed` 时使用已选 seed 和 query；
 - seed 使用 `text_only`；
 - native tracking 的 seed frame 和方向正确；
 - target / receiver 的输出窗口互不混淆；
@@ -811,6 +849,8 @@ Qwen HTTP 细节、SAM3 session 细节和文件格式不进入编排函数。
 ```text
 loop.json
 semantic_plan.json
+mask_qc.json
+target/receiver qc_candidates
 target/receiver seed masks
 native tracks
 final masks.npz
@@ -880,12 +920,12 @@ commit 只包含代码、配置、测试和文档，不包含外部 dataset 的�
 后续增加 gripper mask 时，只增加新的 role 配置和 SAM 策略，不修改 Stage 1/Stage 2 的基本接口：
 
 ```text
-LoopContext → SemanticPlan → MaskRun
+LoopContext → SemanticPlan → MaskQCResult → MaskRun
 ```
 
 后续如果需要 bbox，可以将 coarse ROI 作为 `SemanticPlan` 的可选字段，但不能让它重新成为默认的 mask 边界。
 
-本架构暂不定义 QC、人工审批或全任务通用化方案。
+本架构定义自动候选 mask QC，但暂不定义人工审批或全任务通用化方案。
 
 ---
 
@@ -895,7 +935,6 @@ LoopContext → SemanticPlan → MaskRun
 
 ```text
 KeyframeRequest
-MaskCandidate
 ReviewStatus
 KeyframeReviewer
 ApprovedSeed
@@ -929,4 +968,5 @@ box_only / text_box candidate bank
 6. 继续保留四通道 NPZ 的兼容结构，但 gripper 通道标记为 `not_annotated`；
 7. Qwen server 独立启动，client 只调用和解析；
 8. prompt 模板可通过配置文件替换，具体 query bank 由 Qwen 动态生成；
-9. 当前只使用 Qwen 排名第一的 `primary_query`，不按 mask 非空或像素数自动切换候选。
+9. 对 Qwen 排名前若干个 query 生成 seed 候选，由 Qwen 查看实际轮廓后选择；空 mask、面积和
+   置信度只用于拒绝，不用于按像素数自动挑选。

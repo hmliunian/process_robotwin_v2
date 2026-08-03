@@ -84,6 +84,15 @@ class MaskConfig:
     temporal_qc_max_centroid_jump_p95_px: float = 5.0
     temporal_qc_max_area_ratio_jump_p95: float = 0.4
     temporal_qc_quarantine_signal_count: int = 2
+    qc_enabled: bool = False
+    qc_prompt_template: Path | None = None
+    qc_max_candidates: int = 3
+    qc_max_tokens: int = 160
+    qc_max_attempts: int = 2
+    qc_min_confidence: float = 0.70
+    qc_min_area_fraction: float = 0.0001
+    qc_max_area_fraction: float = 0.85
+    qc_duplicate_iou_threshold: float = 0.98
 
     def __post_init__(self) -> None:
         if self.target_envelope_padding_px < 0 or self.receiver_envelope_padding_px < 0:
@@ -96,6 +105,20 @@ class MaskConfig:
             raise ConfigError("temporal QC maximum area-ratio jump must be positive")
         if not 1 <= self.temporal_qc_quarantine_signal_count <= 3:
             raise ConfigError("temporal QC quarantine signal count must be in [1, 3]")
+        if self.qc_enabled and self.qc_prompt_template is None:
+            raise ConfigError("mask.qc_prompt_template is required when QC is enabled")
+        if self.qc_max_candidates < 1:
+            raise ConfigError("mask.qc_max_candidates must be positive")
+        if self.qc_max_tokens < 1:
+            raise ConfigError("mask.qc_max_tokens must be positive")
+        if self.qc_max_attempts < 1:
+            raise ConfigError("mask.qc_max_attempts must be positive")
+        if not 0.0 <= self.qc_min_confidence <= 1.0:
+            raise ConfigError("mask.qc_min_confidence must be between 0 and 1")
+        if not 0.0 < self.qc_min_area_fraction <= self.qc_max_area_fraction <= 1.0:
+            raise ConfigError("mask QC area fractions must satisfy 0 < min <= max <= 1")
+        if not 0.0 <= self.qc_duplicate_iou_threshold <= 1.0:
+            raise ConfigError("mask.qc_duplicate_iou_threshold must be between 0 and 1")
 
 
 @dataclass(frozen=True)
@@ -177,6 +200,20 @@ def load_config(path: Path) -> PipelineConfig:
         ),
         gpus=_integers(sam3_raw.get("gpus", [0]), field="sam3.gpus"),
     )
+    qc_enabled = bool(mask_raw.get("qc_enabled", False))
+    qc_template_value = mask_raw.get(
+        "qc_prompt_template",
+        "prompts/mask_candidate_qc.txt" if qc_enabled else None,
+    )
+    qc_template = (
+        _path(
+            qc_template_value,
+            base_dir=base_dir,
+            field="mask.qc_prompt_template",
+        )
+        if qc_template_value is not None
+        else None
+    )
     mask = MaskConfig(
         target_envelope_padding_px=int(mask_raw.get("target_envelope_padding_px", 4)),
         receiver_envelope_padding_px=int(mask_raw.get("receiver_envelope_padding_px", 4)),
@@ -191,6 +228,17 @@ def load_config(path: Path) -> PipelineConfig:
         ),
         temporal_qc_quarantine_signal_count=int(
             mask_raw.get("temporal_qc_quarantine_signal_count", 2)
+        ),
+        qc_enabled=qc_enabled,
+        qc_prompt_template=qc_template,
+        qc_max_candidates=int(mask_raw.get("qc_max_candidates", 3)),
+        qc_max_tokens=int(mask_raw.get("qc_max_tokens", 160)),
+        qc_max_attempts=int(mask_raw.get("qc_max_attempts", 2)),
+        qc_min_confidence=float(mask_raw.get("qc_min_confidence", 0.70)),
+        qc_min_area_fraction=float(mask_raw.get("qc_min_area_fraction", 0.0001)),
+        qc_max_area_fraction=float(mask_raw.get("qc_max_area_fraction", 0.85)),
+        qc_duplicate_iou_threshold=float(
+            mask_raw.get("qc_duplicate_iou_threshold", 0.98)
         ),
     )
     output_root = _path(
