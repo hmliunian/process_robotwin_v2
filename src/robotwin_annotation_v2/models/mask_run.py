@@ -7,6 +7,7 @@ from enum import StrEnum
 from typing import Any, Literal
 
 from .loop_context import FrameWindow
+from .mask_qc import MaskQCStatus
 
 
 class MaskStatus(StrEnum):
@@ -29,6 +30,9 @@ class RoleMaskResult:
     temporal_qc_path: str | None
     nonempty_frames: int
     failure: str | None = None
+    qc_status: MaskQCStatus = MaskQCStatus.NOT_RUN
+    qc_selected_candidate: str | None = None
+    qc_reason: str | None = None
 
     def __post_init__(self) -> None:
         if self.nonempty_frames < 0:
@@ -37,6 +41,10 @@ class RoleMaskResult:
             raise ValueError("successful role result cannot contain failure")
         if self.status is not MaskStatus.OK and not self.failure:
             raise ValueError("failed or quarantined role result must contain failure")
+        if self.qc_status is not MaskQCStatus.PASSED and self.qc_selected_candidate is not None:
+            raise ValueError("only passed QC may select a candidate")
+        if self.qc_status is not MaskQCStatus.NOT_RUN and not self.qc_reason:
+            raise ValueError("executed QC must include a reason")
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -52,6 +60,9 @@ class RoleMaskResult:
             "temporal_qc_path": self.temporal_qc_path,
             "nonempty_frames": self.nonempty_frames,
             "failure": self.failure,
+            "qc_status": self.qc_status.value,
+            "qc_selected_candidate": self.qc_selected_candidate,
+            "qc_reason": self.qc_reason,
         }
 
 

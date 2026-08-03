@@ -229,13 +229,52 @@ class Sam3Adapter:
         frame_count: int,
         frame_shape: tuple[int, int],
     ) -> np.ndarray:
-        return self.text_masks(
+        return self.text_query_masks(
             resource_path,
-            text,
-            frame_ids=(frame_id,),
+            (text,),
+            frame_id=frame_id,
             frame_count=frame_count,
             frame_shape=frame_shape,
-        )[frame_id]
+        )[text]
+
+    def text_query_masks(
+        self,
+        resource_path: Path,
+        texts: Sequence[str],
+        *,
+        frame_id: int,
+        frame_count: int,
+        frame_shape: tuple[int, int],
+    ) -> dict[str, np.ndarray]:
+        """Evaluate distinct text candidates while loading one video session once."""
+
+        queries = tuple(dict.fromkeys(" ".join(text.split()) for text in texts))
+        if any(not query for query in queries):
+            raise ValueError("SAM3 text queries must be non-empty")
+        if not 0 <= frame_id < frame_count:
+            raise ValueError(f"SAM3 text frame is outside [0, {frame_count})")
+        if not queries:
+            return {}
+        with self._session(resource_path) as session_id:
+            result: dict[str, np.ndarray] = {}
+            for index, query in enumerate(queries):
+                if index:
+                    self.predictor.handle_request(
+                        request={"type": "reset_session", "session_id": session_id}
+                    )
+                response = self.predictor.handle_request(
+                    request={
+                        "type": "add_prompt",
+                        "session_id": session_id,
+                        "frame_index": frame_id,
+                        "text": query,
+                    }
+                )
+                result[query] = _primary_mask(
+                    response.get("outputs", {}),
+                    frame_shape,
+                )
+            return result
 
     def _install_native_mask(
         self,

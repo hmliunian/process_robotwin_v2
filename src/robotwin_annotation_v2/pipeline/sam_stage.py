@@ -14,8 +14,11 @@ from ..config import MaskConfig
 from ..models import (
     FrameWindow,
     LoopContext,
+    MaskQCResult,
+    MaskQCStatus,
     MaskRun,
     MaskStatus,
+    RoleMaskQC,
     RoleMaskResult,
     RoleSemanticPlan,
     SemanticPlan,
@@ -103,6 +106,9 @@ class RoleMaskData:
     visible_mask: np.ndarray
     temporal_qc: TemporalMaskQc | None
     failure: str | None
+    qc_status: MaskQCStatus = MaskQCStatus.NOT_RUN
+    qc_selected_candidate: str | None = None
+    qc_reason: str | None = None
 
     @property
     def nonempty_frame_ids(self) -> tuple[int, ...]:
@@ -306,6 +312,7 @@ def _empty_role(
     seed_mask: np.ndarray | None = None,
     envelope: np.ndarray | None = None,
     native: np.ndarray | None = None,
+    qc_report: RoleMaskQC | None = None,
 ) -> RoleMaskData:
     empty = np.zeros((frame_count, *frame_shape), dtype=bool)
     return RoleMaskData(
@@ -320,6 +327,11 @@ def _empty_role(
         visible_mask=empty,
         temporal_qc=None,
         failure=failure,
+        qc_status=(MaskQCStatus.NOT_RUN if qc_report is None else qc_report.status),
+        qc_selected_candidate=(
+            None if qc_report is None else qc_report.selected_candidate
+        ),
+        qc_reason=None if qc_report is None else qc_report.reason,
     )
 
 
@@ -334,6 +346,8 @@ def _run_role(
     backend: SamBackend,
     resource_path: Path,
     frame_shape: tuple[int, int],
+    qc_report: RoleMaskQC | None = None,
+    qc_seed_mask: np.ndarray | None = None,
 ) -> RoleMaskData:
     if semantic.status is SemanticStatus.NO_CLEAR_SEED:
         return _empty_role(
@@ -344,21 +358,43 @@ def _run_role(
             seed_frame_id=None,
             primary_query=None,
             failure="semantic_plan_no_clear_seed",
+            qc_report=qc_report,
         )
     seed_frame = semantic.seed_frame_id
-    query = semantic.primary_query
+    if qc_report is not None:
+        if qc_report.role != role:
+            raise SamStageError(
+                f"{role} received mismatched mask QC report for {qc_report.role}"
+            )
+        if qc_report.status is not MaskQCStatus.PASSED:
+            return _empty_role(
+                role,
+                window=output_window,
+                frame_count=context.frame_count,
+                frame_shape=frame_shape,
+                seed_frame_id=semantic.seed_frame_id,
+                primary_query=None,
+                failure=f"mask_qc_{qc_report.status.value}",
+                qc_report=qc_report,
+            )
+        query = qc_report.selected_query
+    else:
+        query = semantic.primary_query
     if seed_frame is None or query is None:
         raise SamStageError(f"{role} semantic plan has no usable seed/query")
     if seed_frame > output_window.end:
         raise SamStageError(f"{role} seed occurs after its output window")
 
-    seed_mask = backend.text_mask(
-        resource_path,
-        query,
-        frame_id=seed_frame,
-        frame_count=context.frame_count,
-        frame_shape=frame_shape,
-    ).astype(bool, copy=False)
+    if qc_seed_mask is None:
+        seed_mask = backend.text_mask(
+            resource_path,
+            query,
+            frame_id=seed_frame,
+            frame_count=context.frame_count,
+            frame_shape=frame_shape,
+        ).astype(bool, copy=False)
+    else:
+        seed_mask = np.asarray(qc_seed_mask, dtype=bool)
     if seed_mask.shape != frame_shape:
         raise SamStageError(f"{role} seed mask has shape {seed_mask.shape}")
     envelope = dilate_envelope(seed_mask, padding)
@@ -373,6 +409,7 @@ def _run_role(
             seed_mask=seed_mask,
             envelope=envelope,
             failure="empty_text_seed",
+            qc_report=qc_report,
         )
 
     native = backend.propagate_mask(
@@ -418,6 +455,11 @@ def _run_role(
         visible_mask=visible,
         temporal_qc=temporal_qc,
         failure=failure,
+        qc_status=(MaskQCStatus.NOT_RUN if qc_report is None else qc_report.status),
+        qc_selected_candidate=(
+            None if qc_report is None else qc_report.selected_candidate
+        ),
+        qc_reason=None if qc_report is None else qc_report.reason,
     )
 
 
@@ -429,8 +471,9 @@ def run_sam_stage(
     *,
     frame_shape: tuple[int, int],
     mask_config: MaskConfig,
+    mask_qc: MaskQCResult | None = None,
 ) -> SamStageResult:
-    """Execute Stage 3 for target then receiver using only the primary query."""
+    """Execute Stage 3 using either the semantic primary or a QC-approved query."""
 
     if semantic_plan.episode != context.episode:
         raise SamStageError("SemanticPlan and LoopContext refer to different episodes")
@@ -444,6 +487,8 @@ def run_sam_stage(
         backend=backend,
         resource_path=resource_path,
         frame_shape=frame_shape,
+        qc_report=None if mask_qc is None else mask_qc.target,
+        qc_seed_mask=None if mask_qc is None else mask_qc.selected_masks.get("target"),
     )
     receiver = _run_role(
         "receiver",
@@ -455,6 +500,8 @@ def run_sam_stage(
         backend=backend,
         resource_path=resource_path,
         frame_shape=frame_shape,
+        qc_report=None if mask_qc is None else mask_qc.receiver,
+        qc_seed_mask=None if mask_qc is None else mask_qc.selected_masks.get("receiver"),
     )
     return SamStageResult(
         frame_count=context.frame_count,
@@ -531,6 +578,9 @@ def save_sam_artifacts(
                 temporal_qc_path=temporal_qc_path,
                 nonempty_frames=len(data.nonempty_frame_ids),
                 failure=data.failure,
+                qc_status=data.qc_status,
+                qc_selected_candidate=data.qc_selected_candidate,
+                qc_reason=data.qc_reason,
             )
         )
 
@@ -549,6 +599,14 @@ def save_sam_artifacts(
             "not_annotated",
         ]
     )
+    qc_status = np.asarray(
+        [
+            result.target.qc_status.value,
+            result.receiver.qc_status.value,
+            MaskQCStatus.NOT_RUN.value,
+            MaskQCStatus.NOT_RUN.value,
+        ]
+    )
     masks_path = store.write_npz(
         episode_dir / "masks.npz",
         format_version=np.asarray("robotwin_visible_masks_v2"),
@@ -557,6 +615,7 @@ def save_sam_artifacts(
         instance_names=np.asarray(INSTANCE_NAMES),
         roles=np.asarray(ROLES),
         annotation_status=annotation_statuses,
+        qc_status=qc_status,
     )
     provenance = {
         "format_version": "robotwin_frame_provenance_v2",
@@ -567,6 +626,9 @@ def save_sam_artifacts(
                 "seed_frame_id": result.target.seed_frame_id,
                 "primary_query": result.target.primary_query,
                 "failure": result.target.failure,
+                "qc_status": result.target.qc_status.value,
+                "qc_selected_candidate": result.target.qc_selected_candidate,
+                "qc_reason": result.target.qc_reason,
                 "output_window": result.target.output_window.to_json(),
                 "nonempty_frame_ids": list(result.target.nonempty_frame_ids),
                 "temporal_qc": (
@@ -580,6 +642,9 @@ def save_sam_artifacts(
                 "seed_frame_id": result.receiver.seed_frame_id,
                 "primary_query": result.receiver.primary_query,
                 "failure": result.receiver.failure,
+                "qc_status": result.receiver.qc_status.value,
+                "qc_selected_candidate": result.receiver.qc_selected_candidate,
+                "qc_reason": result.receiver.qc_reason,
                 "output_window": result.receiver.output_window.to_json(),
                 "nonempty_frame_ids": list(result.receiver.nonempty_frame_ids),
                 "temporal_qc": (
@@ -611,6 +676,9 @@ def save_sam_artifacts(
                 "per_frame_text_observation": False,
                 "canonical_envelope_usage": "seed_diagnostic_only",
                 "automatic_query_fallback": False,
+                "candidate_mask_qc": any(
+                    data.qc_status is not MaskQCStatus.NOT_RUN for data in role_data
+                ),
                 "amodal_completion": False,
             },
             "artifacts": {

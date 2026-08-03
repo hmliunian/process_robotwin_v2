@@ -9,6 +9,7 @@ from .loop_context import (
     SemanticFrame,
 )
 from .mask_run import MaskRun, MaskStatus, RoleMaskResult
+from .mask_qc import MaskCandidateInfo, MaskQCResult, MaskQCStatus, RoleMaskQC
 from .semantic_plan import (
     CANDIDATE_FIELDS,
     MAX_QUERY_WORDS,
@@ -30,8 +31,12 @@ __all__ = [
     "LoopEvents",
     "MaskRun",
     "MaskStatus",
+    "MaskCandidateInfo",
+    "MaskQCResult",
+    "MaskQCStatus",
     "QueryBank",
     "RoleMaskResult",
+    "RoleMaskQC",
     "RoleSemanticPlan",
     "SemanticFrame",
     "SemanticPlan",

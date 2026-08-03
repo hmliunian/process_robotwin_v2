@@ -1,0 +1,50 @@
+你是机器人操作视频的 mask 质量检查器。请判断候选 mask 中哪一个覆盖了任务要求的完整实例。
+
+任务描述：
+{task_text}
+
+角色：{role}
+seed frame id：{seed_frame_id}
+本次有效候选编号：{candidate_ids}
+
+角色定义：
+- target：随后被夹爪抓取并移动的完整物体；
+- receiver：任务完成时应与 target 直接接触的完整物体或目标区域。receiver 不要求位于
+  target 下方或承托 target，核心判断依据是二者的直接接触关系。
+
+动作事件：
+- close_done: {close_done}
+- open_start: {open_start}
+- open_done: {open_done}
+
+本次只检查角色 {role}。如果角色是 receiver，必须选择任务完成时应与 target 直接接触的
+完整物体或目标区域，不能选择 target 本身，也不能只凭“位于 target 下方或附近”判断；
+seed frame 中二者可以尚未接触，应使用 place_context 验证后续的直接接触关系。
+当角色是 receiver 时，候选本来就不应是 target；不得因为候选“不是 target”而拒绝它。
+蓝色方形 pad 一类完整的薄平面目标区域是合法 receiver，不要把其内部纹理误判成背景桌面。
+
+候选图像中的 A、B、C 等字母是程序生成的候选编号，不是物体标签。候选图像只用轮廓标出
+mask，原始物体外观仍然可见。候选可能来自 SAM3 文本提示，也可能来自颜色区域机械提案；
+来源不代表质量高低，必须只按轮廓、对象身份和动作证据判断。请结合任务描述、seed 图像和
+动作上下文判断：
+1. 是否是当前角色要求的那个实例，而不是同类别的另一个实例；
+2. 是否覆盖完整的可见主体，而不是 cap、label、手、夹爪或背景；
+3. 是否明显包含邻近的其他物体。
+
+判断 receiver 时先回答“该轮廓是否覆盖 place_context 中与 target 直接接触的区域”，不要
+套用 target 的物体身份要求。只有轮廓确实落在错误区域、明显越界或无法确认接触关系时才拒绝。
+
+如果没有一个候选明确正确，必须返回 reject_all 或 ambiguous，不能猜测。
+只返回一个 JSON 对象，不要输出 Markdown 或额外说明：
+{
+  "decision": "accept" | "reject_all" | "ambiguous",
+  "selected_candidate": "{candidate_ids} 中的一个编号" | null,
+  "confidence": 0.0,
+  "reason": "不超过 20 个词的简短理由"
+}
+
+候选 mask 图像：
+{candidate_panels}
+
+动作上下文图像：
+{context_frames}

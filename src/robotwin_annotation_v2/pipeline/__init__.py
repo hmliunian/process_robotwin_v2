@@ -27,6 +27,12 @@ from .sam_stage import (
     run_sam_stage,
     save_sam_artifacts,
 )
+from .mask_qc import (
+    MaskQCError,
+    parse_mask_qc_response,
+    run_mask_qc_stage,
+    save_mask_qc_artifacts,
+)
 
 __all__ = [
     "StateLoopError",
@@ -34,6 +40,7 @@ __all__ = [
     "QwenStageResult",
     "RenderedQwenRequest",
     "RoleMaskData",
+    "MaskQCError",
     "SamStageError",
     "SamStageResult",
     "TemporalMaskQc",
@@ -46,8 +53,11 @@ __all__ = [
     "dilate_envelope",
     "evaluate_temporal_mask",
     "parse_semantic_plan",
+    "parse_mask_qc_response",
+    "run_mask_qc_stage",
     "run_qwen_stage",
     "run_sam_stage",
     "save_sam_artifacts",
+    "save_mask_qc_artifacts",
     "sample_semantic_frames",
 ]
