@@ -415,6 +415,60 @@ def build_gripper_seed_candidate(
     )
 
 
+def apply_gripper_seed_quality_gate(
+    candidate: GripperSeedCandidate,
+    *,
+    minimum_dark_fraction: float = 0.80,
+    maximum_components: int = 3,
+    minimum_largest_component_fraction: float = 0.80,
+    maximum_tcp_distance_px: float = 20.0,
+) -> GripperSeedCandidate:
+    """Reject mechanically implausible black-gripper seed candidates.
+
+    Qwen remains responsible for choosing the best frame among candidates that
+    pass these checks.  The gate prevents a visually persuasive but mostly
+    background/object mask from reaching semantic selection.
+    """
+
+    if not 0.0 <= minimum_dark_fraction <= 1.0:
+        raise ValueError("minimum_dark_fraction must be in [0, 1]")
+    if maximum_components < 1:
+        raise ValueError("maximum_components must be positive")
+    if not 0.0 <= minimum_largest_component_fraction <= 1.0:
+        raise ValueError("minimum_largest_component_fraction must be in [0, 1]")
+    if maximum_tcp_distance_px < 0.0:
+        raise ValueError("maximum_tcp_distance_px must be non-negative")
+    if not candidate.basic_valid:
+        return candidate
+
+    failures: list[str] = []
+    if (
+        candidate.dark_fraction is None
+        or candidate.dark_fraction < minimum_dark_fraction
+    ):
+        failures.append("low_dark_fraction")
+    if candidate.component_count > maximum_components:
+        failures.append("too_many_components")
+    if (
+        candidate.largest_component_fraction is None
+        or candidate.largest_component_fraction
+        < minimum_largest_component_fraction
+    ):
+        failures.append("small_largest_component")
+    if (
+        candidate.tcp_distance_px is None
+        or candidate.tcp_distance_px > maximum_tcp_distance_px
+    ):
+        failures.append("too_far_from_tcp")
+    if not failures:
+        return candidate
+    return replace(
+        candidate,
+        basic_valid=False,
+        basic_reason="quality_gate:" + ",".join(failures),
+    )
+
+
 def mark_same_frame_duplicates(
     candidates: Sequence[GripperSeedCandidate],
     *,

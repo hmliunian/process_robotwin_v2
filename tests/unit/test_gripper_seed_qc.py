@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ from robotwin_annotation_v2.adapters import QwenCompletion
 from robotwin_annotation_v2.experiments import (
     GripperSeedCandidate,
     ProjectedGripperRoi,
+    apply_gripper_seed_quality_gate,
     build_gripper_seed_candidate,
     gripper_keyframes,
     load_qc_native_object_tracks,
@@ -157,6 +159,33 @@ def test_candidate_applies_pose_and_exact_object_exclusion() -> None:
     assert candidate.basic_valid
     assert candidate.dark_fraction == 1.0
     assert not (candidate.clean_mask & candidate.target_removed).any()
+
+
+def test_black_gripper_quality_gate_rejects_implausible_candidate() -> None:
+    candidate = replace(
+        _candidate("A"),
+        dark_fraction=0.10,
+        component_count=6,
+        largest_component_fraction=0.50,
+        tcp_distance_px=25.0,
+    )
+
+    gated = apply_gripper_seed_quality_gate(candidate)
+
+    assert not gated.basic_valid
+    assert gated.basic_reason == (
+        "quality_gate:low_dark_fraction,too_many_components,"
+        "small_largest_component,too_far_from_tcp"
+    )
+
+
+def test_black_gripper_quality_gate_keeps_compact_dark_candidate() -> None:
+    candidate = _candidate("A")
+
+    gated = apply_gripper_seed_quality_gate(candidate)
+
+    assert gated is candidate
+    assert gated.basic_valid
 
 
 def test_same_frame_duplicate_is_not_submitted_as_valid() -> None:

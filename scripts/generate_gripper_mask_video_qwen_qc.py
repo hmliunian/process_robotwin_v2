@@ -22,6 +22,7 @@ from robotwin_annotation_v2.adapters import (
 )
 from robotwin_annotation_v2.config import load_config
 from robotwin_annotation_v2.experiments import (
+    apply_gripper_seed_quality_gate,
     build_gripper_seed_candidate,
     compose_gripper_track,
     gripper_keyframes,
@@ -77,6 +78,14 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--qc-max-tokens", type=int, default=220)
     parser.add_argument("--qc-max-attempts", type=int, default=2)
     parser.add_argument("--qc-min-confidence", type=float, default=0.70)
+    parser.add_argument("--seed-min-dark-fraction", type=float, default=0.80)
+    parser.add_argument("--seed-max-components", type=int, default=3)
+    parser.add_argument(
+        "--seed-min-largest-component-fraction",
+        type=float,
+        default=0.80,
+    )
+    parser.add_argument("--seed-max-tcp-distance-px", type=float, default=20.0)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--temp-root", type=Path, default=Path("/tmp"))
     parser.add_argument("--crf", type=int, default=18)
@@ -127,18 +136,23 @@ def _build_candidates(
     frame_count: int,
     frame_shape: tuple[int, int],
     gripper_text: str,
+    minimum_dark_fraction: float,
+    maximum_components: int,
+    minimum_largest_component_fraction: float,
+    maximum_tcp_distance_px: float,
 ) -> tuple[Any, ...]:
-    candidates: list[Any] = []
-    for frame_id in keyframes:
-        roi = rois[frame_id]
-        box = normalized_roi_box(roi, frame_shape)
-        if box is None:
-            continue
-        prompt_variants = (
-            ("box_only", None),
-            ("text_box", gripper_text),
-        )
-        for prompt_mode, prompt_text in prompt_variants:
+    def build_bank(
+        prompt_mode: str,
+        prompt_text: str | None,
+        *,
+        first_index: int,
+    ) -> list[Any]:
+        bank: list[Any] = []
+        for frame_id in keyframes:
+            roi = rois[frame_id]
+            box = normalized_roi_box(roi, frame_shape)
+            if box is None:
+                continue
             if prompt_text is None:
                 raw = adapter.box_mask(
                     resource,
@@ -156,22 +170,43 @@ def _build_candidates(
                     frame_count=frame_count,
                     frame_shape=frame_shape,
                 )
-            candidate_id = chr(ord("A") + len(candidates))
-            candidates.append(
-                build_gripper_seed_candidate(
-                    candidate_id=candidate_id,
-                    frame_id=frame_id,
-                    events=events,
-                    prompt_mode=prompt_mode,
-                    prompt_text=prompt_text,
-                    raw_mask=raw,
-                    roi_mask=roi_track[frame_id],
-                    target_mask=target_track[frame_id],
-                    receiver_mask=receiver_track[frame_id],
-                    rgb=np.asarray(frame_images[frame_id], dtype=np.uint8),
-                    tcp_pixel_xy=roi.tcp_pixel_xy,
+            candidate_id = chr(ord("A") + first_index + len(bank))
+            candidate = build_gripper_seed_candidate(
+                candidate_id=candidate_id,
+                frame_id=frame_id,
+                events=events,
+                prompt_mode=prompt_mode,
+                prompt_text=prompt_text,
+                raw_mask=raw,
+                roi_mask=roi_track[frame_id],
+                target_mask=target_track[frame_id],
+                receiver_mask=receiver_track[frame_id],
+                rgb=np.asarray(frame_images[frame_id], dtype=np.uint8),
+                tcp_pixel_xy=roi.tcp_pixel_xy,
+            )
+            bank.append(
+                apply_gripper_seed_quality_gate(
+                    candidate,
+                    minimum_dark_fraction=minimum_dark_fraction,
+                    maximum_components=maximum_components,
+                    minimum_largest_component_fraction=(
+                        minimum_largest_component_fraction
+                    ),
+                    maximum_tcp_distance_px=maximum_tcp_distance_px,
                 )
             )
+        return bank
+
+    # Text disambiguates the gripper from the target and robot arm inside the
+    # deliberately loose pose box. Qwen only chooses a frame from this bank.
+    text_candidates = build_bank("text_box", gripper_text, first_index=0)
+    candidates = list(text_candidates)
+    if not any(candidate.basic_valid for candidate in text_candidates):
+        # Keep box-only as a secondary availability fallback, never as a peer
+        # prompt modality in the normal Qwen selection request.
+        candidates.extend(
+            build_bank("box_only", None, first_index=len(text_candidates))
+        )
     return mark_same_frame_duplicates(candidates)
 
 
@@ -318,6 +353,12 @@ def _run_episode(
             frame_count=state.frame_count,
             frame_shape=frame_shape,
             gripper_text=args.gripper_text,
+            minimum_dark_fraction=args.seed_min_dark_fraction,
+            maximum_components=args.seed_max_components,
+            minimum_largest_component_fraction=(
+                args.seed_min_largest_component_fraction
+            ),
+            maximum_tcp_distance_px=args.seed_max_tcp_distance_px,
         )
         panels = {
             candidate.candidate_id: render_gripper_candidate_panel(
@@ -436,6 +477,9 @@ def _run_episode(
             "morphology": "none",
             "operation": "qwen_selected_seed -> native_track & pose_roi & ~(target | receiver)",
             "outside_active_window": "empty",
+            "candidate_policy": (
+                "text_box_keyframes_then_box_only_if_all_text_candidates_fail_gate"
+            ),
         },
         "known_objects": {
             **objects.provenance,
@@ -455,6 +499,15 @@ def _run_episode(
             "prompt_mode": selected.prompt_mode,
             "prompt_text": selected.prompt_text,
             "selection_source": "forced_fallback" if qc.forced_fallback else "qwen",
+            "box_only_fallback_used": selected.prompt_mode == "box_only",
+            "quality_gate": {
+                "minimum_dark_fraction": args.seed_min_dark_fraction,
+                "maximum_components": args.seed_max_components,
+                "minimum_largest_component_fraction": (
+                    args.seed_min_largest_component_fraction
+                ),
+                "maximum_tcp_distance_px": args.seed_max_tcp_distance_px,
+            },
             "clean_pixels": selected.clean_pixels,
             "qc": qc.to_json(),
             "candidate_artifacts": candidate_artifacts,
@@ -526,6 +579,14 @@ def main() -> None:
     args = _parse_args()
     if not 0 <= args.crf <= 51:
         raise ValueError("--crf must be between 0 and 51")
+    if not 0.0 <= args.seed_min_dark_fraction <= 1.0:
+        raise ValueError("--seed-min-dark-fraction must be in [0, 1]")
+    if args.seed_max_components < 1:
+        raise ValueError("--seed-max-components must be positive")
+    if not 0.0 <= args.seed_min_largest_component_fraction <= 1.0:
+        raise ValueError("--seed-min-largest-component-fraction must be in [0, 1]")
+    if args.seed_max_tcp_distance_px < 0.0:
+        raise ValueError("--seed-max-tcp-distance-px must be non-negative")
     config = load_config(args.config)
     episode_ids = tuple(args.episode_ids or config.dataset.regression_episode_ids)
     unknown = sorted(set(episode_ids) - set(config.dataset.regression_episode_ids))

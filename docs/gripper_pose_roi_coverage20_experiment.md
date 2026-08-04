@@ -376,7 +376,7 @@ git diff --check: passed
 
 `ruff` is not installed in the repository environment.
 
-## 11. Mandatory Qwen seed selection (current batch policy)
+## 11. Mandatory Qwen seed selection (availability policy)
 
 The batch producer now requires a seed whenever at least one SAM3 candidate was
 generated. The Qwen prompt asks for exactly one candidate and disallows
@@ -394,9 +394,14 @@ can be reviewed instead of silently dropping the episode. This is an interim
 availability policy; later iterations should improve the candidate/QC score
 without changing the review-required status.
 
-## 12. Coverage20 Qwen-QC batch result
+The current text-plus-box candidate policy is described in Section 14. Qwen
+still has to select exactly one seed, but it now chooses only between keyframes
+from one prompt bank; it no longer chooses between box-only and text-plus-box
+prompt modalities.
 
-The current generated batch is stored at:
+## 12. Baseline mixed-prompt Coverage20 Qwen-QC batch
+
+The earlier mixed-prompt baseline batch is stored at:
 
 ```text
 artifacts/gripper_pose_roi_coverage20/videos_native_qwen_qc_v2/
@@ -410,6 +415,11 @@ Qwen-rejected failure; after the mandatory-choice prompt was installed, a
 resume run selected candidate M at frame 191 with confidence 0.85 and produced
 the missing video.
 
+Qwen selected 13 box-only seeds and 7 text-plus-box seeds in this baseline.
+This made prompt modality and keyframe quality one combined semantic choice,
+which was unnecessarily difficult to audit and allowed a box-only candidate to
+win even when text was useful for separating the black gripper from a bottle.
+
 Across the 20 artifacts, the final gripper mask is nonempty in a mean 86.5% of
 the episode frames (outside the active pose window it is intentionally empty),
 and native SAM3 propagation averages 13.85 fps. These are feasibility and
@@ -419,7 +429,7 @@ review numbers, not pixel-accuracy scores; the masks remain
 ## 13. Combined target/receiver/gripper overlay videos
 
 The existing target/receiver coverage20 render directory was regenerated in
-place with the final active-gripper track:
+place with the current text-plus-box active-gripper track:
 
 ```text
 /DATA/disk8/xuran/add_mask_robotwin/process_data_v2/artifacts/rendered_videos/
@@ -451,8 +461,104 @@ PYTHONPATH=src /DATA/disk8/xuran/add_mask_robotwin/process_data_v2/.venv/bin/pyt
   --runs-root /DATA/disk8/xuran/add_mask_robotwin/process_data_v2/artifacts/runs \
   --run-id coverage20-qc-contact-v5-native \
   --gripper-mask-root \
-    artifacts/gripper_pose_roi_coverage20/videos_native_qwen_qc_v2 \
+    artifacts/gripper_pose_roi_coverage20/videos_native_qwen_qc_text_box_v1 \
   --output-dir \
     /DATA/disk8/xuran/add_mask_robotwin/process_data_v2/artifacts/rendered_videos/coverage20_qc_contact_v5_native \
   --overwrite
+```
+
+## 14. Text plus pose-box Coverage20 rerun (current)
+
+The current candidate producer uses this order:
+
+```text
+black robot gripper text + projected pose bbox
+  -> pose ROI intersection
+  -> exact target/receiver exclusion
+  -> mechanical quality gate
+  -> Qwen keyframe selection
+  -> SAM3 native forward/backward propagation
+  -> per-frame pose ROI and target/receiver exclusion
+```
+
+The quality gate rejects a candidate before Qwen when any of these defaults is
+violated:
+
+```text
+dark_fraction < 0.80
+component_count > 3
+largest_component_fraction < 0.80
+tcp_distance_px > 20
+```
+
+Box-only is retained only as an availability fallback. It is generated after,
+and only if, every text-plus-box candidate fails the mechanical gate. Therefore
+Qwen normally answers the narrower question "which keyframe is the best seed?"
+instead of jointly deciding a frame and a prompt modality.
+
+The completed current batch is stored at:
+
+```text
+artifacts/gripper_pose_roi_coverage20/videos_native_qwen_qc_text_box_v1/
+```
+
+Its `batch_manifest.json` reports `completed`; all 20 episodes completed with
+zero failures. All 20 selected seeds are `text_box`, all selection sources are
+Qwen, all seed QC statuses are `passed`, and no episode used the box-only
+fallback.
+
+| Metric | Mixed-prompt baseline | Current text plus box |
+|---|---:|---:|
+| Episodes | 20 | 20 |
+| Selected box-only / text-box | 13 / 7 | 0 / 20 |
+| Mean full-episode nonempty coverage | 86.49% | 86.82% |
+| Mean active-window coverage | 92.22% | 92.56% |
+| Mean adjacent IoU | 0.805 | 0.823 |
+| Mean adjacent-IoU p05 | 0.425 | 0.467 |
+| Minimum adjacent IoU | 0.704 | 0.786 |
+| Minimum adjacent-IoU p05 | 0.188 | 0.321 |
+| Mean native propagation throughput | 13.85 fps | 14.13 fps |
+
+These continuity metrics do not establish pixel accuracy, but the distribution
+improves while preserving coverage. The main requested failure mode was also
+checked visually: review sheets for all 20 episodes retain the visible gripper
+head/fingers without extending along the long wrist or forearm. Episodes 7179,
+7185, and 7464 were inspected as targeted examples; 7163, 7181, and 7188 were
+also inspected because at least one aggregate continuity/area measure regressed
+relative to the baseline. The smaller masks in 7181 and 7188 follow visible
+gripper components after object subtraction rather than adding arm pixels.
+
+Episode 7185, which motivated the policy change, moved from box-only frame 53
+to text-plus-box frame 94:
+
+| Metric | Old box-only seed | New text-plus-box seed |
+|---|---:|---:|
+| Mean adjacent IoU | 0.783 | 0.845 |
+| Adjacent-IoU p05 | 0.389 | 0.574 |
+| Median nonempty mask area | 750 px | 1304 px |
+
+The formal three-role videos now use this batch at:
+
+```text
+/DATA/disk8/xuran/add_mask_robotwin/process_data_v2/artifacts/rendered_videos/
+  coverage20_qc_contact_v5_native/
+```
+
+There are 20 H.264 overlay videos plus `manifest.json` and four full-run review
+sheets. Target is green, receiver blue, and gripper red; every role uses 0.32
+fill alpha, a 3-pixel colored external outline, and a 5-pixel black halo. Video
+hashes were recomputed and matched every manifest record. The previous
+mixed-prompt three-role render remains recoverable at:
+
+```text
+/DATA/disk8/xuran/add_mask_robotwin/process_data_v2/artifacts/rendered_videos/
+  .coverage20_qc_contact_v5_native_pre_text_box_backup/
+```
+
+Final source verification for this update:
+
+```text
+88 passed
+python -m py_compile: passed
+git diff --check: passed
 ```
