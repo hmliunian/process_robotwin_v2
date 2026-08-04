@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import shutil
 import tempfile
 import time
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -22,6 +24,8 @@ from robotwin_annotation_v2.adapters import (
 )
 from robotwin_annotation_v2.config import load_config
 from robotwin_annotation_v2.experiments import (
+    DEFAULT_GRIPPER_ROI_GEOMETRY,
+    GripperRoiGeometry,
     apply_gripper_seed_quality_gate,
     build_gripper_seed_candidate,
     compose_gripper_track,
@@ -29,7 +33,6 @@ from robotwin_annotation_v2.experiments import (
     load_qc_native_object_tracks,
     mark_same_frame_duplicates,
     normalized_roi_box,
-    project_gripper_roi,
     render_gripper_candidate_panel,
     render_gripper_candidate_sheet,
     run_gripper_seed_qc,
@@ -56,6 +59,13 @@ DEFAULT_OBJECT_RUN_ROOT = Path(
 
 class SeedRejected(RuntimeError):
     """No candidate exists, so even the mandatory seed fallback is impossible."""
+
+
+def _positive_finite_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed <= 0.0:
+        raise argparse.ArgumentTypeError("must be a finite number greater than zero")
+    return parsed
 
 
 def _parse_args() -> argparse.Namespace:
@@ -86,11 +96,103 @@ def _parse_args() -> argparse.Namespace:
         default=0.80,
     )
     parser.add_argument("--seed-max-tcp-distance-px", type=float, default=20.0)
+    roi = parser.add_argument_group(
+        "gripper ROI geometry",
+        (
+            "The prompt ROI supplies SAM's box and crops the selected seed; "
+            "the hard ROI independently crops the propagated track. Defaults "
+            "reproduce the former single-ROI behavior."
+        ),
+    )
+    roi.add_argument(
+        "--prompt-roi-axial-back-m",
+        type=_positive_finite_float,
+        default=DEFAULT_GRIPPER_ROI_GEOMETRY.axial_back_m,
+        help="Prompt ROI extent behind TCP toward the EEF/palm (default: %(default)s)",
+    )
+    roi.add_argument(
+        "--prompt-roi-axial-front-m",
+        type=_positive_finite_float,
+        default=DEFAULT_GRIPPER_ROI_GEOMETRY.axial_front_m,
+        help="Prompt ROI extent in front of TCP toward the object (default: %(default)s)",
+    )
+    roi.add_argument(
+        "--hard-roi-axial-back-m",
+        type=_positive_finite_float,
+        default=DEFAULT_GRIPPER_ROI_GEOMETRY.axial_back_m,
+        help="Final hard ROI extent behind TCP; controls wrist leakage (default: %(default)s)",
+    )
+    roi.add_argument(
+        "--hard-roi-axial-front-m",
+        type=_positive_finite_float,
+        default=DEFAULT_GRIPPER_ROI_GEOMETRY.axial_front_m,
+        help="Final hard ROI extent in front of TCP (default: %(default)s)",
+    )
+    roi.add_argument(
+        "--roi-fixed-half-width-m",
+        type=_positive_finite_float,
+        help=(
+            "Use one fixed lateral half-width for both prompt and hard 3-D boxes. "
+            "When omitted, the legacy geometry interpolates width from gripper opening."
+        ),
+    )
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--temp-root", type=Path, default=Path("/tmp"))
     parser.add_argument("--crf", type=int, default=18)
     parser.add_argument("--preset", default="fast")
     return parser.parse_args()
+
+
+def _roi_geometries(
+    args: argparse.Namespace,
+) -> tuple[GripperRoiGeometry, GripperRoiGeometry]:
+    """Build independently traceable prompt and final-crop geometries."""
+
+    fixed_half_width = args.roi_fixed_half_width_m
+    width_overrides = (
+        {}
+        if fixed_half_width is None
+        else {
+            "closed_half_width_m": fixed_half_width,
+            "open_half_width_m": fixed_half_width,
+        }
+    )
+    prompt = replace(
+        DEFAULT_GRIPPER_ROI_GEOMETRY,
+        axial_back_m=args.prompt_roi_axial_back_m,
+        axial_front_m=args.prompt_roi_axial_front_m,
+        **width_overrides,
+    )
+    hard = replace(
+        DEFAULT_GRIPPER_ROI_GEOMETRY,
+        axial_back_m=args.hard_roi_axial_back_m,
+        axial_front_m=args.hard_roi_axial_front_m,
+        **width_overrides,
+    )
+    return prompt, hard
+
+
+def _roi_policy(args: argparse.Namespace) -> dict[str, Any]:
+    prompt, hard = _roi_geometries(args)
+    return {
+        "prompt": {
+            "geometry": asdict(prompt),
+            "usage": "SAM box and selected-seed crop",
+        },
+        "hard": {
+            "geometry": asdict(hard),
+            "usage": "per-frame propagated-track crop before object exclusion",
+        },
+        "legacy_roi_track_alias": "hard_roi_track",
+    }
+
+
+def _is_default_roi_policy(policy: dict[str, Any]) -> bool:
+    default = asdict(DEFAULT_GRIPPER_ROI_GEOMETRY)
+    return (
+        policy["prompt"]["geometry"] == default
+        and policy["hard"]["geometry"] == default
+    )
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -128,8 +230,8 @@ def _build_candidates(
     *,
     frame_images: dict[int, Any],
     keyframes: tuple[int, ...],
-    rois: tuple[Any, ...],
-    roi_track: np.ndarray,
+    prompt_rois: tuple[Any, ...],
+    prompt_roi_track: np.ndarray,
     target_track: np.ndarray,
     receiver_track: np.ndarray,
     events: Any,
@@ -149,7 +251,7 @@ def _build_candidates(
     ) -> list[Any]:
         bank: list[Any] = []
         for frame_id in keyframes:
-            roi = rois[frame_id]
+            roi = prompt_rois[frame_id]
             box = normalized_roi_box(roi, frame_shape)
             if box is None:
                 continue
@@ -178,7 +280,7 @@ def _build_candidates(
                 prompt_mode=prompt_mode,
                 prompt_text=prompt_text,
                 raw_mask=raw,
-                roi_mask=roi_track[frame_id],
+                roi_mask=prompt_roi_track[frame_id],
                 target_mask=target_track[frame_id],
                 receiver_mask=receiver_track[frame_id],
                 rgb=np.asarray(frame_images[frame_id], dtype=np.uint8),
@@ -220,6 +322,8 @@ def _save_candidates(
     arrays: dict[str, np.ndarray] = {}
     for candidate in candidates:
         arrays[f"{candidate.candidate_id}_raw"] = candidate.raw_mask
+        arrays[f"{candidate.candidate_id}_prompt_roi"] = candidate.roi_mask
+        # Keep the old key for consumers of existing candidate archives.
         arrays[f"{candidate.candidate_id}_roi"] = candidate.roi_mask
         arrays[f"{candidate.candidate_id}_cropped"] = candidate.cropped_mask
         arrays[f"{candidate.candidate_id}_clean"] = candidate.clean_mask
@@ -277,26 +381,31 @@ def _run_episode(
         expected_shape=expected_shape,
     )
     active_window = (context.events.t_move_start, context.events.t_open_done)
-    arm_index = 0 if context.events.active_arm == "left" else 1
-    rois_by_frame = {
-        frame_id: project_gripper_roi(
-            state.eef_states[frame_id, arm_index],
-            state.gripper_states[frame_id, arm_index],
-        )
-        for frame_id in range(*active_window)
-    }
-    # range(start, end) above omits the inclusive endpoint; keep the contract explicit.
-    rois_by_frame[active_window[1]] = project_gripper_roi(
-        state.eef_states[active_window[1], arm_index],
-        state.gripper_states[active_window[1], arm_index],
-    )
-    roi_track, rois = _build_roi_track(
+    prompt_geometry, hard_geometry = _roi_geometries(args)
+    prompt_roi_track, prompt_rois = _build_roi_track(
         state.eef_states,
         state.gripper_states,
         context.events,
         frame_shape=frame_shape,
+        geometry=prompt_geometry,
     )
-    keyframes = gripper_keyframes(rois_by_frame, context.events, frame_shape=frame_shape)
+    hard_roi_track, hard_rois = _build_roi_track(
+        state.eef_states,
+        state.gripper_states,
+        context.events,
+        frame_shape=frame_shape,
+        geometry=hard_geometry,
+    )
+    prompt_rois_by_frame = {
+        frame_id: roi
+        for frame_id, roi in enumerate(prompt_rois)
+        if roi is not None
+    }
+    keyframes = gripper_keyframes(
+        prompt_rois_by_frame,
+        context.events,
+        frame_shape=frame_shape,
+    )
     context_frame_ids = tuple(
         dict.fromkeys(
             (
@@ -345,8 +454,8 @@ def _run_episode(
             resource,
             frame_images=frame_images,
             keyframes=keyframes,
-            rois=rois,
-            roi_track=roi_track,
+            prompt_rois=prompt_rois,
+            prompt_roi_track=prompt_roi_track,
             target_track=target_track,
             receiver_track=receiver_track,
             events=context.events,
@@ -364,7 +473,7 @@ def _run_episode(
             candidate.candidate_id: render_gripper_candidate_panel(
                 frame_images[candidate.frame_id],
                 candidate,
-                rois[candidate.frame_id],
+                prompt_rois[candidate.frame_id],
             )
             for candidate in candidates
         }
@@ -402,7 +511,7 @@ def _run_episode(
 
     result = compose_gripper_track(
         native_track,
-        roi_track,
+        hard_roi_track,
         target_track,
         receiver_track,
         active_window=active_window,
@@ -430,7 +539,12 @@ def _run_episode(
         selected_candidate=np.asarray(selected.candidate_id),
         active_window=np.asarray(active_window, dtype=np.int64),
         seed_mask=selected.clean_mask,
+        seed_prompt_roi_mask=selected.roi_mask,
         native_track=native_track,
+        prompt_roi_track=prompt_roi_track,
+        hard_roi_track=result.roi_mask,
+        # Backward-compatible alias: roi_track has always represented the
+        # final per-frame crop, which is now explicitly the hard ROI.
         roi_track=result.roi_mask,
         candidate_track=result.candidate_mask,
         target_track=target_track,
@@ -449,7 +563,7 @@ def _run_episode(
         episode_id=episode_id,
         frame_count=state.frame_count,
         events=context.events,
-        rois=rois,
+        rois=hard_rois,
         native_track=native_track,
         result=result,
         crf=args.crf,
@@ -475,12 +589,16 @@ def _run_episode(
             "visible_only": True,
             "amodal_completion": False,
             "morphology": "none",
-            "operation": "qwen_selected_seed -> native_track & pose_roi & ~(target | receiver)",
+            "operation": (
+                "SAM(prompt_roi_box) & prompt_roi -> qwen_selected_seed -> "
+                "native_track & hard_roi & ~(target | receiver)"
+            ),
             "outside_active_window": "empty",
             "candidate_policy": (
                 "text_box_keyframes_then_box_only_if_all_text_candidates_fail_gate"
             ),
         },
+        "roi_policy": _roi_policy(args),
         "known_objects": {
             **objects.provenance,
             "usage": (
@@ -509,6 +627,7 @@ def _run_episode(
                 "maximum_tcp_distance_px": args.seed_max_tcp_distance_px,
             },
             "clean_pixels": selected.clean_pixels,
+            "crop_constraint": "prompt_roi",
             "qc": qc.to_json(),
             "candidate_artifacts": candidate_artifacts,
         },
@@ -520,6 +639,8 @@ def _run_episode(
         },
         "tracks": {
             "native": _track_summary(native_track, *active_window),
+            "prompt_roi": _track_summary(prompt_roi_track, *active_window),
+            "hard_roi": _track_summary(result.roi_mask, *active_window),
             "pose_cropped_candidate": _track_summary(result.candidate_mask, *active_window),
             "final_gripper": _track_summary(result.gripper_mask, *active_window),
             "target_removed": _track_summary(result.target_removed, *active_window),
@@ -587,6 +708,7 @@ def main() -> None:
         raise ValueError("--seed-min-largest-component-fraction must be in [0, 1]")
     if args.seed_max_tcp_distance_px < 0.0:
         raise ValueError("--seed-max-tcp-distance-px must be non-negative")
+    roi_policy = _roi_policy(args)
     config = load_config(args.config)
     episode_ids = tuple(args.episode_ids or config.dataset.regression_episode_ids)
     unknown = sorted(set(episode_ids) - set(config.dataset.regression_episode_ids))
@@ -615,6 +737,14 @@ def main() -> None:
     manifest_path = output_root / "batch_manifest.json"
     if args.resume and manifest_path.is_file():
         previous = json.loads(manifest_path.read_text(encoding="utf-8"))
+        previous_roi_policy = previous.get("roi_policy")
+        if previous_roi_policy is None:
+            if not _is_default_roi_policy(roi_policy):
+                raise ValueError(
+                    "cannot resume a legacy batch with non-default prompt/hard ROI geometry"
+                )
+        elif previous_roi_policy != roi_policy:
+            raise ValueError("resume ROI geometry does not match the existing batch manifest")
         records.extend(previous.get("episodes", []))
         failures.extend(previous.get("failures", []))
         completed_ids = {
@@ -675,6 +805,7 @@ def main() -> None:
                     "status": "running",
                     "created_at": datetime.now(timezone.utc).isoformat(),
                     "object_mask_run_root": str(object_root),
+                    "roi_policy": roi_policy,
                     "episode_ids": list(episode_ids),
                     "episodes": sorted(records, key=lambda item: int(item["episode"])),
                     "failures": sorted(failures, key=lambda item: int(item["episode"])),
@@ -691,6 +822,7 @@ def main() -> None:
             "status": status,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "object_mask_run_root": str(object_root),
+            "roi_policy": roi_policy,
             "episode_ids": list(episode_ids),
             "episodes": sorted(records, key=lambda item: int(item["episode"])),
             "failures": sorted(failures, key=lambda item: int(item["episode"])),

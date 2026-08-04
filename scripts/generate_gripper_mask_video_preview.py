@@ -26,6 +26,8 @@ from robotwin_annotation_v2.adapters import (
 )
 from robotwin_annotation_v2.config import load_config
 from robotwin_annotation_v2.experiments import (
+    DEFAULT_GRIPPER_ROI_GEOMETRY,
+    GripperRoiGeometry,
     GripperTrackResult,
     ProjectedGripperRoi,
     compose_gripper_track,
@@ -105,7 +107,10 @@ def _build_roi_track(
     events: LoopEvents,
     *,
     frame_shape: tuple[int, int],
+    geometry: GripperRoiGeometry = DEFAULT_GRIPPER_ROI_GEOMETRY,
 ) -> tuple[np.ndarray, tuple[ProjectedGripperRoi | None, ...]]:
+    """Project one configurable ROI geometry across the active action window."""
+
     frame_count = eef_states.shape[0]
     arm_index = 0 if events.active_arm == "left" else 1
     masks = np.zeros((frame_count, *frame_shape), dtype=bool)
@@ -114,6 +119,7 @@ def _build_roi_track(
         roi = project_gripper_roi(
             eef_states[frame_id, arm_index],
             gripper_states[frame_id, arm_index],
+            geometry=geometry,
         )
         masks[frame_id] = _polygon_mask(roi, frame_shape)
         rois[frame_id] = roi

@@ -14,6 +14,7 @@ from robotwin_annotation_v2.experiments import (
     ProjectedGripperRoi,
     apply_gripper_seed_quality_gate,
     build_gripper_seed_candidate,
+    compose_gripper_track,
     gripper_keyframes,
     load_qc_native_object_tracks,
     mark_same_frame_duplicates,
@@ -159,6 +160,42 @@ def test_candidate_applies_pose_and_exact_object_exclusion() -> None:
     assert candidate.basic_valid
     assert candidate.dark_fraction == 1.0
     assert not (candidate.clean_mask & candidate.target_removed).any()
+
+
+def test_prompt_roi_crops_seed_while_hard_roi_crops_final_track() -> None:
+    raw = np.zeros(SHAPE, dtype=bool)
+    raw[5, 7:10] = True
+    prompt_roi = np.zeros(SHAPE, dtype=bool)
+    prompt_roi[5, 7:10] = True
+    hard_roi = np.zeros(SHAPE, dtype=bool)
+    hard_roi[5, 8:10] = True
+    empty = np.zeros(SHAPE, dtype=bool)
+    candidate = build_gripper_seed_candidate(
+        candidate_id="A",
+        frame_id=5,
+        events=_events(),
+        prompt_mode="text_box",
+        prompt_text="black robot gripper",
+        raw_mask=raw,
+        roi_mask=prompt_roi,
+        target_mask=empty,
+        receiver_mask=empty,
+        rgb=np.zeros((*SHAPE, 3), dtype=np.uint8),
+        tcp_pixel_xy=np.asarray([8.0, 5.0]),
+        minimum_pixels=1,
+    )
+    native = np.repeat(candidate.clean_mask[None, ...], 2, axis=0)
+    result = compose_gripper_track(
+        native,
+        np.repeat(hard_roi[None, ...], 2, axis=0),
+        np.zeros_like(native),
+        np.zeros_like(native),
+        active_window=(0, 1),
+    )
+
+    assert candidate.clean_pixels == 3
+    assert np.array_equal(candidate.clean_mask, prompt_roi)
+    assert np.array_equal(result.gripper_mask[0], hard_roi)
 
 
 def test_black_gripper_quality_gate_rejects_implausible_candidate() -> None:

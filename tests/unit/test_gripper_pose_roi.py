@@ -5,6 +5,8 @@ import numpy as np
 import pytest
 
 from robotwin_annotation_v2.experiments import (
+    CameraCalibration,
+    GripperRoiGeometry,
     compose_gripper_track,
     exclude_known_objects,
     project_gripper_roi,
@@ -42,6 +44,33 @@ def test_open_gripper_projects_a_wider_roi_than_closed_gripper() -> None:
     opened = project_gripper_roi(pose, 1.0)
 
     assert opened.bbox_xyxy[2] - opened.bbox_xyxy[0] > closed.bbox_xyxy[2] - closed.bbox_xyxy[0]
+
+
+def test_axial_back_can_expand_toward_palm_while_front_is_shortened() -> None:
+    calibration = CameraCalibration(
+        intrinsic_cv=np.eye(3),
+        extrinsic_cv=np.concatenate((np.eye(3), np.zeros((3, 1))), axis=1),
+    )
+    pose = np.asarray([0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
+    baseline = project_gripper_roi(
+        pose,
+        0.0,
+        calibration=calibration,
+        geometry=GripperRoiGeometry(margin_px=0.0),
+    )
+    palm_focused = project_gripper_roi(
+        pose,
+        0.0,
+        calibration=calibration,
+        geometry=GripperRoiGeometry(
+            axial_back_m=0.080,
+            axial_front_m=0.040,
+            margin_px=0.0,
+        ),
+    )
+
+    assert palm_focused.bbox_xyxy[0] < baseline.bbox_xyxy[0]
+    assert palm_focused.bbox_xyxy[2] < baseline.bbox_xyxy[2]
 
 
 def test_known_object_exclusion_is_an_exact_disjoint_partition() -> None:
