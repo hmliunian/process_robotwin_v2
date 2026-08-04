@@ -61,6 +61,13 @@ class SeedRejected(RuntimeError):
     """No candidate exists, so even the mandatory seed fallback is impossible."""
 
 
+FINAL_PROMPT_ROI_AXIAL_BACK_M = 0.120
+FINAL_PROMPT_ROI_AXIAL_FRONT_M = 0.060
+FINAL_HARD_ROI_AXIAL_BACK_M = 0.120
+FINAL_HARD_ROI_AXIAL_FRONT_M = 0.045
+FINAL_FIXED_HALF_WIDTH_M = 0.085
+
+
 def _positive_finite_float(value: str) -> float:
     parsed = float(value)
     if not math.isfinite(parsed) or parsed <= 0.0:
@@ -101,40 +108,50 @@ def _parse_args() -> argparse.Namespace:
         (
             "The prompt ROI supplies SAM's box and crops the selected seed; "
             "the hard ROI independently crops the propagated track. Defaults "
-            "reproduce the former single-ROI behavior."
+            "use the fixed wrist-connected front45 profile; pass "
+            "--roi-dynamic-width for the historical width interpolation."
         ),
     )
     roi.add_argument(
         "--prompt-roi-axial-back-m",
         type=_positive_finite_float,
-        default=DEFAULT_GRIPPER_ROI_GEOMETRY.axial_back_m,
+        default=FINAL_PROMPT_ROI_AXIAL_BACK_M,
         help="Prompt ROI extent behind TCP toward the EEF/palm (default: %(default)s)",
     )
     roi.add_argument(
         "--prompt-roi-axial-front-m",
         type=_positive_finite_float,
-        default=DEFAULT_GRIPPER_ROI_GEOMETRY.axial_front_m,
+        default=FINAL_PROMPT_ROI_AXIAL_FRONT_M,
         help="Prompt ROI extent in front of TCP toward the object (default: %(default)s)",
     )
     roi.add_argument(
         "--hard-roi-axial-back-m",
         type=_positive_finite_float,
-        default=DEFAULT_GRIPPER_ROI_GEOMETRY.axial_back_m,
+        default=FINAL_HARD_ROI_AXIAL_BACK_M,
         help="Final hard ROI extent behind TCP; controls wrist leakage (default: %(default)s)",
     )
     roi.add_argument(
         "--hard-roi-axial-front-m",
         type=_positive_finite_float,
-        default=DEFAULT_GRIPPER_ROI_GEOMETRY.axial_front_m,
+        default=FINAL_HARD_ROI_AXIAL_FRONT_M,
         help="Final hard ROI extent in front of TCP (default: %(default)s)",
     )
-    roi.add_argument(
+    width = roi.add_mutually_exclusive_group()
+    width.add_argument(
         "--roi-fixed-half-width-m",
         type=_positive_finite_float,
+        default=FINAL_FIXED_HALF_WIDTH_M,
         help=(
-            "Use one fixed lateral half-width for both prompt and hard 3-D boxes. "
-            "When omitted, the legacy geometry interpolates width from gripper opening."
+            "Use one fixed lateral half-width for both prompt and hard 3-D boxes "
+            "(default: %(default)s)."
         ),
+    )
+    width.add_argument(
+        "--roi-dynamic-width",
+        dest="roi_fixed_half_width_m",
+        action="store_const",
+        const=None,
+        help="Restore historical width interpolation from gripper opening.",
     )
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--temp-root", type=Path, default=Path("/tmp"))

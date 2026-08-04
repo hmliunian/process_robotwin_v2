@@ -41,6 +41,35 @@ def test_default_prompt_and_hard_roi_policy_preserves_single_roi_behavior() -> N
     assert QWEN_SCRIPT._is_default_roi_policy(QWEN_SCRIPT._roi_policy(_args()))
 
 
+def test_final_front45_profile_keeps_prompt_front_longer_than_hard_crop() -> None:
+    args = _args(
+        prompt_back=QWEN_SCRIPT.FINAL_PROMPT_ROI_AXIAL_BACK_M,
+        prompt_front=QWEN_SCRIPT.FINAL_PROMPT_ROI_AXIAL_FRONT_M,
+        hard_back=QWEN_SCRIPT.FINAL_HARD_ROI_AXIAL_BACK_M,
+        hard_front=QWEN_SCRIPT.FINAL_HARD_ROI_AXIAL_FRONT_M,
+        fixed_half_width=QWEN_SCRIPT.FINAL_FIXED_HALF_WIDTH_M,
+    )
+
+    prompt, hard = QWEN_SCRIPT._roi_geometries(args)
+
+    assert (prompt.axial_back_m, prompt.axial_front_m) == (0.120, 0.060)
+    assert (hard.axial_back_m, hard.axial_front_m) == (0.120, 0.045)
+    assert prompt.closed_half_width_m == prompt.open_half_width_m == 0.085
+    assert hard.closed_half_width_m == hard.open_half_width_m == 0.085
+
+
+def test_cli_defaults_select_final_front45_profile(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "argv", ["generate_gripper_mask_video_qwen_qc.py", "--output-dir", "out"])
+
+    args = QWEN_SCRIPT._parse_args()
+
+    assert args.prompt_roi_axial_back_m == 0.120
+    assert args.prompt_roi_axial_front_m == 0.060
+    assert args.hard_roi_axial_back_m == 0.120
+    assert args.hard_roi_axial_front_m == 0.045
+    assert args.roi_fixed_half_width_m == 0.085
+
+
 def test_prompt_and_hard_axial_extents_are_independent_and_traceable() -> None:
     args = _args(
         prompt_back=0.080,

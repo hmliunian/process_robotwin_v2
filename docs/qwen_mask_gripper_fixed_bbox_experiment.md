@@ -3,23 +3,26 @@
 ## 结论
 
 本轮实验将夹爪 ROI 定义为“腕部 + 完整夹爪”，不再根据夹爪开合量动态改变
-3D bbox 宽度。最终候选 F12 在 coverage20 上完成 20/20，0 batch failure；相比旧
-ROI，夹爪基座、导轨和腕部连接明显恢复，重点静态检查未见 mask 沿腕部后方继续
-扩展成长机械臂。
+3D bbox 宽度。最终采用 asymmetric front45 profile：prompt 保留较宽的前方范围，
+最终 hard crop 只保留 `0.045 m` 的指尖前方范围。front45 coverage20 的 20 条
+视频均完成且无失败；相比旧 ROI，夹爪基座、导轨和腕部连接保持完整，同时减少
+approach 一侧多余区域。
 
 推荐固定参数：
 
 ```text
 tcp_offset_m        = 0.120
 axial_back_m        = 0.120
-axial_front_m       = 0.060
+prompt_front_m      = 0.060
+hard_front_m        = 0.045
 fixed_half_width_m  = 0.085
 half_thickness_m    = 0.050
 margin_px           = 3
 ```
 
-prompt ROI 和最终 hard ROI 当前使用相同几何。横向 `closed_half_width_m` 与
-`open_half_width_m` 都固定为 `0.085 m`。
+prompt ROI 使用 `back/front=0.120/0.060 m`，最终 hard ROI 使用
+`back/front=0.120/0.045 m`。横向 `closed_half_width_m` 与 `open_half_width_m`
+都固定为 `0.085 m`。
 
 ## 分支与实验环境
 
@@ -46,13 +49,13 @@ TCP 回到 EEF 平面：
 
 ```text
 EEF-relative axial range
-= [tcp_offset - axial_back, tcp_offset + axial_front]
-= [0.12 - 0.12, 0.12 + 0.06]
-= [0.00 m, 0.18 m]
+= prompt: [0.12 - 0.12, 0.12 + 0.06] = [0.00 m, 0.18 m]
+= hard:   [0.12 - 0.12, 0.12 + 0.045] = [0.00 m, 0.165 m]
 ```
 
 这允许腕部、掌部、导轨和两指形成连通区域，同时不主动把 bbox 延伸到 EEF 后方的
-长机械臂。`axial_front_m` 保持 `0.06 m`，避免为了补腕部而向物体一侧继续放宽。
+长机械臂。hard bbox 只缩短 TCP 朝物体/指尖方向的 `1.5 cm`，不会影响腕部侧；prompt
+仍保留 `0.06 m`，避免 SAM seed 因提示框过窄而丢失指尖。
 
 ## 小样本参数对照
 
@@ -60,13 +63,16 @@ EEF-relative axial range
 | --- | --- | ---: | ---: | ---: | ---: |
 | A / baseline | 0.025/0.060 m | dynamic | 1414.2（20 条） | 1349.5 | 0.8184 |
 | F10 | 0.100/0.060 m | 0.085 m fixed | 3545.0（5 条） | 3516.2 | 0.8712 |
-| F12 | 0.120/0.060 m | 0.085 m fixed | 4614.8（5 条） | 3683.9 | 0.8727 |
+| F12-front60（历史验证） | 0.120/0.060 m | 0.085 m fixed | 4614.8（5 条） | 3683.9 | 0.8727 |
 
-F10 已能恢复大部分掌部；F12 向近端补到 EEF 平面后，腕部与完整夹爪的连接更稳定。
-F12 小样本的 5 条 episode 在 full20 重跑中，candidate、seed frame、clean pixels 和
+F10 已能恢复大部分掌部；F12-front60 向近端补到 EEF 平面后，腕部与完整夹爪的连接更稳定。
+F12-front60 小样本的 5 条 episode 在 full20 重跑中，candidate、seed frame、clean pixels 和
 最终 track 均完全一致。
 
-## F12 coverage20 结果
+front45 仅收紧最终 hard crop，不改变 prompt 和 SAM propagation；full20 视频中腕部侧
+保持不变，approach 一侧的多余区域被轻微收窄。
+
+## F12-front60 coverage20 历史验证结果
 
 | Metric | Result |
 | --- | ---: |
@@ -91,6 +97,18 @@ F12 小样本的 5 条 episode 在 full20 重跑中，candidate、seed frame、c
 - gained/lost/net：`6,319,316 / 193,960 / +6,125,356 pixel-frames`
 - `82.56%` 的新增像素位于新开放的 hard-ROI band 内。
 
+## front45 coverage20 最终结果
+
+| Shard | Episodes | Status | Parameters |
+| --- | ---: | --- | --- |
+| GPU6 | 10 | completed, 0 failure | prompt `0.120/0.060`, hard `0.120/0.045` |
+| GPU7 | 10 | completed, 0 failure | prompt `0.120/0.060`, hard `0.120/0.045` |
+
+20 个 episode 已合并后通过历史 `render_coverage20_videos.py` 统一渲染；视频输出
+目录为 `artifacts/rendered_videos/coverage20_qwen_front45/`。F12/front45 逐 episode
+对比图仍见下方 probe 入口；`0.9315` 等聚合指标仍对应 F12-front60 历史验证，
+不应误标为 front45 全量统计。
+
 ## Seed QC 边缘情况
 
 20 条都通过 seed QC，但 prompt/选择路径并非完全相同：
@@ -109,6 +127,9 @@ F12 小样本的 5 条 episode 在 full20 重跑中，candidate、seed frame、c
 
 - [F12 full20 A/F12 对比索引](../artifacts/gripper_roi_ablation/visualizations/F12_full20/index.md)
 - [F12 full20 量化报告](../artifacts/gripper_roi_ablation/analysis/F12_full20.md)
+- [F12/front45 probe GPU6 对比](../artifacts/gripper_roi_ablation/visualizations/F12_front45_probe_a/index.md)
+- [F12/front45 probe GPU7 对比](../artifacts/gripper_roi_ablation/visualizations/F12_front45_probe_b/index.md)
+- [front45 coverage20 最终 overlay 视频目录](../artifacts/rendered_videos/coverage20_qwen_front45/)
 - [固定 bbox 几何投影 sweep](../artifacts/gripper_roi_ablation/fixed_bbox_geometry_w075_b080_b100_b120/fixed_gripper_bbox_sweep.jpg)
 - [A/S/F10/F12 对比索引](../artifacts/gripper_roi_ablation/visualizations/fixed_bbox_AS_F10_F12/index.md)
 
@@ -140,5 +161,6 @@ full20 索引包含 9 张原生分辨率 contact-sheet 对比：
 预测，并且最终与 target/receiver track 零重叠。面积、连续性和新增 band 像素本身
 不是 robot-part 标注，因此不能仅凭指标严格证明 ROI 内绝无前臂像素。
 
-当前“没有明显长机械臂泄漏”的判断来自重点和边缘 episode 的可视化检查。若后续需要
+当前“没有明显长机械臂泄漏”的判断来自重点和边缘 episode 的可视化检查。front45
+只收紧 approach 侧，不会改善 hard back 方向的 robot-part 可分性。若后续需要
 机器可验证的严格 wrist cut，应增加 CAD/URDF wrist plane 或像素级 robot-part GT。
