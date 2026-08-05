@@ -10,19 +10,22 @@ approach 一侧多余区域。
 
 推荐固定参数：
 
-```text
-tcp_offset_m        = 0.120
-axial_back_m        = 0.120
-prompt_front_m      = 0.060
-hard_front_m        = 0.045
-fixed_half_width_m  = 0.085
-half_thickness_m    = 0.050
-margin_px           = 3
+```yaml
+gripper_roi:
+  prompt:
+    axial_back_m: 0.120
+    axial_front_m: 0.060
+  hard:
+    axial_back_m: 0.120
+    axial_front_m: 0.045
+  fixed_half_width_m: 0.085
 ```
 
 prompt ROI 使用 `back/front=0.120/0.060 m`，最终 hard ROI 使用
 `back/front=0.120/0.045 m`。横向 `closed_half_width_m` 与 `open_half_width_m`
-都固定为 `0.085 m`。
+都固定为 `0.085 m`。这些实验级参数统一从 YAML 的 `gripper_roi` 读取；脚本不再
+提供 ROI 几何命令行覆盖，也不再提供切回动态宽度的运行路径。其余未暴露参数继续
+使用投影模块常量：`tcp_offset_m=0.120`、`half_thickness_m=0.050`、`margin_px=3`。
 
 ## 分支与实验环境
 
@@ -148,8 +151,8 @@ full20 索引包含 9 张原生分辨率 contact-sheet 对比：
 
 `scripts/generate_gripper_mask_video_qwen_qc.py` 新增：
 
-- 独立 prompt/hard axial back/front 参数。
-- `--roi-fixed-half-width-m` 固定横向 half-width。
+- 从 YAML `gripper_roi` 读取独立的 prompt/hard axial back/front 参数和固定横向
+  half-width；运行时没有动态宽度或 ROI 命令行覆盖路径。
 - manifest/NPZ 中显式记录 prompt ROI、hard ROI 和 geometry。
 - resume 时校验 ROI policy，避免不同几何混写同一个 batch。
 

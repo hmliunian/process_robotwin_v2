@@ -37,5 +37,14 @@ mask:
   qc_max_area_fraction: 0.85
   qc_duplicate_iou_threshold: 0.98
 
+gripper_roi:
+  prompt:
+    axial_back_m: 0.120
+    axial_front_m: 0.060
+  hard:
+    axial_back_m: 0.120
+    axial_front_m: 0.045
+  fixed_half_width_m: 0.085
+
 output:
   root: ../artifacts/runs

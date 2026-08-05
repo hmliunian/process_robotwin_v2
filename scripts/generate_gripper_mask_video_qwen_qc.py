@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import shutil
 import tempfile
 import time
@@ -22,7 +21,7 @@ from robotwin_annotation_v2.adapters import (
     Sam3Adapter,
     sam3_video_resource,
 )
-from robotwin_annotation_v2.config import load_config
+from robotwin_annotation_v2.config import GripperRoiConfig, load_config
 from robotwin_annotation_v2.experiments import (
     DEFAULT_GRIPPER_ROI_GEOMETRY,
     GripperRoiGeometry,
@@ -61,20 +60,6 @@ class SeedRejected(RuntimeError):
     """No candidate exists, so even the mandatory seed fallback is impossible."""
 
 
-FINAL_PROMPT_ROI_AXIAL_BACK_M = 0.120
-FINAL_PROMPT_ROI_AXIAL_FRONT_M = 0.060
-FINAL_HARD_ROI_AXIAL_BACK_M = 0.120
-FINAL_HARD_ROI_AXIAL_FRONT_M = 0.045
-FINAL_FIXED_HALF_WIDTH_M = 0.085
-
-
-def _positive_finite_float(value: str) -> float:
-    parsed = float(value)
-    if not math.isfinite(parsed) or parsed <= 0.0:
-        raise argparse.ArgumentTypeError("must be a finite number greater than zero")
-    return parsed
-
-
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -103,56 +88,6 @@ def _parse_args() -> argparse.Namespace:
         default=0.80,
     )
     parser.add_argument("--seed-max-tcp-distance-px", type=float, default=20.0)
-    roi = parser.add_argument_group(
-        "gripper ROI geometry",
-        (
-            "The prompt ROI supplies SAM's box and crops the selected seed; "
-            "the hard ROI independently crops the propagated track. Defaults "
-            "use the fixed wrist-connected front45 profile; pass "
-            "--roi-dynamic-width for the historical width interpolation."
-        ),
-    )
-    roi.add_argument(
-        "--prompt-roi-axial-back-m",
-        type=_positive_finite_float,
-        default=FINAL_PROMPT_ROI_AXIAL_BACK_M,
-        help="Prompt ROI extent behind TCP toward the EEF/palm (default: %(default)s)",
-    )
-    roi.add_argument(
-        "--prompt-roi-axial-front-m",
-        type=_positive_finite_float,
-        default=FINAL_PROMPT_ROI_AXIAL_FRONT_M,
-        help="Prompt ROI extent in front of TCP toward the object (default: %(default)s)",
-    )
-    roi.add_argument(
-        "--hard-roi-axial-back-m",
-        type=_positive_finite_float,
-        default=FINAL_HARD_ROI_AXIAL_BACK_M,
-        help="Final hard ROI extent behind TCP; controls wrist leakage (default: %(default)s)",
-    )
-    roi.add_argument(
-        "--hard-roi-axial-front-m",
-        type=_positive_finite_float,
-        default=FINAL_HARD_ROI_AXIAL_FRONT_M,
-        help="Final hard ROI extent in front of TCP (default: %(default)s)",
-    )
-    width = roi.add_mutually_exclusive_group()
-    width.add_argument(
-        "--roi-fixed-half-width-m",
-        type=_positive_finite_float,
-        default=FINAL_FIXED_HALF_WIDTH_M,
-        help=(
-            "Use one fixed lateral half-width for both prompt and hard 3-D boxes "
-            "(default: %(default)s)."
-        ),
-    )
-    width.add_argument(
-        "--roi-dynamic-width",
-        dest="roi_fixed_half_width_m",
-        action="store_const",
-        const=None,
-        help="Restore historical width interpolation from gripper opening.",
-    )
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--temp-root", type=Path, default=Path("/tmp"))
     parser.add_argument("--crf", type=int, default=18)
@@ -161,36 +96,31 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _roi_geometries(
-    args: argparse.Namespace,
+    config: GripperRoiConfig,
 ) -> tuple[GripperRoiGeometry, GripperRoiGeometry]:
-    """Build independently traceable prompt and final-crop geometries."""
+    """Build the configured fixed-width prompt and final-crop geometries."""
 
-    fixed_half_width = args.roi_fixed_half_width_m
-    width_overrides = (
-        {}
-        if fixed_half_width is None
-        else {
-            "closed_half_width_m": fixed_half_width,
-            "open_half_width_m": fixed_half_width,
-        }
-    )
+    width_overrides = {
+        "closed_half_width_m": config.fixed_half_width_m,
+        "open_half_width_m": config.fixed_half_width_m,
+    }
     prompt = replace(
         DEFAULT_GRIPPER_ROI_GEOMETRY,
-        axial_back_m=args.prompt_roi_axial_back_m,
-        axial_front_m=args.prompt_roi_axial_front_m,
+        axial_back_m=config.prompt_axial_back_m,
+        axial_front_m=config.prompt_axial_front_m,
         **width_overrides,
     )
     hard = replace(
         DEFAULT_GRIPPER_ROI_GEOMETRY,
-        axial_back_m=args.hard_roi_axial_back_m,
-        axial_front_m=args.hard_roi_axial_front_m,
+        axial_back_m=config.hard_axial_back_m,
+        axial_front_m=config.hard_axial_front_m,
         **width_overrides,
     )
     return prompt, hard
 
 
-def _roi_policy(args: argparse.Namespace) -> dict[str, Any]:
-    prompt, hard = _roi_geometries(args)
+def _roi_policy(config: GripperRoiConfig) -> dict[str, Any]:
+    prompt, hard = _roi_geometries(config)
     return {
         "prompt": {
             "geometry": asdict(prompt),
@@ -202,14 +132,6 @@ def _roi_policy(args: argparse.Namespace) -> dict[str, Any]:
         },
         "legacy_roi_track_alias": "hard_roi_track",
     }
-
-
-def _is_default_roi_policy(policy: dict[str, Any]) -> bool:
-    default = asdict(DEFAULT_GRIPPER_ROI_GEOMETRY)
-    return (
-        policy["prompt"]["geometry"] == default
-        and policy["hard"]["geometry"] == default
-    )
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -398,7 +320,7 @@ def _run_episode(
         expected_shape=expected_shape,
     )
     active_window = (context.events.t_move_start, context.events.t_open_done)
-    prompt_geometry, hard_geometry = _roi_geometries(args)
+    prompt_geometry, hard_geometry = _roi_geometries(config.gripper_roi)
     prompt_roi_track, prompt_rois = _build_roi_track(
         state.eef_states,
         state.gripper_states,
@@ -615,7 +537,7 @@ def _run_episode(
                 "text_box_keyframes_then_box_only_if_all_text_candidates_fail_gate"
             ),
         },
-        "roi_policy": _roi_policy(args),
+        "roi_policy": _roi_policy(config.gripper_roi),
         "known_objects": {
             **objects.provenance,
             "usage": (
@@ -725,8 +647,8 @@ def main() -> None:
         raise ValueError("--seed-min-largest-component-fraction must be in [0, 1]")
     if args.seed_max_tcp_distance_px < 0.0:
         raise ValueError("--seed-max-tcp-distance-px must be non-negative")
-    roi_policy = _roi_policy(args)
     config = load_config(args.config)
+    roi_policy = _roi_policy(config.gripper_roi)
     episode_ids = tuple(args.episode_ids or config.dataset.regression_episode_ids)
     unknown = sorted(set(episode_ids) - set(config.dataset.regression_episode_ids))
     if unknown:
@@ -756,10 +678,7 @@ def main() -> None:
         previous = json.loads(manifest_path.read_text(encoding="utf-8"))
         previous_roi_policy = previous.get("roi_policy")
         if previous_roi_policy is None:
-            if not _is_default_roi_policy(roi_policy):
-                raise ValueError(
-                    "cannot resume a legacy batch with non-default prompt/hard ROI geometry"
-                )
+            raise ValueError("cannot resume a legacy batch without an ROI policy")
         elif previous_roi_policy != roi_policy:
             raise ValueError("resume ROI geometry does not match the existing batch manifest")
         records.extend(previous.get("episodes", []))
