@@ -6,8 +6,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import shutil
 import subprocess
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from fractions import Fraction
@@ -34,6 +36,7 @@ HALO_COLOR = (0, 0, 0)
 DEFAULT_FILL_ALPHA = 0.32
 DEFAULT_OUTLINE_RADIUS = 3
 DEFAULT_HALO_RADIUS = 5
+TEXT_PROMPT_SLUG_MAX_LENGTH = 96
 
 
 @dataclass(frozen=True)
@@ -100,6 +103,15 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--episode-ids", type=int, nargs="*")
+    parser.add_argument(
+        "--filename-mode",
+        choices=("episode", "text_prompt"),
+        default="episode",
+        help=(
+            "Name videos by episode id or normalized dataset text prompt. "
+            "Text-prompt names retain the episode id to guarantee uniqueness."
+        ),
+    )
     parser.add_argument("--alpha", type=float, default=DEFAULT_FILL_ALPHA)
     parser.add_argument(
         "--outline-radius",
@@ -117,6 +129,34 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--preset", default="medium")
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
+
+
+def _text_prompt_slug(text: str, *, max_length: int = TEXT_PROMPT_SLUG_MAX_LENGTH) -> str:
+    """Return a readable, portable filename component for one task prompt."""
+
+    if max_length < 1:
+        raise ValueError("max_length must be positive")
+    ascii_text = (
+        unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    )
+    slug = re.sub(r"[^a-z0-9]+", "_", ascii_text.lower()).strip("_")
+    slug = slug[:max_length].rstrip("_")
+    return slug or "task"
+
+
+def _output_video_name(
+    *,
+    episode_id: int,
+    camera: str,
+    task_text: str,
+    filename_mode: str,
+) -> str:
+    suffix = f"episode_{episode_id:06d}_{camera}_overlay.mp4"
+    if filename_mode == "episode":
+        return suffix
+    if filename_mode == "text_prompt":
+        return f"{_text_prompt_slug(task_text)}__{suffix}"
+    raise ValueError(f"unsupported filename mode: {filename_mode}")
 
 
 def _sha256(path: Path) -> str:
@@ -649,7 +689,13 @@ def main() -> None:
             )
         ref = EpisodeRef(config.dataset.task, episode_id, config.dataset.camera)
         video_path = dataset.paths(ref).video
-        output_path = output_dir / f"episode_{episode_id:06d}_{config.dataset.camera}_overlay.mp4"
+        task_text = dataset.task_text(episode_id)
+        output_path = output_dir / _output_video_name(
+            episode_id=episode_id,
+            camera=config.dataset.camera,
+            task_text=task_text,
+            filename_mode=args.filename_mode,
+        )
         video = render_video(
             video_path,
             artifact,
@@ -667,6 +713,7 @@ def main() -> None:
         }
         record = {
             "episode_index": episode_id,
+            "task_text": task_text,
             "run_id": candidate.run_id,
             "source_video": str(video_path),
             "source_masks": str(candidate.path),
@@ -724,6 +771,7 @@ def main() -> None:
         "gripper_mask_root": None if gripper_root is None else str(gripper_root),
         "task": config.dataset.task,
         "camera": config.dataset.camera,
+        "filename_mode": args.filename_mode,
         "episode_count": len(records),
         "rendered_roles": (
             ["target", "receiver", "gripper"]

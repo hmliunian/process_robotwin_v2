@@ -12,9 +12,37 @@ from scripts.render_coverage20_videos import (
     MaskCandidate,
     _external_outline_layers,
     _merge_gripper_track,
+    _output_video_name,
+    _text_prompt_slug,
     overlay_frame,
     select_best_masks,
 )
+
+
+def test_text_prompt_filename_is_readable_portable_and_unique() -> None:
+    prompt = "Use the right arm to set the flat-base orange bottle onto the pad."
+
+    assert _text_prompt_slug(prompt) == (
+        "use_the_right_arm_to_set_the_flat_base_orange_bottle_onto_the_pad"
+    )
+    assert _output_video_name(
+        episode_id=7152,
+        camera="cam_high",
+        task_text=prompt,
+        filename_mode="text_prompt",
+    ) == (
+        "use_the_right_arm_to_set_the_flat_base_orange_bottle_onto_the_pad"
+        "__episode_007152_cam_high_overlay.mp4"
+    )
+
+
+def test_episode_filename_mode_preserves_existing_contract() -> None:
+    assert _output_video_name(
+        episode_id=7152,
+        camera="cam_high",
+        task_text="ignored",
+        filename_mode="episode",
+    ) == "episode_007152_cam_high_overlay.mp4"
 
 
 def _artifact(mask: np.ndarray) -> MaskArtifact:

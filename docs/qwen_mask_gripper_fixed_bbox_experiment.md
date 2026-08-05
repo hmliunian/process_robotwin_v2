@@ -105,9 +105,10 @@ front45 仅收紧最终 hard crop，不改变 prompt 和 SAM propagation；full2
 | GPU7 | 10 | completed, 0 failure | prompt `0.120/0.060`, hard `0.120/0.045` |
 
 20 个 episode 已合并后通过历史 `render_coverage20_videos.py` 统一渲染；视频输出
-目录为 `artifacts/rendered_videos/coverage20_qwen_front45/`。F12/front45 逐 episode
-对比图仍见下方 probe 入口；`0.9315` 等聚合指标仍对应 F12-front60 历史验证，
-不应误标为 front45 全量统计。
+目录为 `artifacts/rendered_videos/coverage20_qwen_front45/`。最终文件使用
+`<normalized_text_prompt>__episode_XXXXXX_cam_high_overlay.mp4` 命名，保留 episode id
+以避免重复 prompt 覆盖。F12/front45 逐 episode 对比图仍见下方 probe 入口；
+`0.9315` 等聚合指标仍对应 F12-front60 历史验证，不应误标为 front45 全量统计。
 
 ## Seed QC 边缘情况
 
