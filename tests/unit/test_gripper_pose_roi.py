@@ -4,7 +4,7 @@ import numpy as np
 
 import pytest
 
-from robotwin_annotation_v2.experiments import (
+from robotwin_annotation_v2.pipeline import (
     CameraCalibration,
     GripperRoiGeometry,
     compose_gripper_track,

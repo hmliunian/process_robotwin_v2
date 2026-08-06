@@ -9,7 +9,7 @@ import numpy as np
 from PIL import Image
 
 from robotwin_annotation_v2.adapters import QwenCompletion
-from robotwin_annotation_v2.experiments import (
+from robotwin_annotation_v2.pipeline import (
     GripperSeedCandidate,
     ProjectedGripperRoi,
     apply_gripper_seed_quality_gate,

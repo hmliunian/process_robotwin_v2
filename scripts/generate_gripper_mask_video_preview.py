@@ -25,7 +25,7 @@ from robotwin_annotation_v2.adapters import (
     sam3_video_resource,
 )
 from robotwin_annotation_v2.config import load_config
-from robotwin_annotation_v2.experiments import (
+from robotwin_annotation_v2.pipeline import (
     DEFAULT_GRIPPER_ROI_GEOMETRY,
     GripperRoiGeometry,
     GripperTrackResult,
