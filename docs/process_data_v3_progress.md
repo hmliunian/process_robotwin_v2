@@ -11,10 +11,10 @@
 |---|---|---|---|
 | P1 | 删除孤立实验脚本 + 空测试目录 | ✅ 完成 | `eb2b7dc`, `5494e47` |
 | P2 | gripper 算法迁移到 `pipeline/gripper_stage.py` | ✅ 完成 | `05f5893` |
-| P3 | pipeline CLI 接入 gripper + 四通道 `masks.npz` | ✅ 完成 | 待提交 |
-| P4 | render 简化（删事后 merge、并入 review sheet） | ✅ 完成 | 待提交 |
-| P5 | 一键处理任意 RoboTwin 目录 | ✅ 完成 | 待提交 |
-| P6 | 文档同步（v2 文档过时声明、README/QUICKSTART） | ✅ 完成 | 待提交 |
+| P3 | pipeline CLI 接入 gripper + 四通道 `masks.npz` | ✅ 完成 | `33a8169` |
+| P4 | render 简化（删事后 merge、并入 review sheet） | ✅ 完成 | `33a8169` |
+| P5 | 一键处理任意 RoboTwin 目录 | ✅ 完成 | `33a8169` |
+| P6 | 文档同步（v2 文档过时声明、README/QUICKSTART） | ✅ 完成 | `33a8169` |
 
 ---
 
