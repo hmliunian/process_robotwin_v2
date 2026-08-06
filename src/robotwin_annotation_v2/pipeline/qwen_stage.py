@@ -180,7 +180,12 @@ def _decode_response(raw_response: str) -> dict[str, Any]:
     return payload
 
 
-def _string_list(value: Any, *, field: str) -> tuple[str, ...]:
+def _string_list(
+    value: Any,
+    *,
+    field: str,
+    deduplicate: bool = False,
+) -> tuple[str, ...]:
     if not isinstance(value, list):
         raise QwenStageError(f"{field} must be a list")
     cleaned: list[str] = []
@@ -189,6 +194,8 @@ def _string_list(value: Any, *, field: str) -> tuple[str, ...]:
             raise QwenStageError(f"{field}[{index}] must be a non-empty string")
         normalized = " ".join(item.split())
         if normalized in cleaned:
+            if deduplicate:
+                continue
             raise QwenStageError(f"{field} must not contain duplicates")
         cleaned.append(normalized)
     return tuple(cleaned)
@@ -290,7 +297,11 @@ def _parse_role(
     reason = payload["reason"]
     if not isinstance(reason, str) or not reason.strip():
         raise QwenStageError(f"{role}.reason must be a non-empty string")
-    exclude = _string_list(payload["exclude"], field=f"{role}.exclude")
+    exclude = _string_list(
+        payload["exclude"],
+        field=f"{role}.exclude",
+        deduplicate=True,
+    )
 
     candidate_values = {field: payload[field] for field in CANDIDATE_FIELDS}
     for field, value in candidate_values.items():

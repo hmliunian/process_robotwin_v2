@@ -211,6 +211,20 @@ def test_parse_semantic_plan_canonicalizes_exact_duplicate_candidates() -> None:
     assert plan.receiver.primary_query == "blue square pad"
 
 
+def test_parse_semantic_plan_deduplicates_exclude_terms_in_order() -> None:
+    payload = json.loads(_response())
+    payload["target"]["exclude"] = ["blue pad", "bottle", "blue pad", "bottle"]
+
+    plan = parse_semantic_plan(
+        json.dumps(payload),
+        context=_context(),
+        model="fake-qwen",
+        rendered_prompt="rendered prompt",
+    )
+
+    assert plan.target.exclude == ("blue pad", "bottle")
+
+
 def test_parse_semantic_plan_completes_omitted_candidate_order_entries() -> None:
     payload = json.loads(_response())
     payload["receiver"]["recommended_order"] = [
