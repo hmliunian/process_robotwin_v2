@@ -134,6 +134,15 @@ def _interior_point(mask: np.ndarray) -> list[float]:
     ]
 
 
+def _normalized_box_xywh(box_xyxy: Sequence[float]) -> list[float]:
+    if len(box_xyxy) != 4:
+        raise ValueError("box_xyxy must contain [x0, y0, x1, y1]")
+    x0, y0, x1, y1 = (float(value) for value in box_xyxy)
+    if not (0.0 <= x0 < x1 <= 1.0 and 0.0 <= y0 < y1 <= 1.0):
+        raise ValueError("box_xyxy must be an ordered normalized box in [0, 1]")
+    return [x0, y0, x1 - x0, y1 - y0]
+
+
 class Sam3Adapter:
     """One thin wrapper around the pinned SAM3 video predictor."""
 
@@ -275,6 +284,67 @@ class Sam3Adapter:
                     frame_shape,
                 )
             return result
+
+    def box_mask(
+        self,
+        resource_path: Path,
+        box_xyxy: Sequence[float],
+        *,
+        frame_id: int,
+        frame_count: int,
+        frame_shape: tuple[int, int],
+    ) -> np.ndarray:
+        """Return one direct same-frame mask from a normalized visual box."""
+
+        if not 0 <= frame_id < frame_count:
+            raise ValueError(f"SAM3 box frame is outside [0, {frame_count})")
+        box_xywh = _normalized_box_xywh(box_xyxy)
+        with self._session(resource_path) as session_id:
+            response = self.predictor.handle_request(
+                request={
+                    "type": "add_prompt",
+                    "session_id": session_id,
+                    "frame_index": frame_id,
+                    "bounding_boxes": [box_xywh],
+                    "bounding_box_labels": [1],
+                    "rel_coordinates": True,
+                    "obj_id": 1,
+                }
+            )
+            return _primary_mask(response.get("outputs", {}), frame_shape)
+
+    def text_box_mask(
+        self,
+        resource_path: Path,
+        text: str,
+        box_xyxy: Sequence[float],
+        *,
+        frame_id: int,
+        frame_count: int,
+        frame_shape: tuple[int, int],
+    ) -> np.ndarray:
+        """Return one direct mask from one joint text-and-visual-box prompt."""
+
+        query = " ".join(text.split())
+        if not query:
+            raise ValueError("SAM3 text must be non-empty")
+        if not 0 <= frame_id < frame_count:
+            raise ValueError(f"SAM3 text-box frame is outside [0, {frame_count})")
+        box_xywh = _normalized_box_xywh(box_xyxy)
+        with self._session(resource_path) as session_id:
+            response = self.predictor.handle_request(
+                request={
+                    "type": "add_prompt",
+                    "session_id": session_id,
+                    "frame_index": frame_id,
+                    "text": query,
+                    "bounding_boxes": [box_xywh],
+                    "bounding_box_labels": [1],
+                    "rel_coordinates": True,
+                    "obj_id": 1,
+                }
+            )
+            return _primary_mask(response.get("outputs", {}), frame_shape)
 
     def _install_native_mask(
         self,

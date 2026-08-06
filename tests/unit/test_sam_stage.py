@@ -27,6 +27,8 @@ from robotwin_annotation_v2.models import (
     SemanticStatus,
 )
 from robotwin_annotation_v2.pipeline import (
+    GripperSeedQCResult,
+    GripperStageResult,
     compose_visible_mask,
     dilate_envelope,
     evaluate_temporal_mask,
@@ -415,3 +417,86 @@ def test_save_sam_artifacts_marks_grippers_not_annotated(tmp_path: Path) -> None
     assert (episode_dir / "receiver_0/canonical_envelope.png").is_file()
     assert (episode_dir / "target_0/temporal_qc.json").is_file()
     assert not (episode_dir / "target_0/text_observations.npz").exists()
+
+
+def test_save_sam_artifacts_writes_active_gripper_channel(tmp_path: Path) -> None:
+    context = _context()
+    plan = _plan()
+    result = run_sam_stage(
+        context,
+        plan,
+        FakeSamBackend(),
+        Path("/tmp/fake-resource"),
+        frame_shape=FRAME_SHAPE,
+        mask_config=MaskConfig(0, 0),
+    )
+    seed_image = Image.fromarray(np.zeros((*FRAME_SHAPE, 3), dtype=np.uint8))
+    gripper = np.zeros((context.frame_count, *FRAME_SHAPE), dtype=bool)
+    gripper[2:18, 0, 0] = True
+    seed = gripper[2].copy()
+    empty = np.zeros_like(gripper)
+    gripper_result = GripperStageResult(
+        active_arm="right",
+        active_window=FrameWindow(2, 17),
+        frame_count=context.frame_count,
+        frame_shape=FRAME_SHAPE,
+        seed_frame_id=2,
+        selected_candidate="A",
+        seed_mask=seed,
+        native_track=gripper,
+        roi_track=np.ones_like(gripper),
+        candidate_track=gripper,
+        gripper_track=gripper,
+        removed_track=empty,
+        target_removed_track=empty,
+        receiver_removed_track=empty,
+        prompt_rois={},
+        hard_rois={},
+        qc_result=GripperSeedQCResult(
+            status=MaskQCStatus.PASSED,
+            selected_candidate="A",
+            confidence=0.93,
+            reason="candidate A is clean",
+            candidates=(),
+            model="fake-qwen",
+        ),
+        candidate_panels={},
+        roi_policy={"prompt": {}, "hard": {}},
+        provenance={"known_object_tracks": "saved_sam_native_track"},
+    )
+
+    mask_run = save_sam_artifacts(
+        ArtifactStore(tmp_path),
+        "sam-gripper-test",
+        context,
+        plan,
+        result,
+        seed_images={0: seed_image},
+        gripper_result=gripper_result,
+    )
+
+    episode_dir = Path(mask_run.artifact_dir)
+    with np.load(episode_dir / "masks.npz", allow_pickle=False) as archive:
+        assert np.array_equal(archive["masks"][3], gripper)
+        assert not archive["masks"][2].any()
+        assert archive["annotation_status"].tolist() == [
+            "valid",
+            "valid",
+            "not_annotated",
+            "valid",
+        ]
+        assert archive["qc_status"].tolist()[3] == "passed"
+    manifest = json.loads((episode_dir / "run_manifest.json").read_text())
+    assert manifest["channels"]["gripper_right"] == 3
+    assert manifest["channels"]["gripper_left"] == "not_annotated"
+    assert manifest["gripper_qc"]["selected_candidate"] == "A"
+    assert [role["role"] for role in manifest["roles"]] == [
+        "target",
+        "receiver",
+        "gripper_right",
+    ]
+    provenance = json.loads((episode_dir / "frame_provenance.json").read_text())
+    assert provenance["channels"]["gripper_right"]["active_window"] == [2, 17]
+    assert provenance["channels"]["gripper_left"]["status"] == "not_annotated"
+    assert (episode_dir / "gripper_right/native_track.npz").is_file()
+    assert (episode_dir / "gripper_right/gripper_seed_qc.json").is_file()

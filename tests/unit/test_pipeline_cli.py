@@ -43,7 +43,7 @@ def _batch_config(tmp_path: Path) -> SimpleNamespace:
     )
 
 
-def test_run_entrypoint_calls_qwen_then_sam_with_same_run_id() -> None:
+def test_run_entrypoint_calls_qwen_sam_then_gripper_with_same_run_id() -> None:
     module = runpy.run_path(str(PROJECT_ROOT / "scripts/run_target_receiver.py"))
     calls: list[tuple[str, int, str]] = []
 
@@ -53,14 +53,19 @@ def test_run_entrypoint_calls_qwen_then_sam_with_same_run_id() -> None:
     def fake_sam(_config: Any, episode_index: int, run_id: str) -> None:
         calls.append(("sam", episode_index, run_id))
 
+    def fake_gripper(_config: Any, episode_index: int, run_id: str) -> None:
+        calls.append(("gripper", episode_index, run_id))
+
     module["run_pipeline"].__globals__["run_qwen"] = fake_qwen
     module["run_pipeline"].__globals__["run_sam"] = fake_sam
+    module["run_pipeline"].__globals__["run_gripper"] = fake_gripper
 
     module["run_pipeline"]("config", 7152, "test-run")
 
     assert calls == [
         ("qwen", 7152, "test-run"),
         ("sam", 7152, "test-run"),
+        ("gripper", 7152, "test-run"),
     ]
 
 
@@ -204,3 +209,87 @@ def test_sam_batch_stops_after_fatal_cuda_error(tmp_path: Path) -> None:
         "failed",
         "not_run_after_fatal_cuda",
     ]
+
+
+def test_gripper_batch_reuses_one_backend_for_multiple_episodes(
+    tmp_path: Path,
+) -> None:
+    module = runpy.run_path(str(PROJECT_ROOT / "scripts/run_target_receiver.py"))
+    execution_type = module["GripperEpisodeExecution"]
+    backend = FakeResidentBackend()
+    episode_calls: list[int] = []
+
+    def runner(
+        _config: Any,
+        episode_id: int,
+        _run_id: str,
+        received_backend: Any,
+    ) -> Any:
+        assert received_backend is backend
+        episode_calls.append(episode_id)
+        artifact_dir = tmp_path / f"episode_{episode_id}"
+        return execution_type(
+            mask_run=SimpleNamespace(
+                roles=(FakeRoleResult(), FakeRoleResult()),
+                artifact_dir=str(artifact_dir),
+            ),
+            active_arm="right",
+            gripper_status="ok",
+            selected_candidate="A",
+            seed_qc_path=artifact_dir / "gripper_seed_qc.json",
+        )
+
+    module["run_gripper_batch"](
+        _batch_config(tmp_path),
+        (1, 2),
+        "batch-test",
+        force=True,
+        backend_factory=lambda **_kwargs: backend,
+        episode_runner=runner,
+    )
+
+    assert episode_calls == [1, 2]
+    assert backend.shutdown_calls == 1
+    summary = json.loads(
+        (tmp_path / "runs/batch-test/gripper_batch_summary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert [record["status"] for record in summary["records"]] == [
+        "completed",
+        "completed",
+    ]
+
+
+def test_gripper_batch_records_missing_sam_precondition_as_failure(
+    tmp_path: Path,
+) -> None:
+    module = runpy.run_path(str(PROJECT_ROOT / "scripts/run_target_receiver.py"))
+    backend = FakeResidentBackend()
+
+    def runner(
+        _config: Any,
+        _episode_id: int,
+        _run_id: str,
+        _backend: Any,
+    ) -> Any:
+        raise ValueError("required SAM artifacts are missing for gripper stage")
+
+    with pytest.raises(SystemExit) as captured:
+        module["run_gripper_batch"](
+            _batch_config(tmp_path),
+            (1,),
+            "batch-test",
+            force=True,
+            backend_factory=lambda **_kwargs: backend,
+            episode_runner=runner,
+        )
+
+    assert captured.value.code == 6
+    summary = json.loads(
+        (tmp_path / "runs/batch-test/gripper_batch_summary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert summary["records"][0]["status"] == "failed"
+    assert "required SAM artifacts are missing" in summary["records"][0]["error"]

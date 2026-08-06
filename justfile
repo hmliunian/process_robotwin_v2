@@ -35,5 +35,8 @@ sam run_id episode_id="7152":
 run episode_id="7152":
     {{python}} scripts/run_target_receiver.py run --config {{config}} --episode {{episode_id}}
 
+process dataset_root="../dataset/move_pillbottle_pad_coverage20_original" output_dir="artifacts/runs":
+    {{python}} scripts/process_dataset.py --config {{config}} --dataset-root {{dataset_root}} --output-dir {{output_dir}}
+
 check-gpu:
     nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv

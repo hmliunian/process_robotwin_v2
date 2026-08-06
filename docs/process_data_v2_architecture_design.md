@@ -23,7 +23,12 @@
 
 当前方案的重点不是建立一个通用标注平台，而是先把一个小实验跑通，并让每个阶段都能独立检查输入和输出。
 
-## 2. 明确边界
+## 2. 明确边界（v2 基线；gripper 由 v3 增量接管）
+
+> 本文记录 v2 的 target/receiver 基线。v3 已撤销本文原先的 gripper
+> 排除声明；请以 process_data_v3_overview.md 和
+> process_data_v3_architecture_design.md 为当前 gripper、四通道输出和一键
+> 处理流程的生效设计。
 
 本版本做：
 
@@ -41,11 +46,11 @@
 - 人工选择或确认 mask；
 - Qwen 输出精确 bbox 作为默认输入；
 - Qwen 逐帧重新框或逐帧修补 mask；
-- gripper mask；
 - hidden / amodal mask 补全；
 - 多任务、多相机、动态相机的通用化处理。
 
-gripper state 仍然可以用于判断动作边界；这不等于本版本要生成 gripper mask。
+gripper state 仍然可以用于判断动作边界；v3 在独立 Stage 3 gripper stage
+中进一步使用它生成 visible-only gripper mask。
 
 ---
 
@@ -891,10 +896,10 @@ frame_provenance.json
 4. 计算 temporal QC 并隔离严重异常；
 5. 导出 `masks.npz`、temporal QC 和 provenance。
 
-### P4：端到端运行
+### P4：端到端运行（v2 基线）
 
 1. 运行 smoke episode `007152`；
-2. 检查三阶段中间产物；
+2. 检查 v2 三阶段中间产物；
 3. 修正 prompt、时间窗口或 SAM 参数；
 4. 通过 smoke 测试后运行全部 20 个 regression episode。
 
@@ -917,13 +922,15 @@ commit 只包含代码、配置、测试和文档，不包含外部 dataset 的�
 
 ## 13. 未来扩展边界
 
-后续增加 gripper mask 时，只增加新的 role 配置和 SAM 策略，不修改 Stage 1/Stage 2 的基本接口：
+v3 已按独立 stage 增量实现 gripper，不修改 Stage 1/Stage 2 的基本接口：
 
 ```text
 LoopContext → SemanticPlan → MaskQCResult → MaskRun
 ```
 
-后续如果需要 bbox，可以将 coarse ROI 作为 `SemanticPlan` 的可选字段，但不能让它重新成为默认的 mask 边界。
+完整入口是 run_target_receiver.py 的 gripper/gripper-batch，任意 RoboTwin
+目录的一键入口是 scripts/process_dataset.py；render 会直接读取四通道
+masks.npz 并自动生成 review sheets。
 
 本架构定义自动候选 mask QC，但暂不定义人工审批或全任务通用化方案。
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,18 @@ def _integers(value: Any, *, field: str) -> tuple[int, ...]:
         raise ConfigError(f"{field} must be a list of integers") from exc
 
 
+def _positive_float(value: Any, *, field: str) -> float:
+    if isinstance(value, bool):
+        raise ConfigError(f"{field} must be a finite number greater than zero")
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"{field} must be a finite number greater than zero") from exc
+    if not math.isfinite(parsed) or parsed <= 0.0:
+        raise ConfigError(f"{field} must be a finite number greater than zero")
+    return parsed
+
+
 @dataclass(frozen=True)
 class DatasetConfig:
     root: Path
@@ -43,6 +56,7 @@ class DatasetConfig:
     camera: str
     smoke_episode_ids: tuple[int, ...]
     regression_episode_ids: tuple[int, ...]
+    manifest_data: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -122,12 +136,38 @@ class MaskConfig:
 
 
 @dataclass(frozen=True)
+class GripperRoiConfig:
+    """Fixed prompt and final-crop geometry for gripper mask generation."""
+
+    prompt_axial_back_m: float
+    prompt_axial_front_m: float
+    hard_axial_back_m: float
+    hard_axial_front_m: float
+    fixed_half_width_m: float
+
+    def __post_init__(self) -> None:
+        values = {
+            "prompt_axial_back_m": self.prompt_axial_back_m,
+            "prompt_axial_front_m": self.prompt_axial_front_m,
+            "hard_axial_back_m": self.hard_axial_back_m,
+            "hard_axial_front_m": self.hard_axial_front_m,
+            "fixed_half_width_m": self.fixed_half_width_m,
+        }
+        for name, value in values.items():
+            if not math.isfinite(value) or value <= 0.0:
+                raise ConfigError(
+                    f"gripper_roi.{name} must be a finite number greater than zero"
+                )
+
+
+@dataclass(frozen=True)
 class PipelineConfig:
     config_path: Path
     dataset: DatasetConfig
     qwen: QwenConfig
     sam3: Sam3Config
     mask: MaskConfig
+    gripper_roi: GripperRoiConfig
     output_root: Path
 
 
@@ -147,10 +187,18 @@ def load_config(path: Path) -> PipelineConfig:
     qwen_raw = _required(raw, "qwen")
     sam3_raw = _required(raw, "sam3")
     mask_raw = raw.get("mask", {})
+    gripper_roi_raw = _required(raw, "gripper_roi")
     output_raw = raw.get("output", {})
-    sections = (dataset_raw, qwen_raw, sam3_raw, mask_raw, output_raw)
+    sections = (dataset_raw, qwen_raw, sam3_raw, mask_raw, gripper_roi_raw, output_raw)
     if not all(isinstance(item, dict) for item in sections):
-        raise ConfigError("dataset, qwen, sam3, mask and output must be mappings")
+        raise ConfigError(
+            "dataset, qwen, sam3, mask, gripper_roi and output must be mappings"
+        )
+
+    prompt_roi_raw = _required(gripper_roi_raw, "prompt", section="gripper_roi")
+    hard_roi_raw = _required(gripper_roi_raw, "hard", section="gripper_roi")
+    if not isinstance(prompt_roi_raw, dict) or not isinstance(hard_roi_raw, dict):
+        raise ConfigError("gripper_roi.prompt and gripper_roi.hard must be mappings")
 
     smoke = _integers(
         _required(dataset_raw, "smoke_episode_ids", section="dataset"),
@@ -241,6 +289,28 @@ def load_config(path: Path) -> PipelineConfig:
             mask_raw.get("qc_duplicate_iou_threshold", 0.98)
         ),
     )
+    gripper_roi = GripperRoiConfig(
+        prompt_axial_back_m=_positive_float(
+            _required(prompt_roi_raw, "axial_back_m", section="gripper_roi.prompt"),
+            field="gripper_roi.prompt.axial_back_m",
+        ),
+        prompt_axial_front_m=_positive_float(
+            _required(prompt_roi_raw, "axial_front_m", section="gripper_roi.prompt"),
+            field="gripper_roi.prompt.axial_front_m",
+        ),
+        hard_axial_back_m=_positive_float(
+            _required(hard_roi_raw, "axial_back_m", section="gripper_roi.hard"),
+            field="gripper_roi.hard.axial_back_m",
+        ),
+        hard_axial_front_m=_positive_float(
+            _required(hard_roi_raw, "axial_front_m", section="gripper_roi.hard"),
+            field="gripper_roi.hard.axial_front_m",
+        ),
+        fixed_half_width_m=_positive_float(
+            _required(gripper_roi_raw, "fixed_half_width_m", section="gripper_roi"),
+            field="gripper_roi.fixed_half_width_m",
+        ),
+    )
     output_root = _path(
         output_raw.get("root", "../artifacts/runs"),
         base_dir=base_dir,
@@ -252,5 +322,6 @@ def load_config(path: Path) -> PipelineConfig:
         qwen=qwen,
         sam3=sam3,
         mask=mask,
+        gripper_roi=gripper_roi,
         output_root=output_root,
     )

@@ -18,7 +18,7 @@ class MaskStatus(StrEnum):
 
 @dataclass(frozen=True)
 class RoleMaskResult:
-    role: Literal["target", "receiver"]
+    role: Literal["target", "receiver", "gripper_left", "gripper_right"]
     status: MaskStatus
     seed_frame_id: int | None
     primary_query: str | None
@@ -83,8 +83,13 @@ class MaskRun:
         if self.frame_count < 1:
             raise ValueError("frame_count must be positive")
         names = [result.role for result in self.roles]
-        if names != ["target", "receiver"]:
-            raise ValueError("MaskRun must contain target then receiver results")
+        if names[:2] != ["target", "receiver"]:
+            raise ValueError("MaskRun must begin with target then receiver results")
+        extras = names[2:]
+        if any(role not in {"gripper_left", "gripper_right"} for role in extras):
+            raise ValueError("MaskRun optional roles must be gripper_left/right")
+        if len(extras) != len(set(extras)):
+            raise ValueError("MaskRun optional gripper roles must be unique")
 
     def to_json(self) -> dict[str, Any]:
         return {

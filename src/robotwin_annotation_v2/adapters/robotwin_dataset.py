@@ -45,19 +45,24 @@ class RoboTwinDataset:
         task: str,
         camera: str,
         manifest_path: Path,
+        manifest_data: dict[str, Any] | None = None,
     ) -> None:
         self.root = root.expanduser().resolve()
         self.task = task
         self.camera = camera
         self.manifest_path = manifest_path.expanduser().resolve()
+        self._manifest_data = None if manifest_data is None else dict(manifest_data)
         self.manifest = self._load_manifest()
         self._episode_metadata: dict[int, dict[str, Any]] | None = None
 
     def _load_manifest(self) -> dict[str, Any]:
-        if not self.manifest_path.is_file():
-            raise DatasetError(f"dataset manifest is missing: {self.manifest_path}")
-        with self.manifest_path.open(encoding="utf-8") as handle:
-            payload = json.load(handle)
+        if self._manifest_data is None:
+            if not self.manifest_path.is_file():
+                raise DatasetError(f"dataset manifest is missing: {self.manifest_path}")
+            with self.manifest_path.open(encoding="utf-8") as handle:
+                payload = json.load(handle)
+        else:
+            payload = dict(self._manifest_data)
         if not isinstance(payload, dict):
             raise DatasetError("dataset manifest must be a JSON object")
         if payload.get("task") != self.task or payload.get("camera") != self.camera:

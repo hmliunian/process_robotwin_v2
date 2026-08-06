@@ -6,8 +6,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
+import re
 import shutil
 import subprocess
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from fractions import Fraction
@@ -16,6 +19,7 @@ from typing import Any
 
 import av
 import numpy as np
+from PIL import Image, ImageDraw
 from robotwin_annotation_v2.adapters import ArtifactStore, RoboTwinDataset
 from robotwin_annotation_v2.config import PipelineConfig, load_config
 from robotwin_annotation_v2.models import EpisodeRef
@@ -34,6 +38,7 @@ HALO_COLOR = (0, 0, 0)
 DEFAULT_FILL_ALPHA = 0.32
 DEFAULT_OUTLINE_RADIUS = 3
 DEFAULT_HALO_RADIUS = 5
+TEXT_PROMPT_SLUG_MAX_LENGTH = 96
 
 
 @dataclass(frozen=True)
@@ -92,6 +97,15 @@ def _parse_args() -> argparse.Namespace:
         default=PROJECT_ROOT / "artifacts" / "rendered_videos" / "coverage20_best_current",
     )
     parser.add_argument("--episode-ids", type=int, nargs="*")
+    parser.add_argument(
+        "--filename-mode",
+        choices=("episode", "text_prompt"),
+        default="episode",
+        help=(
+            "Name videos by episode id or normalized dataset text prompt. "
+            "Text-prompt names retain the episode id to guarantee uniqueness."
+        ),
+    )
     parser.add_argument("--alpha", type=float, default=DEFAULT_FILL_ALPHA)
     parser.add_argument(
         "--outline-radius",
@@ -108,7 +122,41 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--crf", type=int, default=18)
     parser.add_argument("--preset", default="medium")
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--skip-review-sheets",
+        action="store_true",
+        help="Skip automatic target/receiver/gripper early/late contact sheets",
+    )
+    parser.add_argument("--review-sheet-columns", type=int, default=4)
     return parser.parse_args()
+
+
+def _text_prompt_slug(text: str, *, max_length: int = TEXT_PROMPT_SLUG_MAX_LENGTH) -> str:
+    """Return a readable, portable filename component for one task prompt."""
+
+    if max_length < 1:
+        raise ValueError("max_length must be positive")
+    ascii_text = (
+        unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    )
+    slug = re.sub(r"[^a-z0-9]+", "_", ascii_text.lower()).strip("_")
+    slug = slug[:max_length].rstrip("_")
+    return slug or "task"
+
+
+def _output_video_name(
+    *,
+    episode_id: int,
+    camera: str,
+    task_text: str,
+    filename_mode: str,
+) -> str:
+    suffix = f"episode_{episode_id:06d}_{camera}_overlay.mp4"
+    if filename_mode == "episode":
+        return suffix
+    if filename_mode == "text_prompt":
+        return f"{_text_prompt_slug(task_text)}__{suffix}"
+    raise ValueError(f"unsupported filename mode: {filename_mode}")
 
 
 def _sha256(path: Path) -> str:
@@ -438,7 +486,94 @@ def _dataset(config: PipelineConfig) -> RoboTwinDataset:
         task=config.dataset.task,
         camera=config.dataset.camera,
         manifest_path=config.dataset.manifest,
+        manifest_data=config.dataset.manifest_data,
     )
+
+
+def _decode_selected(video_path: Path, frame_ids: set[int]) -> dict[int, Image.Image]:
+    selected: dict[int, Image.Image] = {}
+    with av.open(str(video_path)) as container:
+        stream = container.streams.video[0]
+        for frame_id, frame in enumerate(container.decode(stream)):
+            if frame_id in frame_ids:
+                selected[frame_id] = Image.fromarray(
+                    frame.to_ndarray(format="rgb24")
+                )
+            if len(selected) == len(frame_ids):
+                break
+    missing = sorted(frame_ids - set(selected))
+    if missing:
+        raise ValueError(f"video is missing requested frames {missing}: {video_path}")
+    return selected
+
+
+def build_sheets(
+    render_manifest: Path,
+    output_dir: Path,
+    columns: int = 4,
+) -> list[Path]:
+    """Build target/receiver/gripper early and late review sheets."""
+
+    if columns < 1:
+        raise ValueError("columns must be positive")
+    render = json.loads(render_manifest.read_text(encoding="utf-8"))
+    video_root = render_manifest.parent
+    pages: dict[str, list[Image.Image]] = {
+        f"{role}_{moment}": []
+        for role in ("target", "receiver", "gripper")
+        for moment in ("early", "late")
+    }
+    for episode in render["episodes"]:
+        episode_index = int(episode["episode_index"])
+        source_dir = Path(episode["source_masks"]).parent
+        run_manifest = json.loads(
+            (source_dir / "run_manifest.json").read_text(encoding="utf-8")
+        )
+        wanted: dict[str, int] = {}
+        statuses: dict[str, str] = {}
+        for role_record in run_manifest["roles"]:
+            raw_role = str(role_record["role"])
+            role = "gripper" if raw_role.startswith("gripper_") else raw_role
+            if role not in {"target", "receiver", "gripper"}:
+                continue
+            start, end = (int(value) for value in role_record["output_window"])
+            wanted[f"{role}_early"] = start + (end - start) // 4
+            wanted[f"{role}_late"] = end
+            statuses[role] = str(role_record["status"])
+        frames = _decode_selected(
+            video_root / episode["output_video"],
+            set(wanted.values()),
+        )
+        for page, frame_id in wanted.items():
+            role = page.removesuffix("_early").removesuffix("_late")
+            image = frames[frame_id].copy()
+            draw = ImageDraw.Draw(image)
+            label = f"ep {episode_index} f{frame_id} {statuses[role]}"
+            draw.rectangle((0, 0, 210, 20), fill=(0, 0, 0))
+            draw.text((3, 3), label, fill=(255, 255, 255))
+            pages[page].append(image)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    outputs: list[Path] = []
+    for name, images in pages.items():
+        if not images:
+            continue
+        width, height = images[0].size
+        rows = math.ceil(len(images) / columns)
+        sheet = Image.new(
+            "RGB",
+            (width * columns, height * rows),
+            color=(20, 20, 20),
+        )
+        for index, image in enumerate(images):
+            sheet.paste(
+                image,
+                ((index % columns) * width, (index // columns) * height),
+            )
+        output_path = output_dir / f"{name}.jpg"
+        sheet.save(output_path, quality=92)
+        outputs.append(output_path)
+    return outputs
 
 
 def main() -> None:
@@ -451,6 +586,8 @@ def main() -> None:
         raise ValueError("--halo-radius must be at least --outline-radius")
     if not 0 <= args.crf <= 51:
         raise ValueError("--crf must be between 0 and 51")
+    if args.review_sheet_columns < 1:
+        raise ValueError("--review-sheet-columns must be positive")
     config = load_config(args.config)
     configured = set(config.dataset.regression_episode_ids)
     episode_ids = tuple(args.episode_ids or config.dataset.regression_episode_ids)
@@ -476,7 +613,13 @@ def main() -> None:
         artifact = _load_masks(candidate.path)
         ref = EpisodeRef(config.dataset.task, episode_id, config.dataset.camera)
         video_path = dataset.paths(ref).video
-        output_path = output_dir / f"episode_{episode_id:06d}_{config.dataset.camera}_overlay.mp4"
+        task_text = dataset.task_text(episode_id)
+        output_path = output_dir / _output_video_name(
+            episode_id=episode_id,
+            camera=config.dataset.camera,
+            task_text=task_text,
+            filename_mode=args.filename_mode,
+        )
         video = render_video(
             video_path,
             artifact,
@@ -494,6 +637,7 @@ def main() -> None:
         }
         record = {
             "episode_index": episode_id,
+            "task_text": task_text,
             "run_id": candidate.run_id,
             "source_video": str(video_path),
             "source_masks": str(candidate.path),
@@ -527,7 +671,7 @@ def main() -> None:
         )
 
     manifest = {
-        "format": "robotwin_coverage20_overlay_videos_v2",
+        "format": "robotwin_coverage20_overlay_videos_v3",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "selection_rule": (
             f"exact run_id={args.run_id}"
@@ -543,7 +687,9 @@ def main() -> None:
         "runs_root": str(runs_root),
         "task": config.dataset.task,
         "camera": config.dataset.camera,
+        "filename_mode": args.filename_mode,
         "episode_count": len(records),
+        "rendered_roles": ["target", "receiver", "gripper"],
         "alpha": args.alpha,
         "colors_rgb": {key: list(value) for key, value in ROLE_COLORS.items()},
         "render_style": {
@@ -554,8 +700,20 @@ def main() -> None:
             "halo_color_rgb": list(HALO_COLOR),
         },
         "episodes": records,
+        "review_sheets": [],
     }
     manifest_path = ArtifactStore.write_json(output_dir / "manifest.json", manifest)
+    review_sheets: list[Path] = []
+    if not args.skip_review_sheets:
+        review_sheets = build_sheets(
+            manifest_path,
+            output_dir / "review_sheets",
+            args.review_sheet_columns,
+        )
+        manifest["review_sheets"] = [
+            str(path.relative_to(output_dir)) for path in review_sheets
+        ]
+        ArtifactStore.write_json(manifest_path, manifest)
     print(json.dumps({"manifest": str(manifest_path), "episode_count": len(records)}, indent=2))
 
 
