@@ -24,6 +24,7 @@ from ..models import (
     SemanticPlan,
     SemanticStatus,
 )
+from .gripper_stage import GripperStageResult
 
 
 INSTANCE_NAMES = ("target_0", "receiver_0", "gripper_left", "gripper_right")
@@ -519,6 +520,7 @@ def save_sam_artifacts(
     result: SamStageResult,
     *,
     seed_images: Mapping[int, Image.Image],
+    gripper_result: GripperStageResult | None = None,
 ) -> MaskRun:
     """Persist Stage-3 diagnostics, compatible masks, and provenance."""
 
@@ -584,6 +586,72 @@ def save_sam_artifacts(
             )
         )
 
+    gripper_role_name: str | None = None
+    gripper_seed_mask_path: str | None = None
+    gripper_native_path: str | None = None
+    gripper_candidate_path: str | None = None
+    gripper_seed_qc_path: str | None = None
+    gripper_panel_paths: dict[str, str] = {}
+    if gripper_result is not None:
+        gripper_role_name = gripper_result.instance_name
+        gripper_dir = episode_dir / gripper_role_name
+        if gripper_result.seed_mask is not None:
+            seed_mask_file = store.write_png(
+                gripper_dir / "seed.mask.png",
+                gripper_result.seed_mask,
+            )
+            gripper_seed_mask_path = str(seed_mask_file.relative_to(episode_dir))
+        native_file = store.write_npz(
+            gripper_dir / "native_track.npz",
+            masks=gripper_result.native_track,
+        )
+        gripper_native_path = str(native_file.relative_to(episode_dir))
+        candidate_file = store.write_npz(
+            gripper_dir / "diagnostics.npz",
+            roi_track=gripper_result.roi_track,
+            candidate_track=gripper_result.candidate_track,
+            removed_track=gripper_result.removed_track,
+            target_removed_track=gripper_result.target_removed_track,
+            receiver_removed_track=gripper_result.receiver_removed_track,
+        )
+        gripper_candidate_path = str(candidate_file.relative_to(episode_dir))
+        seed_qc_file = store.write_json(
+            gripper_dir / "gripper_seed_qc.json",
+            gripper_result.qc_result.to_json(),
+        )
+        gripper_seed_qc_path = str(seed_qc_file.relative_to(episode_dir))
+        for candidate_id, panel in gripper_result.candidate_panels.items():
+            panel_file = store.write_png(
+                gripper_dir / "seed_candidates" / f"candidate_{candidate_id}.png",
+                np.asarray(panel.convert("RGB")),
+                rgb=True,
+            )
+            gripper_panel_paths[candidate_id] = str(panel_file.relative_to(episode_dir))
+        gripper_status = (
+            MaskStatus.OK if gripper_result.status == "ok" else MaskStatus.FAILED
+        )
+        role_results.append(
+            RoleMaskResult(
+                role=gripper_role_name,  # type: ignore[arg-type]
+                status=gripper_status,
+                seed_frame_id=gripper_result.seed_frame_id,
+                primary_query="black robot gripper",
+                output_window=gripper_result.active_window,
+                seed_rgb_path=None,
+                seed_mask_path=gripper_seed_mask_path,
+                canonical_envelope_path=None,
+                native_track_path=gripper_native_path,
+                temporal_qc_path=None,
+                nonempty_frames=len(gripper_result.nonempty_frame_ids),
+                failure=(
+                    None if gripper_status is MaskStatus.OK else gripper_result.failure
+                ),
+                qc_status=gripper_result.qc_result.status,
+                qc_selected_candidate=gripper_result.selected_candidate,
+                qc_reason=gripper_result.qc_result.reason,
+            )
+        )
+
     def annotation_status(data: RoleMaskData) -> str:
         if data.status is MaskStatus.OK:
             return "valid"
@@ -591,27 +659,37 @@ def save_sam_artifacts(
             return "quarantined"
         return "failed"
 
+    masks = result.masks.copy()
+    gripper_annotation = ["not_annotated", "not_annotated"]
+    gripper_qc = [MaskQCStatus.NOT_RUN.value, MaskQCStatus.NOT_RUN.value]
+    if gripper_result is not None:
+        gripper_index = 2 if gripper_result.active_arm == "left" else 3
+        masks[gripper_index] = gripper_result.gripper_track
+        gripper_local = gripper_index - 2
+        gripper_annotation[gripper_local] = (
+            "valid" if gripper_result.status == "ok" else "failed"
+        )
+        gripper_qc[gripper_local] = gripper_result.qc_result.status.value
+
     annotation_statuses = np.asarray(
         [
             annotation_status(result.target),
             annotation_status(result.receiver),
-            "not_annotated",
-            "not_annotated",
+            *gripper_annotation,
         ]
     )
     qc_status = np.asarray(
         [
             result.target.qc_status.value,
             result.receiver.qc_status.value,
-            MaskQCStatus.NOT_RUN.value,
-            MaskQCStatus.NOT_RUN.value,
+            *gripper_qc,
         ]
     )
     masks_path = store.write_npz(
         episode_dir / "masks.npz",
         format_version=np.asarray("robotwin_visible_masks_v2"),
         frame_count=np.asarray(result.frame_count, dtype=np.int64),
-        masks=result.masks,
+        masks=masks,
         instance_names=np.asarray(INSTANCE_NAMES),
         roles=np.asarray(ROLES),
         annotation_status=annotation_statuses,
@@ -657,6 +735,30 @@ def save_sam_artifacts(
             "gripper_right": {"status": "not_annotated"},
         },
     }
+    if gripper_result is not None and gripper_role_name is not None:
+        provenance["composition"] = (
+            "target/receiver native_track clipped_to role_output_window; "
+            "gripper native_track clipped_to hard pose ROI and known objects"
+        )
+        provenance["channels"][gripper_role_name] = {
+            "status": gripper_result.status,
+            "active_arm": gripper_result.active_arm,
+            "seed_frame_id": gripper_result.seed_frame_id,
+            "selected_candidate": gripper_result.selected_candidate,
+            "failure": gripper_result.failure,
+            "qc_status": gripper_result.qc_result.status.value,
+            "qc_confidence": gripper_result.qc_result.confidence,
+            "qc_reason": gripper_result.qc_result.reason,
+            "forced_fallback": gripper_result.qc_result.forced_fallback,
+            "active_window": gripper_result.active_window.to_json(),
+            "nonempty_frame_ids": list(gripper_result.nonempty_frame_ids),
+            "seed_mask_path": gripper_seed_mask_path,
+            "native_track_path": gripper_native_path,
+            "diagnostics_path": gripper_candidate_path,
+            "seed_qc_path": gripper_seed_qc_path,
+            "candidate_panels": gripper_panel_paths,
+            "provenance": gripper_result.provenance,
+        }
     provenance_path = store.write_json(episode_dir / "frame_provenance.json", provenance)
     mask_run = MaskRun(
         run_id=run_id,
@@ -666,6 +768,10 @@ def save_sam_artifacts(
         artifact_dir=str(episode_dir),
     )
     manifest = mask_run.to_json()
+    if gripper_result is not None and gripper_role_name is not None:
+        manifest["channels"][gripper_role_name] = (
+            2 if gripper_result.active_arm == "left" else 3
+        )
     manifest.update(
         {
             "semantic_prompt_sha256": semantic_plan.prompt_sha256,
@@ -679,11 +785,42 @@ def save_sam_artifacts(
                 "candidate_mask_qc": any(
                     data.qc_status is not MaskQCStatus.NOT_RUN for data in role_data
                 ),
+                "gripper_stage": None
+                if gripper_result is None
+                else {
+                    "seed": "pose_roi_text_box_qwen_selected_candidate",
+                    "propagation": "sam3_native_mask_forward_backward",
+                    "visibility": (
+                        "native_track clipped_to hard_pose_roi and known_objects"
+                    ),
+                    "active_arm": gripper_result.active_arm,
+                    "active_window": gripper_result.active_window.to_json(),
+                    "qc_status": gripper_result.qc_result.status.value,
+                    "selected_candidate": gripper_result.selected_candidate,
+                    "forced_fallback": gripper_result.qc_result.forced_fallback,
+                },
                 "amodal_completion": False,
+            },
+            "roi_policy": None if gripper_result is None else gripper_result.roi_policy,
+            "gripper_qc": None
+            if gripper_result is None
+            else {
+                "status": gripper_result.status,
+                "active_arm": gripper_result.active_arm,
+                "selected_candidate": gripper_result.selected_candidate,
+                "confidence": gripper_result.qc_result.confidence,
+                "reason": gripper_result.qc_result.reason,
+                "forced_fallback": gripper_result.qc_result.forced_fallback,
+                "nonempty_frames": len(gripper_result.nonempty_frame_ids),
             },
             "artifacts": {
                 "masks": str(masks_path.relative_to(episode_dir)),
                 "frame_provenance": str(provenance_path.relative_to(episode_dir)),
+                **(
+                    {}
+                    if gripper_seed_qc_path is None
+                    else {"gripper_seed_qc": gripper_seed_qc_path}
+                ),
             },
         }
     )

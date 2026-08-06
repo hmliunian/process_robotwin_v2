@@ -56,6 +56,7 @@ class DatasetConfig:
     camera: str
     smoke_episode_ids: tuple[int, ...]
     regression_episode_ids: tuple[int, ...]
+    manifest_data: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)

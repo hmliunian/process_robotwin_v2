@@ -1,4 +1,4 @@
-"""The three executable pipeline stages."""
+"""The executable state, semantic, object-mask, and gripper stages."""
 
 from .state_loop import (
     StateLoopError,
@@ -37,6 +37,9 @@ from .gripper_stage import (
     CAM_HIGH_CALIBRATION,
     DEFAULT_GRIPPER_ROI_GEOMETRY,
     CameraCalibration,
+    GripperSeedQualityGateConfig,
+    GripperStageError,
+    GripperStageResult,
     GripperRoiGeometry,
     GripperSeedCandidate,
     GripperSeedQCResult,
@@ -57,6 +60,7 @@ from .gripper_stage import (
     project_gripper_roi,
     render_gripper_candidate_panel,
     render_gripper_candidate_sheet,
+    run_gripper_stage,
     rotation_from_rpy,
     run_gripper_seed_qc,
 )
@@ -90,6 +94,9 @@ __all__ = [
     "CAM_HIGH_CALIBRATION",
     "DEFAULT_GRIPPER_ROI_GEOMETRY",
     "CameraCalibration",
+    "GripperSeedQualityGateConfig",
+    "GripperStageError",
+    "GripperStageResult",
     "GripperTrackResult",
     "GripperRoiGeometry",
     "ObjectExclusionResult",
@@ -111,5 +118,6 @@ __all__ = [
     "phase_for_frame",
     "render_gripper_candidate_panel",
     "render_gripper_candidate_sheet",
+    "run_gripper_stage",
     "run_gripper_seed_qc",
 ]

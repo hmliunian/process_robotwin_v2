@@ -1,17 +1,16 @@
 from __future__ import annotations
 
-import importlib
+import runpy
 import sys
 from pathlib import Path
 
 import pytest
 
 from robotwin_annotation_v2.config import GripperRoiConfig
+from robotwin_annotation_v2.pipeline.gripper_stage import _roi_geometries, _roi_policy
 
 
-SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
-sys.path.insert(0, str(SCRIPTS_DIR))
-QWEN_SCRIPT = importlib.import_module("generate_gripper_mask_video_qwen_qc")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _config(
@@ -32,7 +31,7 @@ def _config(
 
 
 def test_final_front45_profile_keeps_prompt_front_longer_than_hard_crop() -> None:
-    prompt, hard = QWEN_SCRIPT._roi_geometries(_config())
+    prompt, hard = _roi_geometries(_config())
 
     assert (prompt.axial_back_m, prompt.axial_front_m) == (0.120, 0.060)
     assert (hard.axial_back_m, hard.axial_front_m) == (0.120, 0.045)
@@ -47,11 +46,12 @@ def test_cli_help_has_no_roi_geometry_overrides(
     monkeypatch.setattr(
         sys,
         "argv",
-        ["generate_gripper_mask_video_qwen_qc.py", "--help"],
+        ["run_target_receiver.py", "gripper", "--help"],
     )
+    module = runpy.run_path(str(PROJECT_ROOT / "scripts/run_target_receiver.py"))
 
     with pytest.raises(SystemExit, match="0"):
-        QWEN_SCRIPT._parse_args()
+        module["parse_args"]()
 
     help_text = capsys.readouterr().out
     assert "gripper ROI geometry" not in help_text
@@ -68,24 +68,24 @@ def test_configured_prompt_and_hard_extents_are_independent_and_traceable() -> N
         hard_front=0.035,
     )
 
-    prompt, hard = QWEN_SCRIPT._roi_geometries(config)
-    policy = QWEN_SCRIPT._roi_policy(config)
+    prompt, hard = _roi_geometries(config)
+    policy = _roi_policy(config)
 
     assert (prompt.axial_back_m, prompt.axial_front_m) == (0.080, 0.040)
     assert (hard.axial_back_m, hard.axial_front_m) == (0.065, 0.035)
     assert prompt.closed_half_width_m == hard.closed_half_width_m
-    assert policy["prompt"]["usage"] == "SAM box and selected-seed crop"
-    assert policy["hard"]["usage"].startswith("per-frame propagated-track crop")
+    assert policy["prompt"]["usage"].startswith("SAM text-box/box-only")
+    assert policy["hard"]["usage"].startswith("propagated native track crop")
     assert policy["legacy_roi_track_alias"] == "hard_roi_track"
 
 
 def test_fixed_half_width_is_applied_to_both_geometries() -> None:
     config = _config(hard_front=0.060, fixed_half_width=0.085)
-    prompt, hard = QWEN_SCRIPT._roi_geometries(config)
+    prompt, hard = _roi_geometries(config)
 
     assert prompt.closed_half_width_m == prompt.open_half_width_m == 0.085
     assert hard.closed_half_width_m == hard.open_half_width_m == 0.085
-    assert QWEN_SCRIPT._roi_policy(config)["prompt"]["geometry"] == {
+    assert _roi_policy(config)["prompt"]["geometry"] == {
         "tcp_offset_m": 0.12,
         "axial_back_m": 0.12,
         "axial_front_m": 0.06,
