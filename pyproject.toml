@@ -10,6 +10,7 @@ dependencies = [
   "pyarrow>=25.0",
   "pillow>=10.0",
   "pyyaml>=6.0",
+  "rich>=13.9",
 ]
 
 [project.optional-dependencies]
