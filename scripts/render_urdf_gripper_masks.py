@@ -23,12 +23,16 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from robotwin_annotation_v2.urdf_gripper_data import (
+    ActiveGripperLoop,
     CameraCalibrationSeries,
     UrdfGripperEpisodeData,
+    load_authoritative_loop_context,
     load_camera_calibration,
     load_urdf_gripper_episode,
 )
-
+from robotwin_annotation_v2.urdf_gripper_publisher import (
+    validate_derivation_source_episode,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATASET_ROOT = Path(
@@ -54,6 +58,14 @@ PRODUCT_FORMAT_VERSION = "robotwin_urdf_gripper_masks_v2"
 
 class UrdfMaskRunError(RuntimeError):
     """The integration run cannot preserve its declared artifact contract."""
+
+
+class UrdfBatchIncompleteError(UrdfMaskRunError):
+    """The batch finished, but one or more episode results are incomplete."""
+
+    def __init__(self, message: str, *, result: Mapping[str, Any]) -> None:
+        super().__init__(message)
+        self.result = result
 
 
 @dataclass(frozen=True)
@@ -91,14 +103,30 @@ class EpisodePlan:
     episode_index: int
     frame_count: int
     frame_shape: tuple[int, int]
-    active_arm: str
-    active_window: tuple[int, int]
+    loop: ActiveGripperLoop
     source_masks: Path
+    source_loop: Path
     parquet: Path
     sidecar: Path
     rgb_video: Path
     depth_video: Path
     input_identities: Mapping[str, Mapping[str, Any]]
+    source_lineage: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        if self.loop.end >= self.frame_count:
+            raise ValueError(
+                f"active window {self.loop.inclusive_window} exceeds frame count "
+                f"{self.frame_count}"
+            )
+
+    @property
+    def active_arm(self) -> str:
+        return self.loop.active_arm
+
+    @property
+    def active_window(self) -> tuple[int, int]:
+        return self.loop.inclusive_window
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -107,12 +135,15 @@ class EpisodePlan:
             "frame_shape_hw": list(self.frame_shape),
             "active_arm": self.active_arm,
             "active_window": list(self.active_window),
+            "events": self.loop.to_json(),
             "source_masks": str(self.source_masks),
+            "source_loop": str(self.source_loop),
             "parquet": str(self.parquet),
             "sidecar": str(self.sidecar),
             "rgb_video": str(self.rgb_video),
             "depth_video": str(self.depth_video),
             "inputs": _jsonable(self.input_identities),
+            "source_lineage": _jsonable(self.source_lineage),
         }
 
 
@@ -198,6 +229,8 @@ def parse_args(argv: Sequence[str] | None = None) -> RunConfig:
     args = _parser().parse_args(argv)
     if args.resume and not args.run_id:
         raise ValueError("--resume requires an explicit --run-id")
+    if args.dry_run and args.resume:
+        raise ValueError("--dry-run and --resume cannot be used together")
     raw_episode_ids = (
         (args.episode_id,) if args.episode_id is not None else tuple(args.episode_ids)
     )
@@ -250,6 +283,8 @@ def _is_within(path: Path, parent: Path) -> bool:
 
 
 def validate_run_config(config: RunConfig) -> None:
+    if config.dry_run and config.resume:
+        raise ValueError("dry_run and resume cannot be enabled together")
     if not config.episode_ids:
         raise ValueError("at least one episode id is required")
     if not config.run_id or "/" in config.run_id or "\\" in config.run_id:
@@ -295,6 +330,22 @@ def resolve_source_masks(
         / f"episode_{episode_index:06d}"
         / camera
         / "masks.npz"
+    )
+
+
+def resolve_source_loop(
+    source_run_dir: Path,
+    *,
+    task: str,
+    episode_index: int,
+    camera: str,
+) -> Path:
+    return (
+        source_run_dir
+        / task
+        / f"episode_{episode_index:06d}"
+        / camera
+        / "loop.json"
     )
 
 
@@ -1423,18 +1474,64 @@ def build_plan(config: RunConfig) -> tuple[EpisodePlan, ...]:
     plans: list[EpisodePlan] = []
     common_shape: tuple[int, int] | None = None
     for episode_index in config.episode_ids:
-        episode = load_urdf_gripper_episode(
-            config.dataset_root,
-            episode_index,
-            camera=config.camera,
-        )
         source_path = resolve_source_masks(
             config.source_run_dir,
             task=config.task,
             episode_index=episode_index,
             camera=config.camera,
         )
+        source_loop_path = resolve_source_loop(
+            config.source_run_dir,
+            task=config.task,
+            episode_index=episode_index,
+            camera=config.camera,
+        )
+        source_loop = load_authoritative_loop_context(
+            source_loop_path,
+            expected_task=config.task,
+            expected_episode_index=episode_index,
+            expected_camera=config.camera,
+        )
+        episode = load_urdf_gripper_episode(
+            config.dataset_root,
+            episode_index,
+            camera=config.camera,
+            authoritative_loop=source_loop.events,
+        )
+        if source_loop.frame_count != episode.frame_count:
+            raise UrdfMaskRunError(
+                f"source loop frame count mismatch: loop={source_loop.frame_count}, "
+                f"parquet={episode.frame_count}"
+            )
         source = load_four_channel_masks(source_path, frame_count=episode.frame_count)
+        try:
+            validated_source = validate_derivation_source_episode(
+                source_path.parent,
+                task=config.task,
+                camera=config.camera,
+                episode_index=episode_index,
+                expected_frame_count=episode.frame_count,
+                expected_dataset_root=config.dataset_root,
+            )
+        except Exception as exc:
+            raise UrdfMaskRunError(
+                f"source lineage validation failed for episode {episode_index}: {exc}"
+            ) from exc
+        lineage_masks = validated_source.lineage["control_artifacts"]["masks"]
+        lineage_loop = validated_source.lineage["control_artifacts"]["loop"]
+        current_masks = _file_identity(source_path)
+        current_loop = _file_identity(source_loop_path)
+        if any(
+            current.get(key) != frozen.get(key)
+            for current, frozen in (
+                (current_masks, lineage_masks),
+                (current_loop, lineage_loop),
+            )
+            for key in ("sha256", "bytes")
+        ):
+            raise UrdfMaskRunError(
+                f"source artifacts changed while planning episode {episode_index}"
+            )
         if common_shape is None:
             common_shape = source.frame_shape
         elif source.frame_shape != common_shape:
@@ -1446,15 +1543,17 @@ def build_plan(config: RunConfig) -> tuple[EpisodePlan, ...]:
                 episode_index=episode_index,
                 frame_count=episode.frame_count,
                 frame_shape=source.frame_shape,
-                active_arm=episode.active_arm,
-                active_window=episode.active_window,
+                loop=source_loop.events,
                 source_masks=source.path,
+                source_loop=source_loop.path,
                 parquet=episode.paths.parquet,
                 sidecar=episode.paths.sidecar,
                 rgb_video=episode.paths.rgb_video,
                 depth_video=episode.paths.depth_video,
+                source_lineage=validated_source.lineage,
                 input_identities={
                     "source_masks": _file_identity(source.path),
+                    "source_loop": _file_identity(source_loop.path),
                     "parquet": _file_identity(episode.paths.parquet),
                     "sidecar": _file_identity(episode.paths.sidecar),
                     "rgb_video": _file_identity(episode.paths.rgb_video),
@@ -1482,6 +1581,7 @@ def _implementation_identity() -> dict[str, Any]:
         Path(__file__).resolve(),
         PROJECT_ROOT / "src/robotwin_annotation_v2/urdf_gripper_data.py",
         PROJECT_ROOT / "src/robotwin_annotation_v2/urdf_gripper_renderer.py",
+        PROJECT_ROOT / "src/robotwin_annotation_v2/urdf_gripper_publisher.py",
     )
     return {
         "git_revision": _git_revision(),
@@ -1806,6 +1906,7 @@ def run_experiment(
                     config.dataset_root,
                     plan.episode_index,
                     camera=config.camera,
+                    authoritative_loop=plan.loop,
                 )
                 source = load_four_channel_masks(
                     plan.source_masks,
@@ -1902,8 +2003,9 @@ def run_experiment(
     _checkpoint_manifest(manifest_path, manifest)
     manifest["manifest_path"] = str(manifest_path)
     if incomplete_ids:
-        raise UrdfMaskRunError(
-            f"URDF gripper run failed for episodes {incomplete_ids}; see {manifest_path}"
+        raise UrdfBatchIncompleteError(
+            f"URDF gripper run failed for episodes {incomplete_ids}; see {manifest_path}",
+            result=manifest,
         )
     return manifest
 

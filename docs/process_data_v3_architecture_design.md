@@ -8,6 +8,9 @@
 本文是给实现者（人或 AI）看的详细契约：改哪些文件、删哪些文件、新格式长什么样、按什么顺序
 提交。简短的背景和动机见 `process_data_v3_overview.md`。
 
+> v3 完成后新增的 URDF gripper derived-run backend 不回写本设计的历史决策；其增量架构见
+> `process_data_v3_1_architecture_design.md`。
+
 ---
 
 ## 1. v3 要解决的问题
@@ -349,4 +352,3 @@ worktree（`process_data_v2-gripper-text-only-roi`、`process_data_v2-qwen-mask-
 不依赖主仓库当前的 `experiments/` 模块路径——它们是独立 worktree，各自有自己的文件系统副
 本，删除主仓库文件不影响其已存在的副本，但后续如果要把这些实验分支合并回主线，需要同步改
 它们的 import 路径。
-

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import types
 from pathlib import Path
@@ -9,12 +10,15 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import robotwin_annotation_v2.urdf_gripper_data as data_module
 from robotwin_annotation_v2.adapters.robotwin_dataset import EpisodePaths, EpisodeState
 from robotwin_annotation_v2.pipeline.state_loop import detect_episode_loop
 from robotwin_annotation_v2.urdf_gripper_data import (
+    ActiveGripperLoop,
     UrdfGripperDataError,
     format_episode_id,
     infer_active_loop,
+    load_authoritative_loop_context,
     load_camera_calibration,
     load_episode_arrays,
     load_urdf_gripper_episode,
@@ -52,6 +56,26 @@ def _write_parquet(path: Path, *, episode_index: int = 7152) -> tuple[np.ndarray
     )
     frame.to_parquet(path, index=False)
     return observation_state, joint_absolute
+
+
+def _write_loop_context(path: Path, events: ActiveGripperLoop) -> None:
+    payload = {
+        "format_version": "robotwin_loop_context_v1",
+        "episode": {
+            "task": "move_pillbottle_pad",
+            "episode_index": 7152,
+            "episode_id": "007152",
+            "camera": "cam_high",
+        },
+        "frame_count": 15,
+        "events": events.to_json(),
+        "windows": {
+            "loop": list(events.inclusive_window),
+            "target_0": [events.t_move_start, events.t_close_done],
+            "receiver_0": [events.t_close_done, events.t_open_done],
+        },
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
 
 
 def test_resolve_episode_paths_uses_zero_padding_and_depth_sidecar_tree(
@@ -124,6 +148,66 @@ def test_infer_active_loop_rejects_two_active_arms() -> None:
 
     with pytest.raises(UrdfGripperDataError, match="exactly one active-arm loop"):
         infer_active_loop(state)
+
+
+def test_load_authoritative_loop_context_preserves_all_source_boundaries(
+    tmp_path: Path,
+) -> None:
+    expected = ActiveGripperLoop(
+        active_arm="left",
+        t_move_start=1,
+        t_close_start=2,
+        t_close_done=4,
+        t_open_start=8,
+        t_open_done=12,
+    )
+    path = tmp_path / "loop.json"
+    _write_loop_context(path, expected)
+
+    context = load_authoritative_loop_context(
+        path,
+        expected_task="move_pillbottle_pad",
+        expected_episode_index=7152,
+        expected_camera="cam_high",
+    )
+
+    assert context.events == expected
+    assert context.frame_count == 15
+    assert context.path == path.resolve()
+
+
+def test_load_episode_uses_authoritative_loop_without_recomputing_stage1(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = resolve_episode_paths(tmp_path, 7152)
+    for path in (paths.sidecar, paths.rgb_video, paths.depth_video):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    _write_parquet(paths.parquet)
+    authoritative = ActiveGripperLoop(
+        active_arm="left",
+        t_move_start=1,
+        t_close_start=2,
+        t_close_done=4,
+        t_open_start=8,
+        t_open_done=12,
+    )
+    monkeypatch.setattr(
+        data_module,
+        "infer_active_loop",
+        lambda *_args: pytest.fail("derived load must not recompute Stage-1"),
+    )
+
+    episode = load_urdf_gripper_episode(
+        tmp_path,
+        7152,
+        authoritative_loop=authoritative,
+    )
+
+    assert episode.loop == authoritative
+    assert episode.active_arm == "left"
+    assert episode.active_window == (1, 12)
 
 
 def test_load_urdf_gripper_episode_validates_media_and_exposes_window(

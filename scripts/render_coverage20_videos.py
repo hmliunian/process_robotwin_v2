@@ -20,10 +20,11 @@ from typing import Any
 import av
 import numpy as np
 from PIL import Image, ImageDraw
-from robotwin_annotation_v2.adapters import ArtifactStore, RoboTwinDataset
+
+from robotwin_annotation_v2.adapters.artifact_store import ArtifactStore
+from robotwin_annotation_v2.adapters.robotwin_dataset import RoboTwinDataset
 from robotwin_annotation_v2.config import PipelineConfig, load_config
 from robotwin_annotation_v2.models import EpisodeRef
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -525,13 +526,18 @@ def build_sheets(
     }
     for episode in render["episodes"]:
         episode_index = int(episode["episode_index"])
-        source_dir = Path(episode["source_masks"]).parent
-        run_manifest = json.loads(
-            (source_dir / "run_manifest.json").read_text(encoding="utf-8")
-        )
+        role_records = episode.get("review_roles")
+        if role_records is None:
+            source_dir = Path(episode["source_masks"]).parent
+            run_manifest = json.loads(
+                (source_dir / "run_manifest.json").read_text(encoding="utf-8")
+            )
+            role_records = run_manifest["roles"]
+        if not isinstance(role_records, list):
+            raise ValueError(f"episode {episode_index} review roles must be a list")
         wanted: dict[str, int] = {}
         statuses: dict[str, str] = {}
-        for role_record in run_manifest["roles"]:
+        for role_record in role_records:
             raw_role = str(role_record["role"])
             role = "gripper" if raw_role.startswith("gripper_") else raw_role
             if role not in {"target", "receiver", "gripper"}:

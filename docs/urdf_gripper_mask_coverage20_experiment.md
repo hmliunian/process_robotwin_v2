@@ -178,25 +178,234 @@ visual review. Failures remain fail-closed and are listed in the manifest.
 6. RGB/depth contain one raw trailing frame; using video length instead of
    Parquet length introduces a temporal contract violation.
 
-## 8. Branch and status
+## 8. Final experiment status
 
 ```text
 branch: experiment/urdf-gripper-mask-coverage20
 base: bf6a8604b22241404b8b1446501998d1a19c27db
+generation commit: 16d8bc87af76ac16167cba80e06dd10e4915d1cc
 ```
 
-Implementation status before the full-20 run:
+The source dataset and source SAM artifacts remained read-only throughout the
+experiment. No dataset, model, or RoboTwin asset was downloaded. Validation of
+the frozen implementation included:
 
-- dataset/source artifacts remain read-only and nothing was downloaded;
 - 20/20 episode dry-run passed, including five input identities per episode;
 - unit tests: `149 passed, 1 skipped`;
 - real EGL renderer tests: `18 passed`;
-- Ruff, PyCompile, and the independent runner review passed;
-- right-arm episode 7152 and left-arm episode 7157 passed approach, contact,
-  transport, release, post-window, channel-preservation, link-membership, and
-  saved-vs-rerender checks in the accepted renderer pilot
-  `qa2-7152-7157-20260810T1854`.
+- focused runner tests: `21 passed`;
+- combined runner and real-renderer tests: `39 passed`;
+- Ruff, PyCompile, `git diff --check`, and an independent runner review passed.
 
-The runner contract was strengthened after that pilot, so a final pilot with
-the frozen implementation is required before starting the independent full-20
-run. Final run paths and aggregate metrics are appended after completion.
+The final frozen pilot is:
+
+```text
+artifacts/urdf_gripper_mask_coverage20/
+  final-pilot-7152-7157-16d8bc8/
+```
+
+It completed 2/2 episodes with no failures. Right-arm episode 7152 published a
+nonempty mask on `116/117` eligible frames (99.15%), while left-arm episode
+7157 published on `149/149` (100%). Both passed approach, contact, transport,
+release, post-window, channel-preservation, link-membership, and
+saved-vs-rerender review. Its masks and overlays are identical to the visually
+accepted pre-freeze renderer pilot `qa2-7152-7157-20260810T1854`.
+
+## 9. Coverage20 results
+
+The independent 20-episode run is:
+
+```text
+artifacts/urdf_gripper_mask_coverage20/
+  coverage20-urdf-gripper-v1-16d8bc8/
+    manifest.json
+    episode_<id>/overlay.mp4
+```
+
+The frozen commit completed all 20 episodes with 20 successes, zero failed
+episodes, and zero failure attempts. The first render took approximately
+704.3 seconds wall-clock. A subsequent full `--resume` validation took
+approximately 13.9 seconds; all 20 episodes were anchored to their published
+hashes and recorded as `validated_skip`.
+
+There are 20 overlay videos containing 2,940 frames in total. Every video is
+320x240 at 50 FPS, and every video frame count matches its authoritative
+Parquet frame count.
+
+Aggregate mask quality from the final manifest is:
+
+| Metric | Result |
+| --- | ---: |
+| Eligible frames with a nonempty mask | `2561/2570` (99.65%) |
+| Lowest per-episode eligible fraction | `125/128` (97.66%), episode 7571 |
+| Mean of the 20 per-episode eligible fractions | 99.66% |
+| Visible gripper pixels | 6,929,725 |
+| `link6` component acceptance | `2544/2759` (92.21%) |
+| `link7` component acceptance | `2371/2759` (85.94%) |
+| `link8` component acceptance | `2353/2759` (85.28%) |
+| Maximum fitted-q jump | 10.5 mm, episode 7274 `fr_joint8` |
+| Active-arm distribution | 10 left / 10 right |
+
+The 10.5 mm maximum jump came from the permitted full-range reacquisition
+path after the bounded temporal search had no reliable solution. It did not
+cause a quality-gate or visual-review failure.
+
+## 10. Visual review and conclusion
+
+The formal-run review material is stored under:
+
+```text
+artifacts/urdf_gripper_mask_coverage20/
+  coverage20-urdf-gripper-v1-16d8bc8/review/
+    review_manifest.json
+    contact_sheets/
+      target_early.jpg
+      target_late.jpg
+      receiver_early.jpg
+      receiver_late.jpg
+      gripper_early.jpg
+      gripper_late.jpg
+```
+
+All 20 episodes passed review across the six contact sheets. No wrong-arm
+selection, long-forearm leakage, bottle-body inclusion, or release-opening
+error was found. Occlusion clipping and image-edge truncation were consistent
+with the RGB evidence. The sheets sample the last active frame rather than a
+post-window frame; the frozen pilot visually checked post-window behavior,
+and the full-run artifact validator enforces an empty gripper mask outside the
+inclusive active window.
+
+The experiment therefore demonstrates that replacing the **gripper** SAM
+producer with RoboTwin URDF geometry is feasible on this coverage20 dataset.
+The published gripper channel is SAM-free and deterministic with respect to
+the recorded joints, calibration, depth, assets, and thresholds. Target and
+receiver channels intentionally remain the byte-preserved masks from the
+existing SAM run; this experiment does not claim to remove SAM from those two
+object channels.
+
+## 11. `just process` integration and `place_empty_cup_full550`
+
+本节的集成边界和 public artifact contract 已正式整理到
+`process_data_v3_1_architecture_design.md`。v3 设计继续作为 live visual pipeline 基线；
+URDF 被定义为复用冻结 target/receiver source run 的 derived-run backend。
+
+On 2026-08-10 the experiment was generalized on the uncommitted branch and
+worktree below. The frozen coverage20 results in the preceding sections keep
+their original historical meaning.
+
+```text
+branch:   experiment/urdf-gripper-mask-coverage20
+worktree: /DATA/disk8/xuran/add_mask_robotwin/process_data_v2/
+            .worktrees/process_data_v2-urdf-gripper-mask-coverage20
+```
+
+`just process` now accepts trailing CLI arguments. With no extra arguments it
+still runs the original Qwen/SAM pipeline. With `--gripper-backend urdf`, it
+does not start Qwen, SAM gripper segmentation, or the legacy gripper renderer.
+It reuses only the source run's QC-passed target and receiver masks, clears the
+two old gripper channels, and writes the visible URDF mask into the active-arm
+channel.
+
+The integration audit used only data already present on disk:
+
+```text
+dataset: /DATA/disk8/xuran/add_mask_robotwin/dataset/
+           place_empty_cup_full550_original
+source:  /DATA/disk8/xuran/add_mask_robotwin/process_data_v2/artifacts/runs/
+           20260807T105004Z-47ee3def
+```
+
+The dataset contains 550 discovered episodes. The frozen source run has 456
+completed episodes whose target and receiver artifacts satisfy the manifest,
+annotation, and QC contracts. It excludes 94 episodes: 91 have an incomplete
+target or receiver SAM result, and episodes 16027, 16336, and 16345 have no
+publishable source mask. The old SAM gripper result is deliberately not part
+of source eligibility.
+
+Automatic discovery is fail-closed across both contracts: every URDF episode
+must have Parquet, RGB, sidecar, depth video, and frame-aligned source masks,
+and its target/receiver review windows must be valid. Because this source has
+excluded episodes, the 456-episode subset requires an explicit
+`--allow-partial-source`. Explicit `--episode-ids` remain fail-closed and never
+silently drop a requested episode. The initial 456-episode dry-run passed in
+about 63 seconds. After the generalized contract checks were tightened, the
+final 456-episode dry-run also passed in about 115 seconds. Dry-run created no
+output run. The formal 456-episode render has not been started; its estimated
+runtime is 5--7 hours.
+
+The generalized integration finished with `170 passed, 1 skipped` unit tests,
+plus PyCompile, Ruff `E/F/I`, and `git diff --check` passing.
+
+The real left/right pilot is stored at:
+
+```text
+artifacts/urdf_gripper_place_empty_cup/
+  place-empty-cup-urdf-pilot-15950-15955/
+```
+
+Both episodes are currently complete and `process_summary.json` reports
+`passed=true`. Episode 15950 uses the right gripper and publishes a nonempty
+mask on `111/112` eligible frames (99.11%); episode 15955 uses the left gripper
+and publishes on `144/144` (100%). Their overlays contain 179 and 166 frames,
+respectively, at 320x240 and 50 FPS. Target and receiver masks are pixelwise
+identical to the source artifacts. Six contact sheets were generated. Visual
+review found correct alignment and occlusion handling; the initial empty
+right-arm frames occur before that gripper enters the image. The pilot
+manifest retains early failed attempts caused by missing renderer packages,
+but the current episode states and final process summary are successful.
+
+Review output is paginated at 32 episodes per page. Its top-level manifest
+records `page_size`, `page_count`, page manifests, and all generated sheets.
+For a failed or interrupted immutable run, `--resume` requires the same
+explicit `--run-id`. The URDF backend does not support `--force`; use a new run
+ID for an intentional clean rerun.
+
+Install the renderer dependencies declared by the `urdf` project extra before
+running outside the temporary pilot environment. In a new worktree-local
+environment, use:
+
+```bash
+uv sync --extra urdf
+```
+
+This installs Python dependencies only; it does not download or replace a
+dataset. Do not run `uv sync` against an existing environment that must retain
+unselected SAM extras, because synchronization can prune them. To add URDF
+packages to such an environment without pruning its other packages, run from
+this worktree:
+
+```bash
+uv pip install --python /absolute/path/to/python -e '.[urdf]'
+```
+
+The currently verified RoboTwin asset is already local at the path in the
+command below. Because it is under `/tmp`, verify that the complete URDF and
+its referenced meshes are still present before starting a long run.
+
+After dependencies are available, the formal subset command is:
+
+```bash
+just process \
+  /DATA/disk8/xuran/add_mask_robotwin/dataset/place_empty_cup_full550_original \
+  /DATA/disk8/xuran/add_mask_robotwin/process_data_v2/artifacts/urdf_gripper_place_empty_cup \
+  --gripper-backend urdf \
+  --source-run-dir /DATA/disk8/xuran/add_mask_robotwin/process_data_v2/artifacts/runs/20260807T105004Z-47ee3def \
+  --urdf-path /tmp/robotwin_aloha_pilot/embodiments/aloha-agilex/urdf/arx5_description_isaac.urdf \
+  --allow-partial-source \
+  --run-id place-empty-cup-urdf-456-v1
+```
+
+The optional second positional argument is the output root; the actual run is
+written to `<output-root>/<run-id>`. If it is omitted and the next argument
+starts with `-`, the recipe uses `artifacts/runs`. Variadic arguments are passed
+without shell word-splitting, including paths containing spaces. In the
+experiment worktree, either create its local `.venv` with the command above or
+override the recipe variable before the recipe name. Merely pointing at
+another interpreter is not sufficient unless that environment already
+contains the `urdf` extra.
+
+```bash
+just --set python /absolute/path/to/urdf-enabled/python process \
+  DATASET OUTPUT_ROOT --gripper-backend urdf \
+  --source-run-dir SOURCE_RUN --urdf-path URDF --run-id RUN_ID
+```

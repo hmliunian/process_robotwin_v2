@@ -7,12 +7,12 @@ environment.  Loop detection mirrors ``pipeline.state_loop`` using only NumPy.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 
 import numpy as np
-
 
 ArmName = Literal["left", "right"]
 
@@ -113,6 +113,28 @@ class ActiveGripperLoop:
     def inclusive_window(self) -> tuple[int, int]:
         return (self.start, self.end)
 
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "active_arm": self.active_arm,
+            "t_move_start": self.t_move_start,
+            "t_close_start": self.t_close_start,
+            "t_close_done": self.t_close_done,
+            "t_open_start": self.t_open_start,
+            "t_open_done": self.t_open_done,
+        }
+
+
+@dataclass(frozen=True)
+class AuthoritativeLoopContext:
+    """Validated Stage-1 source artifact used by a derived URDF run."""
+
+    path: Path
+    task: str
+    episode_index: int
+    camera: str
+    frame_count: int
+    events: ActiveGripperLoop
+
 
 @dataclass(frozen=True)
 class CameraCalibrationSeries:
@@ -171,6 +193,141 @@ def format_episode_id(episode_index: int) -> str:
     """Format a global episode index using the dataset's six-digit convention."""
 
     return f"{_validate_episode_index(episode_index):06d}"
+
+
+def _required_mapping(
+    payload: Mapping[str, Any],
+    key: str,
+    *,
+    description: str,
+) -> Mapping[str, Any]:
+    value = payload.get(key)
+    if not isinstance(value, Mapping):
+        raise UrdfGripperDataError(f"{description} {key} must be an object")
+    return value
+
+
+def _required_integer(
+    payload: Mapping[str, Any],
+    key: str,
+    *,
+    description: str,
+) -> int:
+    value = payload.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise UrdfGripperDataError(f"{description} {key} must be an integer")
+    return value
+
+
+def _validate_recorded_window(
+    windows: Mapping[str, Any],
+    key: str,
+    expected: tuple[int, int],
+) -> None:
+    raw = windows.get(key)
+    if (
+        not isinstance(raw, list)
+        or len(raw) != 2
+        or any(isinstance(value, bool) or not isinstance(value, int) for value in raw)
+        or tuple(raw) != expected
+    ):
+        raise UrdfGripperDataError(
+            f"source loop window {key} does not match events: {raw!r} != {list(expected)!r}"
+        )
+
+
+def load_authoritative_loop_context(
+    path: Path,
+    *,
+    expected_task: str,
+    expected_episode_index: int,
+    expected_camera: str,
+) -> AuthoritativeLoopContext:
+    """Load and strictly validate one frozen ``robotwin_loop_context_v1`` artifact."""
+
+    source = path.expanduser().resolve()
+    if not source.is_file():
+        raise UrdfGripperDataError(f"source loop artifact is missing: {source}")
+    try:
+        payload = json.loads(source.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise UrdfGripperDataError(
+            f"failed to read source loop artifact {source}: {exc}"
+        ) from exc
+    if not isinstance(payload, Mapping):
+        raise UrdfGripperDataError("source loop artifact must contain a JSON object")
+    if payload.get("format_version") != "robotwin_loop_context_v1":
+        raise UrdfGripperDataError(
+            f"unsupported source loop format: {payload.get('format_version')!r}"
+        )
+
+    episode = _required_mapping(payload, "episode", description="source loop")
+    expected_index = _validate_episode_index(expected_episode_index)
+    expected_identity = {
+        "task": expected_task,
+        "episode_index": expected_index,
+        "episode_id": format_episode_id(expected_index),
+        "camera": _validate_camera(expected_camera),
+    }
+    for key, expected in expected_identity.items():
+        if episode.get(key) != expected:
+            raise UrdfGripperDataError(
+                f"source loop episode {key} mismatch: {episode.get(key)!r} != {expected!r}"
+            )
+
+    frame_count = _required_integer(
+        payload,
+        "frame_count",
+        description="source loop",
+    )
+    if frame_count < 1:
+        raise UrdfGripperDataError("source loop frame_count must be positive")
+    event_payload = _required_mapping(payload, "events", description="source loop")
+    active_arm = event_payload.get("active_arm")
+    if active_arm not in {"left", "right"}:
+        raise UrdfGripperDataError(
+            f"source loop active_arm must be left or right, got {active_arm!r}"
+        )
+    event_values = {
+        key: _required_integer(event_payload, key, description="source loop events")
+        for key in (
+            "t_move_start",
+            "t_close_start",
+            "t_close_done",
+            "t_open_start",
+            "t_open_done",
+        )
+    }
+    try:
+        events = ActiveGripperLoop(active_arm=active_arm, **event_values)
+    except ValueError as exc:
+        raise UrdfGripperDataError(f"invalid source loop events: {exc}") from exc
+    if events.end >= frame_count:
+        raise UrdfGripperDataError(
+            f"source loop active window {events.inclusive_window} exceeds frame count "
+            f"{frame_count}"
+        )
+
+    windows = _required_mapping(payload, "windows", description="source loop")
+    _validate_recorded_window(windows, "loop", events.inclusive_window)
+    _validate_recorded_window(
+        windows,
+        "target_0",
+        (events.t_move_start, events.t_close_done),
+    )
+    _validate_recorded_window(
+        windows,
+        "receiver_0",
+        (events.t_close_done, events.t_open_done),
+    )
+    return AuthoritativeLoopContext(
+        path=source,
+        task=expected_task,
+        episode_index=expected_index,
+        camera=expected_camera,
+        frame_count=frame_count,
+        events=events,
+    )
 
 
 def resolve_episode_paths(
@@ -519,8 +676,9 @@ def load_urdf_gripper_episode(
     *,
     camera: str = "cam_high",
     require_media: bool = True,
+    authoritative_loop: ActiveGripperLoop | None = None,
 ) -> UrdfGripperEpisodeData:
-    """Resolve and validate one episode's data needed for URDF rendering."""
+    """Resolve one episode, using a frozen source loop when explicitly supplied."""
 
     paths = resolve_episode_paths(dataset_root, episode_index, camera=camera)
     if require_media:
@@ -532,7 +690,15 @@ def load_urdf_gripper_episode(
         paths.parquet,
         expected_episode_index=episode_index,
     )
-    loop = infer_active_loop(arrays.observation_state)
+    if authoritative_loop is not None and not isinstance(
+        authoritative_loop, ActiveGripperLoop
+    ):
+        raise TypeError("authoritative_loop must be an ActiveGripperLoop")
+    loop = (
+        infer_active_loop(arrays.observation_state)
+        if authoritative_loop is None
+        else authoritative_loop
+    )
     if loop.end >= arrays.frame_count:
         raise UrdfGripperDataError(
             f"active window {loop.inclusive_window} exceeds frame count {arrays.frame_count}"
@@ -543,6 +709,7 @@ def load_urdf_gripper_episode(
 __all__ = [
     "ActiveGripperLoop",
     "ArmName",
+    "AuthoritativeLoopContext",
     "CameraCalibrationSeries",
     "EpisodeArrays",
     "UrdfGripperDataError",
@@ -550,6 +717,7 @@ __all__ = [
     "UrdfGripperEpisodePaths",
     "format_episode_id",
     "infer_active_loop",
+    "load_authoritative_loop_context",
     "load_camera_calibration",
     "load_episode_arrays",
     "load_urdf_gripper_episode",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ import numpy as np
 import pytest
 
 import scripts.render_urdf_gripper_masks as render_module
+from robotwin_annotation_v2.urdf_gripper_data import ActiveGripperLoop
 from scripts.render_urdf_gripper_masks import (
     RunConfig,
     UrdfMaskProduct,
@@ -53,6 +55,163 @@ def _episode(tmp_path: Path, *, active_arm: str = "right") -> Any:
         active_arm=active_arm,
         active_window=(1, 2),
         joint_absolute=np.zeros((3, 14), dtype=np.float64),
+        paths=SimpleNamespace(
+            episode_index=7152,
+            parquet=tmp_path / "episode.parquet",
+            rgb_video=tmp_path / "rgb.mp4",
+            depth_video=tmp_path / "depth.mkv",
+            sidecar=tmp_path / "sidecar.hdf5",
+        ),
+    )
+
+
+def _derived_loop(*, active_arm: str = "right") -> ActiveGripperLoop:
+    return ActiveGripperLoop(
+        active_arm=active_arm,
+        t_move_start=0,
+        t_close_start=1,
+        t_close_done=2,
+        t_open_start=3,
+        t_open_done=5,
+    )
+
+
+def _write_source_loop(
+    masks_path: Path,
+    *,
+    dataset_root: Path | None = None,
+    task: str = "move_pillbottle_pad",
+    episode_index: int = 7152,
+    camera: str = "cam_high",
+    active_arm: str = "right",
+) -> Path:
+    events = _derived_loop(active_arm=active_arm)
+    path = masks_path.with_name("loop.json")
+    payload = {
+        "format_version": "robotwin_loop_context_v1",
+        "episode": {
+            "task": task,
+            "episode_index": episode_index,
+            "episode_id": f"{episode_index:06d}",
+            "camera": camera,
+        },
+        "task_text": "test",
+        "frame_count": 6,
+        "events": events.to_json(),
+        "windows": {
+            "loop": list(events.inclusive_window),
+            "target_0": [events.t_move_start, events.t_close_done],
+            "receiver_0": [events.t_close_done, events.t_open_done],
+        },
+        "semantic_frames": [],
+        "sources": (
+            {}
+            if dataset_root is None
+            else {
+                "state": str(
+                    dataset_root
+                    / "data/chunk-007/episode_007152.parquet"
+                ),
+                "video": str(
+                    dataset_root
+                    / "videos/chunk-007/observation.images.cam_high/"
+                    "episode_007152.mp4"
+                ),
+            }
+        ),
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def _write_source_contract(masks_path: Path, *, dataset_root: Path) -> Path:
+    """Write one complete canonical source episode used by derived-run tests."""
+
+    source_run = masks_path.parents[3]
+    episode_dir = masks_path.parent
+    loop_path = _write_source_loop(masks_path, dataset_root=dataset_root)
+    for instance_name in ("target_0", "receiver_0"):
+        artifact = episode_dir / instance_name / "native_track.npz"
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(f"{instance_name}-track".encode())
+    manifest = {
+        "format_version": "robotwin_mask_run_v2",
+        "run_id": source_run.name,
+        "episode": {
+            "task": "move_pillbottle_pad",
+            "episode_index": 7152,
+            "episode_id": "007152",
+            "camera": "cam_high",
+        },
+        "frame_count": 6,
+        "roles": [
+            {
+                "role": "target",
+                "status": "ok",
+                "qc_status": "passed",
+                "output_window": [0, 2],
+                "native_track_path": "target_0/native_track.npz",
+            },
+            {
+                "role": "receiver",
+                "status": "ok",
+                "qc_status": "passed",
+                "output_window": [2, 5],
+                "native_track_path": "receiver_0/native_track.npz",
+            },
+        ],
+        "algorithm": {"source": "sam-test"},
+    }
+    (episode_dir / "run_manifest.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+    provenance = {
+        "format_version": "robotwin_frame_provenance_v2",
+        "channels": {
+            "target_0": {
+                "status": "ok",
+                "qc_status": "passed",
+                "output_window": [0, 2],
+            },
+            "receiver_0": {
+                "status": "ok",
+                "qc_status": "passed",
+                "output_window": [2, 5],
+            },
+        },
+    }
+    (episode_dir / "frame_provenance.json").write_text(
+        json.dumps(provenance), encoding="utf-8"
+    )
+    summary = {
+        "format_version": "robotwin_process_dataset_summary_v1",
+        "run_id": source_run.name,
+        "dataset_root": str(dataset_root.resolve()),
+        "task": "move_pillbottle_pad",
+        "camera": "cam_high",
+        "dynamic_manifest": {
+            "task": "move_pillbottle_pad",
+            "camera": "cam_high",
+            "dataset_root": str(dataset_root.resolve()),
+            "regression_episode_ids": [7152],
+            "frame_shape_hw": [2, 3],
+        },
+        "records": [{"episode": 7152, "status": "completed"}],
+    }
+    (source_run / "process_summary.json").write_text(
+        json.dumps(summary), encoding="utf-8"
+    )
+    return loop_path
+
+
+def _derived_episode(tmp_path: Path, *, active_arm: str = "right") -> Any:
+    loop = _derived_loop(active_arm=active_arm)
+    return SimpleNamespace(
+        frame_count=6,
+        active_arm=loop.active_arm,
+        active_window=loop.inclusive_window,
+        loop=loop,
+        joint_absolute=np.zeros((6, 14), dtype=np.float64),
         paths=SimpleNamespace(
             episode_index=7152,
             parquet=tmp_path / "episode.parquet",
@@ -118,6 +277,37 @@ def _product() -> UrdfMaskProduct:
     )
 
 
+def _derived_product() -> UrdfMaskProduct:
+    visible = np.zeros((6, 2, 3), dtype=bool)
+    visible[:, 1, 2] = True
+    records = tuple(
+        {
+            "frame_id": frame_id,
+            "accepted": True,
+            "visible_pixels": 1,
+            "amodal_pixels": 1,
+            "depth_evaluable_pixels": 1,
+            "selected_q_by_joint": {
+                "fr_joint7": 0.02,
+                "fr_joint8": 0.021,
+            },
+            "component_acceptance": {
+                "fr_link6": True,
+                "fr_link7": True,
+                "fr_link8": True,
+            },
+        }
+        for frame_id in range(6)
+    )
+    return UrdfMaskProduct(
+        gripper_track=visible,
+        rendered_amodal_track=visible.copy(),
+        depth_evaluable_track=visible.copy(),
+        depth_consistent_track=visible.copy(),
+        frame_diagnostics=records,
+    )
+
+
 def test_parse_args_supports_single_and_batch_episode_modes(tmp_path: Path) -> None:
     common = [
         "--source-run-dir",
@@ -147,6 +337,38 @@ def test_parse_args_requires_explicit_run_id_for_resume(tmp_path: Path) -> None:
                 "--resume",
             ]
         )
+
+
+def test_dry_run_and_resume_are_mutually_exclusive(tmp_path: Path) -> None:
+    common = [
+        "--source-run-dir",
+        str(tmp_path / "source"),
+        "--urdf-path",
+        str(tmp_path / "aloha.urdf"),
+        "--episode-id",
+        "7152",
+        "--run-id",
+        "resume-run",
+        "--dry-run",
+        "--resume",
+    ]
+
+    with pytest.raises(ValueError, match="cannot be used together"):
+        parse_args(common)
+
+    config = RunConfig(
+        dataset_root=tmp_path / "dataset",
+        source_run_dir=tmp_path / "source",
+        output_root=tmp_path / "output",
+        run_id="resume-run",
+        urdf_path=tmp_path / "aloha.urdf",
+        mesh_root=None,
+        episode_ids=(7152,),
+        dry_run=True,
+        resume=True,
+    )
+    with pytest.raises(ValueError, match="cannot be enabled together"):
+        render_module.validate_run_config(config)
 
 
 def test_compose_replaces_both_old_gripper_channels_without_mutating_source(
@@ -263,18 +485,9 @@ def test_dry_run_preflights_without_creating_output_or_renderer(
         source_run
         / "move_pillbottle_pad/episode_007152/cam_high/masks.npz"
     )
-    _write_masks(source_masks)
-    fake_episode = SimpleNamespace(
-        frame_count=3,
-        active_arm="right",
-        active_window=(1, 2),
-        paths=SimpleNamespace(
-            parquet=dataset / "episode.parquet",
-            sidecar=dataset / "sidecar.hdf5",
-            rgb_video=dataset / "rgb.mp4",
-            depth_video=dataset / "depth.mkv",
-        ),
-    )
+    _write_masks(source_masks, frame_count=6)
+    source_loop = _write_source_contract(source_masks, dataset_root=dataset)
+    fake_episode = _derived_episode(dataset)
     _write_episode_inputs(fake_episode)
     monkeypatch.setattr(
         render_module,
@@ -299,6 +512,7 @@ def test_dry_run_preflights_without_creating_output_or_renderer(
     episode_contract = result["run_contract"]["episode_plans"][0]
     assert set(episode_contract["inputs"]) == {
         "source_masks",
+        "source_loop",
         "parquet",
         "sidecar",
         "rgb_video",
@@ -307,6 +521,21 @@ def test_dry_run_preflights_without_creating_output_or_renderer(
     for identity in episode_contract["inputs"].values():
         assert set(identity) == {"path", "sha256", "bytes"}
         assert identity["bytes"] > 0
+    assert episode_contract["inputs"]["source_loop"]["sha256"] == hashlib.sha256(
+        source_loop.read_bytes()
+    ).hexdigest()
+    assert episode_contract["events"] == _derived_loop().to_json()
+    assert episode_contract["source_lineage"]["format_version"] == (
+        "robotwin_derivation_source_lineage_v1"
+    )
+    assert len(episode_contract["source_lineage"]["lineage_sha256"]) == 64
+    implementation_paths = {
+        item["path"]
+        for item in result["run_contract"]["implementation"]["files"]
+    }
+    assert "src/robotwin_annotation_v2/urdf_gripper_publisher.py" in (
+        implementation_paths
+    )
     assert result["run_contract"]["minimum_eligible_nonempty_fraction"] == 0.90
     assert not output_root.exists()
 
@@ -360,9 +589,11 @@ def _integration_config(tmp_path: Path, *, run_id: str = "resume-run") -> RunCon
     source_run.mkdir(exist_ok=True)
     urdf = tmp_path / "aloha.urdf"
     _write_urdf(urdf)
-    _write_masks(
+    source_masks = (
         source_run / "move_pillbottle_pad/episode_007152/cam_high/masks.npz"
     )
+    _write_masks(source_masks, frame_count=6)
+    _write_source_contract(source_masks, dataset_root=dataset)
     return RunConfig(
         dataset_root=dataset,
         source_run_dir=source_run,
@@ -381,7 +612,7 @@ def _mock_integration_pipeline(
     *,
     fail_render: bool = False,
 ) -> None:
-    episode = _episode(tmp_path)
+    episode = _derived_episode(tmp_path)
     _write_episode_inputs(episode)
     monkeypatch.setattr(
         render_module,
@@ -396,13 +627,13 @@ def _mock_integration_pipeline(
     monkeypatch.setattr(
         render_module,
         "decode_depth_video",
-        lambda *_args, **_kwargs: np.zeros((3, 2, 3), dtype=np.uint16),
+        lambda *_args, **_kwargs: np.zeros((6, 2, 3), dtype=np.uint16),
     )
 
     def render(*_args: Any, **_kwargs: Any) -> UrdfMaskProduct:
         if fail_render:
             raise RuntimeError("synthetic render failure")
-        return _product()
+        return _derived_product()
 
     monkeypatch.setattr(render_module, "render_episode_product", render)
 
@@ -478,6 +709,34 @@ def test_render_driver_uses_per_joint_temporal_priors_and_component_acceptance()
     assert not product.gripper_track[1, 1, 1]
 
 
+def test_derived_runner_passes_source_loop_to_plan_and_actual_render_load(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _integration_config(tmp_path, run_id="authoritative-loop")
+    _mock_integration_pipeline(monkeypatch, tmp_path)
+    episode = _derived_episode(tmp_path)
+    observed: list[ActiveGripperLoop | None] = []
+
+    def load_episode(
+        *_args: Any,
+        authoritative_loop: ActiveGripperLoop | None = None,
+        **_kwargs: Any,
+    ) -> Any:
+        observed.append(authoritative_loop)
+        return episode
+
+    monkeypatch.setattr(render_module, "load_urdf_gripper_episode", load_episode)
+
+    result = run_experiment(config, renderer=object(), fit_config={})
+
+    assert result["status"] == "complete"
+    assert observed == [_derived_loop(), _derived_loop()]
+    assert result["run_contract"]["episode_plans"][0]["events"] == (
+        _derived_loop().to_json()
+    )
+
+
 def test_resume_skips_only_fully_validated_episode_without_creating_renderer(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -497,6 +756,49 @@ def test_resume_skips_only_fully_validated_episode_without_creating_renderer(
 
     assert result["status"] == "complete"
     assert result["resume_skipped_episode_count"] == 1
+
+
+@pytest.mark.parametrize("tamper", ("summary", "loop", "role_artifact"))
+def test_resume_rejects_changed_source_lineage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tamper: str,
+) -> None:
+    config = _integration_config(tmp_path, run_id=f"source-change-{tamper}")
+    _mock_integration_pipeline(monkeypatch, tmp_path)
+    run_experiment(config, renderer=object(), fit_config={})
+    episode_dir = (
+        config.source_run_dir
+        / "move_pillbottle_pad/episode_007152/cam_high"
+    )
+    if tamper == "summary":
+        path = config.source_run_dir / "process_summary.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["test_note"] = "changed"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+    elif tamper == "loop":
+        path = episode_dir / "loop.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["task_text"] = "changed"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+    else:
+        path = episode_dir / "target_0/native_track.npz"
+        path.write_bytes(path.read_bytes() + b"-changed")
+
+    resumed = RunConfig(**{**config.__dict__, "resume": True})
+    monkeypatch.setattr(
+        render_module,
+        "create_renderer",
+        lambda *_args, **_kwargs: pytest.fail(
+            "changed source lineage must fail before renderer creation"
+        ),
+    )
+
+    with pytest.raises(
+        render_module.UrdfMaskRunError,
+        match="immutable run contract",
+    ):
+        run_experiment(resumed, fit_config={})
 
 
 def test_resume_refuses_to_overwrite_incomplete_published_episode(
@@ -533,8 +835,13 @@ def test_failed_episode_is_checkpointed_and_temporary_directory_is_removed(
     config = _integration_config(tmp_path, run_id="failed-run")
     _mock_integration_pipeline(monkeypatch, tmp_path, fail_render=True)
 
-    with pytest.raises(render_module.UrdfMaskRunError, match="failed for episodes"):
+    with pytest.raises(
+        render_module.UrdfBatchIncompleteError,
+        match="failed for episodes",
+    ) as caught:
         run_experiment(config, renderer=object(), fit_config={})
+
+    assert caught.value.result["status"] == "failed"
 
     manifest = render_module._load_json_object(
         config.run_dir / "manifest.json", description="test manifest"
