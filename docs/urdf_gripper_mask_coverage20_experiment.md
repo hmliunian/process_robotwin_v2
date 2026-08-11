@@ -29,8 +29,10 @@ The experiment uses, for every usable Parquet frame:
 - `videos/.../observation.images.cam_high/episode_<id>.mp4`: source RGB;
 - Stage-1 loop events: active arm and inclusive active-gripper time window.
 
-Parquet length is authoritative. RGB and depth videos contain one trailing
-raw frame in this extract; that frame must not be published.
+Parquet length is authoritative for geometry and every mask channel. RGB and depth videos contain
+one trailing raw frame in this extract. The depth tail is never used for geometry or mask
+publication; the canonical shared renderer preserves the corresponding RGB tail as one unmasked
+video frame and records it explicitly.
 
 All 20 coverage episodes are marked `geometry_valid=true` and have `cam_high`
 depth.
@@ -129,7 +131,7 @@ artifacts/urdf_gripper_mask_coverage20/<run_id>/
   depth_evaluable_track <= rendered_amodal_track`;
 - `active_arm`, active-window bounds, frame count, and format version.
 
-`masks.npz` preserves target and receiver byte-for-byte, clears both old SAM
+`masks.npz` preserves target and receiver pixel-for-pixel, clears both old SAM
 gripper channels, and fills only the active left/right gripper channel with the
 URDF result.
 
@@ -159,9 +161,10 @@ has at least one pixel with valid rendered and scene depth. At least 90% of
 eligible active frames must publish a nonempty visible mask. Fully offscreen
 frames are therefore allowed without weakening the gate.
 
-The 20-episode batch passes only if all episodes render, every artifact has the
-Parquet frame count, and the generated videos and contact sheets receive a
-visual review. Failures remain fail-closed and are listed in the manifest.
+The 20-episode batch passes only if all episodes render, every mask artifact has the Parquet frame
+count, and any retained unmasked source-video tail is recorded explicitly. The generated videos
+and contact sheets also receive a visual review. Failures remain fail-closed and are listed in the
+manifest.
 
 ## 7. Known risks
 
@@ -175,10 +178,11 @@ visual review. Failures remain fail-closed and are listed in the manifest.
    edges; too-large tolerance preserves surfaces hidden at close contact.
 5. Rendering conventions must be checked explicitly: OpenCV camera-Z versus
    OpenGL renderer depth, image origin, principal point, and half-pixel rules.
-6. RGB/depth contain one raw trailing frame; using video length instead of
-   Parquet length introduces a temporal contract violation.
+6. RGB/depth contain one raw trailing frame. Using video length for geometry or masks instead of
+   Parquet length introduces a temporal contract violation; retaining the RGB tail in the shared
+   overlay is allowed only when it remains unmasked and is recorded in the render manifest.
 
-## 8. Final experiment status
+## 8. Final experiment status (pre-integration historical pilot, 2026-08-10)
 
 ```text
 branch: experiment/urdf-gripper-mask-coverage20
@@ -211,7 +215,7 @@ release, post-window, channel-preservation, link-membership, and
 saved-vs-rerender review. Its masks and overlays are identical to the visually
 accepted pre-freeze renderer pilot `qa2-7152-7157-20260810T1854`.
 
-## 9. Coverage20 results
+## 9. Standalone coverage20 results (pre-integration historical run)
 
 The independent 20-episode run is:
 
@@ -228,9 +232,10 @@ episodes, and zero failure attempts. The first render took approximately
 approximately 13.9 seconds; all 20 episodes were anchored to their published
 hashes and recorded as `validated_skip`.
 
-There are 20 overlay videos containing 2,940 frames in total. Every video is
-320x240 at 50 FPS, and every video frame count matches its authoritative
-Parquet frame count.
+The pre-integration renderer produced 20 mask-aligned overlay videos containing 2,940 frames in
+total. Every historical video is 320x240 at 50 FPS and matches its authoritative Parquet frame
+count. The canonical shared renderer's deliberate one-frame RGB-tail behavior is recorded in
+Section 12 below.
 
 Aggregate mask quality from the final manifest is:
 
@@ -250,7 +255,7 @@ The 10.5 mm maximum jump came from the permitted full-range reacquisition
 path after the bounded temporal search had no reliable solution. It did not
 cause a quality-gate or visual-review failure.
 
-## 10. Visual review and conclusion
+## 10. Visual review and conclusion for the standalone run
 
 The formal-run review material is stored under:
 
@@ -279,7 +284,7 @@ The experiment therefore demonstrates that replacing the **gripper** SAM
 producer with RoboTwin URDF geometry is feasible on this coverage20 dataset.
 The published gripper channel is SAM-free and deterministic with respect to
 the recorded joints, calibration, depth, assets, and thresholds. Target and
-receiver channels intentionally remain the byte-preserved masks from the
+receiver channels intentionally remain pixelwise identical to the masks from the
 existing SAM run; this experiment does not claim to remove SAM from those two
 object channels.
 
@@ -289,9 +294,9 @@ object channels.
 `process_data_v3_1_architecture_design.md`。v3 设计继续作为 live visual pipeline 基线；
 URDF 被定义为复用冻结 target/receiver source run 的 derived-run backend。
 
-On 2026-08-10 the experiment was generalized on the uncommitted branch and
-worktree below. The frozen coverage20 results in the preceding sections keep
-their original historical meaning.
+On 2026-08-10 the experiment was generalized on the `experiment/urdf-gripper-mask-coverage20`
+branch and worktree below. The standalone results in the preceding sections keep their original
+pre-integration historical meaning; the canonical `just process` result is recorded in Section 12.
 
 ```text
 branch:   experiment/urdf-gripper-mask-coverage20
@@ -333,8 +338,10 @@ final 456-episode dry-run also passed in about 115 seconds. Dry-run created no
 output run. The formal 456-episode render has not been started; its estimated
 runtime is 5--7 hours.
 
-The generalized integration finished with `170 passed, 1 skipped` unit tests,
-plus PyCompile, Ruff `E/F/I`, and `git diff --check` passing.
+An intermediate integration checkpoint had `170 passed, 1 skipped` unit tests. The final
+implementation, including source-lineage, publisher-identity, canonical-tree, and resume
+tamper checks, has `210 passed, 1 skipped` in the full repository suite; PyCompile, Ruff `E/F/I`,
+and `git diff --check` also pass.
 
 The real left/right pilot is stored at:
 
@@ -409,3 +416,62 @@ just --set python /absolute/path/to/urdf-enabled/python process \
   DATASET OUTPUT_ROOT --gripper-backend urdf \
   --source-run-dir SOURCE_RUN --urdf-path URDF --run-id RUN_ID
 ```
+
+## 12. Canonical `just process` coverage20 result (2026-08-11)
+
+Sections 8--10 record the pre-integration standalone renderer and are retained for
+reproducibility. This section records the first run through the canonical `just process`
+publisher and shared renderer. It uses only the already processed source run and the local
+RoboTwin asset; no dataset or model was downloaded.
+
+```text
+dataset:
+  /DATA/disk8/xuran/add_mask_robotwin/dataset/move_pillbottle_pad_coverage20_original
+source run (target/receiver masks and authoritative loop):
+  /DATA/disk8/xuran/add_mask_robotwin/process_data_v2/artifacts/runs/
+    20260806T120824Z-2fc33b5c
+canonical output:
+  /DATA/disk8/xuran/add_mask_robotwin/process_data_v2/artifacts/runs/
+    coverage20-urdf-canonical-v1
+```
+
+The automatic discovery set exactly matched the 20 requested coverage episodes:
+
+```text
+7152, 7156, 7157, 7163, 7168, 7179, 7181, 7185, 7187, 7188,
+7274, 7317, 7335, 7367, 7424, 7464, 7571, 7621, 7673, 7674
+```
+
+The final `process_summary.json` reports `passed=true`, backend status `complete`, **20/20
+completed episodes, 0 failed episodes, and 0 failure attempts**. The active-arm distribution is
+10 left and 10 right. The public run contains 2,940 authoritative mask frames and 20 overlay MP4
+files containing 2,960 RGB frames total, each 320x240 at 50 FPS. URDF geometry excludes the one
+trailing depth frame in each episode; the shared renderer retains the matching RGB frame without
+an overlay, and every video record reports `unmasked_trailing_frames=1`.
+
+The shared renderer wrote:
+
+```text
+/DATA/disk8/xuran/add_mask_robotwin/process_data_v2/artifacts/runs/
+  coverage20-urdf-canonical-v1/rendered_videos/manifest.json
+/DATA/disk8/xuran/add_mask_robotwin/process_data_v2/artifacts/runs/
+  coverage20-urdf-canonical-v1/rendered_videos/review_sheets/
+  ├── target_early.jpg
+  ├── target_late.jpg
+  ├── receiver_early.jpg
+  ├── receiver_late.jpg
+  ├── gripper_early.jpg
+  └── gripper_late.jpg
+```
+
+The canonical public `masks.npz` keeps the strict seven-key, four-channel contract. Target and
+receiver channels are pixelwise equal to the source run; only the active URDF gripper channel is
+replaced. Both SAM and URDF runs expose the same ten-key `gripper_qc` schema, while URDF-specific
+geometry products, source lineage, and publisher identity stay under `_backend/urdf` and
+`derivation`. The run records 20 unique source-lineage digests and revalidates them before shared
+render.
+
+The final repository validation is `210 passed, 1 skipped`; focused Ruff `E/F/I`, PyCompile, and
+`git diff --check` also pass. This canonical run is the acceptance evidence for the claim that the
+gripper producer can be switched from SAM to RoboTwin URDF while preserving the downstream public
+artifact structure.

@@ -1,6 +1,7 @@
 # `process_data_v2` v3 变更设计（面向实现）
 
-> **状态：已确认，待实施。本文是 v2 架构（`process_data_v2_architecture_design.md`）之上的
+> **状态：v3 baseline 已实施；URDF 增量见 v3.1（2026-08-11）。本文是 v2 架构
+> （`process_data_v2_architecture_design.md`）之上的
 > 增量设计，不重写 v2 已验证的 State Loop / Qwen Semantic Plan / SAM target-receiver
 > 部分。v2 文档第 2/13 节中"本版本不做 gripper mask"的边界声明，从本文件生效起视为已被
 > 取代。**
@@ -308,9 +309,16 @@ Qwen server 生命周期不由本脚本管理：开始前做一次 health check�
 ### 6.3 `justfile` 新增入口
 
 ```text
-process dataset_root output_dir="artifacts/runs":
-    {{python}} scripts/process_dataset.py --dataset-root {{dataset_root}} --output-dir {{output_dir}}
+process dataset_root="../dataset/move_pillbottle_pad_coverage20_original"
+        output_dir="artifacts/runs" *process_args:
+    @dataset_root="$1"; output_dir="$2"; shift 2; if [ "${output_dir#-}" != "$output_dir" ]; then set -- "$output_dir" "$@"; output_dir="artifacts/runs"; fi; exec env PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" {{quote(python)}} scripts/process_dataset.py --config {{quote(config)}} --dataset-root "$dataset_root" --output-dir "$output_dir" "$@"
 ```
+
+`OUTPUT_ROOT` is optional when invoking `just process`; if the token after the dataset root starts
+with `-`, it is treated as the first process argument and the output defaults to
+`artifacts/runs`. The default backend remains SAM. The URDF derived-run options
+(`--gripper-backend urdf`, `--source-run-dir`, `--urdf-path`, explicit `--run-id`, and related
+immutable-run flags) are specified in `process_data_v3_1_architecture_design.md`.
 
 原有 `preflight`/`loop`/`qwen`/`sam`/`run` 等分阶段命令保留，用于单 episode debug；`process`
 是新增的顶层入口，不替代它们。

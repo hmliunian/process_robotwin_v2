@@ -1,9 +1,10 @@
 # `process_data_v2` v3.1 架构设计：URDF gripper backend
 
-> **状态：实验分支实施中。** 本文是
+> **状态：已实施并完成 coverage20 验收（2026-08-11）。** 本文是
 > `process_data_v3_architecture_design.md` 的增量设计。v3 的视觉 pipeline、四通道
-> `masks.npz` 和一键入口仍是基线；v3.1 只增加一个从冻结 source run 派生 URDF gripper
-> channel 的 backend。
+> `masks.npz` 和一键入口仍是基线；v3.1 增加一个从冻结 source run 派生 URDF gripper
+> channel 的 backend。下面的验收记录以实际 canonical run 为准；旧的 standalone pilot
+> 仍保留在实验文档中，作为集成前历史记录。
 
 ## 1. 目标与非目标
 
@@ -347,9 +348,11 @@ URDF 特有配置只放入 `backend`。`qwen_health` 在 URDF 模式为 `null`�
 dataset/source contract 排除的 episode 必须同时出现在顶层 `records` 和
 `backend.dataset_excluded/source_excluded`，避免 summary 看似完整却静默少 episode。
 
-`passed=true` 表示没有 backend batch error，且所有实际 selected episode 已成功发布、render
-成功；若使用
-`--allow-partial-source`，是否覆盖全部请求由 `backend.source_selection_complete` 明确表达。
+`passed=true` 表示没有 backend batch error，且所有实际 selected episode 已成功发布。默认
+渲染开启时，`render` 也必须成功；使用 `--skip-render` 时允许 `render=null`（或显式的
+`status=skipped`），只要 publish/backend 成功即可通过，且 summary 必须保留跳过渲染的事实。
+若使用 `--allow-partial-source`，是否覆盖全部请求由 `backend.source_selection_complete`
+明确表达；该字段为 `false` 时不能把结果描述为覆盖了完整请求集合。
 
 ## 8. Immutable contract、复验、原子发布与 resume
 
@@ -449,7 +452,7 @@ PYTHONPATH=src python -c 'import scripts.render_coverage20_videos'
 依赖安装不得下载或替换数据集。`pyrender==0.1.45` 在 Python 3.13 下通过项目级 uv override
 使用兼容的 `PyOpenGL==3.1.10`。
 
-## 10. 验收顺序
+## 10. 验收顺序与实际结果
 
 1. 单元测试覆盖 authoritative loop identity/window/frame count，且证明 URDF 不重新推断 loop；
 2. lineage 测试逐类覆盖 source summary、loop、manifest、provenance、masks 和 target/receiver
@@ -465,10 +468,52 @@ PYTHONPATH=src python -c 'import scripts.render_coverage20_videos'
 7. 全量 pytest、Ruff `E/F/I`、PyCompile、`git diff --check` 通过；
 8. 对一个右臂和一个左臂 episode 做真实 smoke，核对 active/inactive channel；
 9. 验证 target/receiver 与 source 像素完全相同、public `masks.npz` 严格七键；
-10. 验证两个 overlay MP4 和六张 shared review sheet；
+10. 验证 shared renderer 的 overlay MP4 和六张 review sheet；
 11. 最后在 `move_pillbottle_pad_coverage20_original` 的 20 个显式 episode 上运行，避免
     `--allow-partial-source` 静默改变验收集合；
 12. 20 个 episode 的 canonical artifact、视频、review sheet 与 summary 全部通过后，才把
     实验结论写为“可行”。
+
+2026-08-11 的正式 canonical `just process` run 已完成，结果如下：
+
+```text
+dataset:
+  /DATA/disk8/xuran/add_mask_robotwin/dataset/move_pillbottle_pad_coverage20_original
+source run:
+  /DATA/disk8/xuran/add_mask_robotwin/process_data_v2/artifacts/runs/
+    20260806T120824Z-2fc33b5c
+canonical run:
+  /DATA/disk8/xuran/add_mask_robotwin/process_data_v2/artifacts/runs/
+    coverage20-urdf-canonical-v1
+summary:
+  process_summary.json: passed=true
+  selected episodes: 20/20 complete
+  failed episodes: 0
+  failure attempts: 0
+  active arms: 10 left / 10 right
+  masks: 2,940 authoritative Parquet frames total
+  videos: 20 MP4, 2,960 RGB frames total, 320x240, 50 FPS
+  source lineage: 20 unique per-episode digests
+  trailing frame: one per episode; depth excluded from geometry, RGB kept unmasked
+```
+
+The shared render manifest is
+`/DATA/disk8/xuran/add_mask_robotwin/process_data_v2/artifacts/runs/coverage20-urdf-canonical-v1/rendered_videos/manifest.json`.
+It references all 20 videos and six review sheets under
+`/DATA/disk8/xuran/add_mask_robotwin/process_data_v2/artifacts/runs/coverage20-urdf-canonical-v1/rendered_videos/review_sheets/`:
+`target_{early,late}.jpg`, `receiver_{early,late}.jpg`, and
+`gripper_{early,late}.jpg`. The public target/receiver channels are pixelwise equal to the
+source run; the public URDF gripper channel uses the same seven-key `masks.npz` contract and the
+same ten-key `gripper_qc` schema as the SAM backend. Backend-private `_backend/urdf` artifacts and
+`derivation` lineage remain implementation/audit details, not a second downstream contract.
+
+The mask/overlay frame-count difference is intentional: Parquet remains the authority for all
+four mask channels, so the extra raw depth frame never enters geometry or publication. The shared
+renderer preserves the corresponding final RGB frame in each MP4 without an overlay and records
+`unmasked_trailing_frames=1` for all 20 episodes.
+
+The full repository validation for this implementation is `210 passed, 1 skipped`; focused
+Ruff `E/F/I`, PyCompile, and `git diff --check` also pass. The canonical run therefore satisfies
+the v3.1 acceptance criteria without downloading or regenerating the local source dataset.
 
 coverage20 验收应复用本地已处理 source run 和本地 URDF/mesh，不重新下载数据集。
