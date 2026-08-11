@@ -640,9 +640,13 @@ def _gripper_episode_complete(
         return False
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        active_arm = manifest.get("algorithm", {}).get("gripper_stage", {}).get(
-            "active_arm"
-        )
+        algorithm = manifest.get("algorithm")
+        if not isinstance(algorithm, dict):
+            return False
+        gripper_stage = algorithm.get("gripper_stage")
+        if not isinstance(gripper_stage, dict):
+            return False
+        active_arm = gripper_stage.get("active_arm")
         if active_arm not in {"left", "right"}:
             return False
         role_name = f"gripper_{active_arm}"

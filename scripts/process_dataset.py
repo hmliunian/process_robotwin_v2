@@ -5,11 +5,14 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import gc
 import importlib
 import io
 import json
 import math
+import multiprocessing as mp
 import re
+import traceback
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -33,6 +36,13 @@ from robotwin_annotation_v2.urdf_gripper_publisher import (
 CHUNK_PATTERN = re.compile(r"chunk-(\d{3})$")
 EPISODE_FILE_PATTERN = re.compile(r"episode_(\d+)\.parquet$")
 GRIPPER_BACKENDS = ("sam", "urdf")
+DEFAULT_BUNDLED_URDF_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "configs"
+    / "assets"
+    / "aloha-agilex"
+    / "arx5_description_isaac_gripper.urdf"
+)
 DEFAULT_URDF_DEPTH_TOLERANCE_MM = 8.0
 DEFAULT_URDF_MINIMUM_ELIGIBLE_NONEMPTY_FRACTION = 0.90
 PROCESS_SUMMARY_FORMAT_VERSION = "robotwin_process_dataset_summary_v1"
@@ -158,6 +168,7 @@ class SamRuntime:
     execute_sam_episode: Callable[..., Any]
     fatal_cuda_error: Callable[..., Any]
     gripper_episode_complete: Callable[..., Any]
+    sam_episode_complete: Callable[..., Any]
     run_qwen: Callable[..., Any]
 
 
@@ -185,8 +196,237 @@ def _load_sam_runtime() -> SamRuntime:
         execute_sam_episode=runtime._execute_sam_episode,
         fatal_cuda_error=runtime._fatal_cuda_error,
         gripper_episode_complete=runtime._gripper_episode_complete,
+        sam_episode_complete=runtime._sam_episode_complete,
         run_qwen=runtime.run_qwen,
     )
+
+
+def _release_sam_cuda_cache(gpus: Sequence[int]) -> dict[str, Any]:
+    """Release unreachable SAM objects and report the CUDA cache handoff."""
+
+    report: dict[str, Any] = {
+        "gc_collected": gc.collect(),
+        "cuda_available": False,
+        "gpus": [],
+    }
+    try:
+        import torch
+    except ImportError:
+        return report
+    if not torch.cuda.is_available():
+        return report
+    report["cuda_available"] = True
+    device_count = int(torch.cuda.device_count())
+    for gpu in dict.fromkeys(int(value) for value in gpus):
+        if gpu < 0 or gpu >= device_count:
+            continue
+        allocated_before = int(torch.cuda.memory_allocated(gpu))
+        reserved_before = int(torch.cuda.memory_reserved(gpu))
+        with torch.cuda.device(gpu):
+            torch.cuda.empty_cache()
+        report["gpus"].append(
+            {
+                "gpu": gpu,
+                "allocated_before_bytes": allocated_before,
+                "reserved_before_bytes": reserved_before,
+                "allocated_after_bytes": int(torch.cuda.memory_allocated(gpu)),
+                "reserved_after_bytes": int(torch.cuda.memory_reserved(gpu)),
+            }
+        )
+    return report
+
+
+class _ProcessEventSender(ProcessUI):
+    """Forward child-process UI events to the live pipeline parent."""
+
+    def __init__(self, connection: Any) -> None:
+        super().__init__(emit_json_summary=False, verbose=True)
+        self._connection = connection
+
+    def _send(self, method: str, *args: Any, **kwargs: Any) -> None:
+        self._connection.send(("event", method, args, kwargs))
+
+    def phase_started(self, label: str, *, total: int | None = None) -> None:
+        self._send("phase_started", label, total=total)
+
+    def phase_progress(
+        self,
+        completed: int,
+        *,
+        total: int | None = None,
+        episode_id: int | None = None,
+        status: str | None = None,
+    ) -> None:
+        self._send(
+            "phase_progress",
+            completed,
+            total=total,
+            episode_id=episode_id,
+            status=status,
+        )
+
+    def phase_finished(
+        self,
+        label: str,
+        *,
+        status: str = "completed",
+        detail: str | None = None,
+    ) -> None:
+        self._send("phase_finished", label, status=status, detail=detail)
+
+    def stage_started(self, episode_id: int, label: str) -> None:
+        self._send("stage_started", episode_id, label)
+
+    def stage_finished(
+        self,
+        episode_id: int,
+        label: str,
+        *,
+        status: str = "completed",
+        detail: str | None = None,
+    ) -> None:
+        self._send(
+            "stage_finished",
+            episode_id,
+            label,
+            status=status,
+            detail=detail,
+        )
+
+    def note(self, message: str, *, level: str = "info") -> None:
+        self._send("note", message, level=level)
+
+    def detail(self, text: str) -> None:
+        self._send("detail", text)
+
+
+def _target_receiver_source_process_entry(
+    connection: Any,
+    pipeline_config: PipelineConfig,
+    *,
+    dataset_root: Path,
+    task: str,
+    camera: str,
+    output_root: Path,
+    run_id: str,
+    episode_ids: tuple[int, ...],
+) -> None:
+    reporter = _ProcessEventSender(connection)
+    try:
+        summary = process_dataset(
+            pipeline_config,
+            dataset_root=dataset_root,
+            task=task,
+            camera=camera,
+            output_root=output_root,
+            run_id=run_id,
+            episode_ids=episode_ids,
+            force=False,
+            skip_render=True,
+            target_receiver_only=True,
+            report_lifecycle=False,
+            reporter=reporter,
+        )
+    except BaseException as exc:
+        connection.send(
+            (
+                "error",
+                type(exc).__name__,
+                str(exc),
+                traceback.format_exc(),
+            )
+        )
+    else:
+        connection.send(("result", summary))
+    finally:
+        connection.close()
+
+
+def _run_target_receiver_source_process(
+    pipeline_config: PipelineConfig,
+    *,
+    dataset_root: Path,
+    task: str,
+    camera: str,
+    output_root: Path,
+    run_id: str,
+    episode_ids: tuple[int, ...],
+    reporter: ProcessUI | None,
+) -> dict[str, Any]:
+    """Generate a frozen source in a spawned process with its own CUDA lifetime."""
+
+    context = mp.get_context("spawn")
+    receive_connection, send_connection = context.Pipe(duplex=False)
+    process = context.Process(
+        target=_target_receiver_source_process_entry,
+        kwargs={
+            "connection": send_connection,
+            "pipeline_config": pipeline_config,
+            "dataset_root": dataset_root,
+            "task": task,
+            "camera": camera,
+            "output_root": output_root,
+            "run_id": run_id,
+            "episode_ids": episode_ids,
+        },
+        name="robotwin-target-receiver-source",
+    )
+    summary: dict[str, Any] | None = None
+    child_error: tuple[str, str, str] | None = None
+    connection_open = True
+
+    def receive_message() -> None:
+        nonlocal child_error, connection_open, summary
+        try:
+            message = receive_connection.recv()
+        except EOFError:
+            connection_open = False
+            return
+        if not isinstance(message, tuple) or not message:
+            child_error = ("ProtocolError", "invalid child-process message", "")
+            return
+        if message[0] == "event":
+            if reporter is not None:
+                _, method, args, kwargs = message
+                getattr(reporter, method)(*args, **kwargs)
+        elif message[0] == "result":
+            summary = message[1]
+        elif message[0] == "error":
+            _, error_type, error, child_traceback = message
+            child_error = (error_type, error, child_traceback)
+
+    process.start()
+    send_connection.close()
+    try:
+        while process.is_alive():
+            if connection_open and receive_connection.poll(0.1):
+                receive_message()
+            elif not connection_open:
+                process.join(timeout=0.1)
+        process.join()
+        while connection_open and receive_connection.poll():
+            receive_message()
+    except BaseException:
+        if process.is_alive():
+            process.terminate()
+            process.join()
+        raise
+    finally:
+        receive_connection.close()
+    if child_error is not None:
+        error_type, error, child_traceback = child_error
+        raise RuntimeError(
+            "live target/receiver subprocess failed: "
+            f"{error_type}: {error}\n{child_traceback}"
+        )
+    if process.exitcode != 0:
+        raise RuntimeError(
+            "live target/receiver subprocess exited without a result: "
+            f"exitcode={process.exitcode}"
+        )
+    if summary is None:
+        raise RuntimeError("live target/receiver subprocess returned no summary")
+    return summary
 
 
 def _episode_video_path(root: Path, camera: str, episode_id: int) -> Path:
@@ -684,6 +924,8 @@ def process_urdf_source_run(
     ),
     fit_config_json: Path | None = None,
     allow_partial_source: bool = False,
+    source_mode: str = "frozen_run",
+    source_release: Mapping[str, Any] | None = None,
     experiment_runner: Callable[..., Mapping[str, Any]] | None = None,
     episode_publisher: Callable[..., Mapping[str, Any]] | None = None,
     episode_validator: Callable[..., Mapping[str, Any]] | None = None,
@@ -1223,12 +1465,20 @@ def process_urdf_source_run(
             else list(episode_ids)
         ),
         "dynamic_manifest": dynamic_manifest,
-        "qwen_health": None,
+        "qwen_health": (
+            selection.source_summary.get("qwen_health")
+            if source_mode == "live_target_receiver_stage"
+            else None
+        ),
         "records": records,
         "render": render_report,
         "fatal_error": batch_error,
         "backend": {
             "type": "urdf",
+            "source_mode": source_mode,
+            "source_release": (
+                None if source_release is None else dict(source_release)
+            ),
             "source_run_dir": str(config.source_run_dir),
             "source_run_id": selection.source_summary["run_id"],
             "source_lineage_sha256_by_episode": {
@@ -1274,18 +1524,21 @@ def process_dataset(
     episode_ids: tuple[int, ...] | None = None,
     force: bool = False,
     skip_render: bool = False,
+    target_receiver_only: bool = False,
+    report_lifecycle: bool = True,
     backend_factory: Callable[..., Any] | None = None,
     reporter: ProcessUI | None = None,
 ) -> dict[str, Any]:
     if run_id is not None:
         _validate_run_id(run_id)
     if reporter is not None:
-        reporter.run_started(
-            backend="sam",
-            dataset_root=str(dataset_root.expanduser().resolve()),
-            task=task,
-            camera=camera,
-        )
+        if report_lifecycle:
+            reporter.run_started(
+                backend="sam",
+                dataset_root=str(dataset_root.expanduser().resolve()),
+                task=task,
+                camera=camera,
+            )
         reporter.phase_started("dataset_discovery")
     runtime = _load_sam_runtime()
     discovery = discover_episodes(dataset_root, camera=camera)
@@ -1328,8 +1581,9 @@ def process_dataset(
     selected_run_id = _validate_run_id(run_id or store.new_run_id())
     canonical_run_dir = store.run_dir(selected_run_id)
     _validate_sam_run_ownership(canonical_run_dir, run_id=selected_run_id)
-    if reporter is not None:
+    if reporter is not None and report_lifecycle:
         reporter.run_ready(run_id=selected_run_id, episode_ids=selected_ids)
+    if reporter is not None:
         reporter.phase_started("qwen_health")
     qwen = runtime.qwen_client_factory(
         endpoint=dynamic.qwen.endpoint,
@@ -1342,15 +1596,20 @@ def process_dataset(
         reporter.phase_started("resume_scan", total=len(selected_ids))
     records: list[dict[str, Any]] = list(discovery.skipped)
     pending: list[int] = []
+    completion_check = (
+        runtime.sam_episode_complete
+        if target_receiver_only
+        else runtime.gripper_episode_complete
+    )
     for position, episode_id in enumerate(selected_ids, start=1):
         ref = EpisodeRef(
             task,
             episode_id,
             camera,
         )
-        if not force and runtime.gripper_episode_complete(dynamic, store, selected_run_id, ref):
+        if not force and completion_check(dynamic, store, selected_run_id, ref):
             records.append({"episode": episode_id, "status": "skipped_complete"})
-            if reporter is not None:
+            if reporter is not None and report_lifecycle:
                 reporter.episode_finished(episode_id, status="skipped_complete")
         else:
             pending.append(episode_id)
@@ -1392,7 +1651,7 @@ def process_dataset(
             for episode_id in pending:
                 position = selected_ids.index(episode_id) + 1
                 current_stage: str | None = None
-                if reporter is not None:
+                if reporter is not None and report_lifecycle:
                     reporter.episode_started(
                         episode_id,
                         position=position,
@@ -1428,14 +1687,29 @@ def process_dataset(
                                 current_stage,
                                 status="sam_incomplete",
                             )
-                            reporter.episode_finished(
-                                episode_id,
-                                status="sam_incomplete",
-                            )
+                            if report_lifecycle:
+                                reporter.episode_finished(
+                                    episode_id,
+                                    status="sam_incomplete",
+                                )
                         current_stage = None
                         continue
                     if reporter is not None:
                         reporter.stage_finished(episode_id, current_stage)
+                    if target_receiver_only:
+                        records.append(
+                            {
+                                "episode": episode_id,
+                                "status": "completed",
+                            }
+                        )
+                        if reporter is not None and report_lifecycle:
+                            reporter.episode_finished(
+                                episode_id,
+                                status="completed",
+                            )
+                        current_stage = None
+                        continue
                     current_stage = "gripper_sam"
                     if reporter is not None:
                         reporter.stage_started(episode_id, current_stage)
@@ -1463,10 +1737,11 @@ def process_dataset(
                             current_stage,
                             status=episode_status,
                         )
-                        reporter.episode_finished(
-                            episode_id,
-                            status=episode_status,
-                        )
+                        if report_lifecycle:
+                            reporter.episode_finished(
+                                episode_id,
+                                status=episode_status,
+                            )
                     current_stage = None
                 except SystemExit as exc:
                     error = f"stage exited with code {exc.code}"
@@ -1485,11 +1760,12 @@ def process_dataset(
                                 status="failed",
                                 detail=error,
                             )
-                        reporter.episode_finished(
-                            episode_id,
-                            status="failed",
-                            detail=error,
-                        )
+                        if report_lifecycle:
+                            reporter.episode_finished(
+                                episode_id,
+                                status="failed",
+                                detail=error,
+                            )
                 except runtime.execution_errors as exc:
                     error = str(exc)
                     records.append(
@@ -1507,11 +1783,12 @@ def process_dataset(
                                 status="failed",
                                 detail=error,
                             )
-                        reporter.episode_finished(
-                            episode_id,
-                            status="failed",
-                            detail=error,
-                        )
+                        if report_lifecycle:
+                            reporter.episode_finished(
+                                episode_id,
+                                status="failed",
+                                detail=error,
+                            )
                     if runtime.fatal_cuda_error(exc):
                         fatal_error = exc
                         break
@@ -1530,7 +1807,7 @@ def process_dataset(
             for episode_id in selected_ids
             if episode_id not in recorded_ids
         )
-        if reporter is not None:
+        if reporter is not None and report_lifecycle:
             for episode_id in selected_ids:
                 if episode_id not in recorded_ids:
                     reporter.episode_finished(
@@ -1545,7 +1822,12 @@ def process_dataset(
         for record in records
         if record.get("status") in {"completed", "skipped_complete"}
     )
-    if not skip_render and fatal_error is None and renderable_ids:
+    if (
+        not target_receiver_only
+        and not skip_render
+        and fatal_error is None
+        and renderable_ids
+    ):
         if reporter is not None:
             reporter.phase_started("canonical_render", total=len(renderable_ids))
         try:
@@ -1568,7 +1850,9 @@ def process_dataset(
                 )
     elif reporter is not None:
         reason = (
-            "disabled by --skip-render"
+            "target/receiver source stage"
+            if target_receiver_only
+            else "disabled by --skip-render"
             if skip_render
             else "blocked by fatal CUDA error"
             if fatal_error is not None
@@ -1591,6 +1875,9 @@ def process_dataset(
         "render": render_report,
         "fatal_error": None if fatal_error is None else str(fatal_error),
         "backend": {"type": "sam"},
+        "stage_mode": (
+            "target_receiver_only" if target_receiver_only else "full_sam"
+        ),
     }
     failure_statuses = {
         "failed",
@@ -1611,6 +1898,180 @@ def process_dataset(
     return summary
 
 
+def process_live_urdf_pipeline(
+    *,
+    pipeline_config: PipelineConfig,
+    dataset_root: Path,
+    task: str,
+    camera: str,
+    output_root: Path,
+    urdf_path: Path,
+    mesh_root: Path | None = None,
+    run_id: str | None = None,
+    episode_ids: tuple[int, ...] | None = None,
+    skip_render: bool = False,
+    depth_tolerance_mm: float = DEFAULT_URDF_DEPTH_TOLERANCE_MM,
+    minimum_eligible_nonempty_fraction: float = (
+        DEFAULT_URDF_MINIMUM_ELIGIBLE_NONEMPTY_FRACTION
+    ),
+    fit_config_json: Path | None = None,
+    allow_partial_source: bool = False,
+    backend_factory: Callable[..., Any] | None = None,
+    reporter: ProcessUI | None = None,
+) -> dict[str, Any]:
+    """Run a fresh target/receiver source stage followed by the URDF gripper stage."""
+
+    resolved_dataset_root = dataset_root.expanduser().resolve()
+    resolved_output_root = output_root.expanduser().resolve()
+    resolved_urdf_path = urdf_path.expanduser().resolve()
+    if not resolved_urdf_path.is_file():
+        raise FileNotFoundError(f"URDF asset is missing: {resolved_urdf_path}")
+    if not math.isfinite(depth_tolerance_mm) or depth_tolerance_mm < 0:
+        raise ValueError("URDF depth tolerance must be finite and non-negative")
+    if not math.isfinite(minimum_eligible_nonempty_fraction) or not (
+        0.0 <= minimum_eligible_nonempty_fraction <= 1.0
+    ):
+        raise ValueError(
+            "URDF minimum eligible nonempty fraction must be finite and in [0, 1]"
+        )
+
+    selected_run_id = _validate_run_id(run_id or ArtifactStore.new_run_id())
+    canonical_run_dir = resolved_output_root / selected_run_id
+    _validate_urdf_run_ownership(
+        canonical_run_dir,
+        run_id=selected_run_id,
+        resume=False,
+    )
+    source_run_id = _validate_run_id(f"{selected_run_id}-target-receiver")
+    source_output_root = resolved_output_root / "_sources"
+    source_run_dir = source_output_root / source_run_id
+    if source_run_dir.exists():
+        raise FileExistsError(
+            f"live target/receiver source run already exists: {source_run_dir}"
+        )
+
+    depth_discovery = discover_episodes(
+        resolved_dataset_root,
+        camera=camera,
+        require_depth=True,
+    )
+    depth_eligible_ids = depth_discovery.episode_ids
+    if not depth_eligible_ids:
+        raise ValueError(
+            f"no complete URDF episodes found under {resolved_dataset_root}"
+        )
+    requested_ids = (
+        None
+        if episode_ids is None
+        else tuple(dict.fromkeys(int(value) for value in episode_ids))
+    )
+    if requested_ids is not None:
+        if not requested_ids:
+            raise ValueError("live URDF pipeline requires at least one selected episode")
+        ineligible = sorted(set(requested_ids) - set(depth_eligible_ids))
+        if ineligible:
+            raise ValueError(
+                "requested URDF episodes do not satisfy the dataset/depth contract: "
+                f"{ineligible}"
+            )
+        source_episode_ids = requested_ids
+    else:
+        if depth_discovery.skipped and not allow_partial_source:
+            examples = ", ".join(
+                f"{record['episode']} ({','.join(record['missing'])})"
+                for record in depth_discovery.skipped[:10]
+            )
+            suffix = "" if len(depth_discovery.skipped) <= 10 else ", ..."
+            raise ValueError(
+                "dataset contract excludes episodes before the live source stage: "
+                f"{examples}{suffix}; pass --allow-partial-source to process only "
+                "the depth-eligible subset"
+            )
+        source_episode_ids = depth_eligible_ids
+
+    if reporter is not None:
+        reporter.note(
+            f"target/receiver source will be frozen at {source_run_dir}"
+        )
+    if backend_factory is None:
+        source_summary = _run_target_receiver_source_process(
+            pipeline_config,
+            dataset_root=resolved_dataset_root,
+            task=task,
+            camera=camera,
+            output_root=source_output_root,
+            run_id=source_run_id,
+            episode_ids=source_episode_ids,
+            reporter=reporter,
+        )
+    else:
+        source_summary = process_dataset(
+            pipeline_config,
+            dataset_root=resolved_dataset_root,
+            task=task,
+            camera=camera,
+            output_root=source_output_root,
+            run_id=source_run_id,
+            episode_ids=source_episode_ids,
+            force=False,
+            skip_render=True,
+            target_receiver_only=True,
+            report_lifecycle=False,
+            backend_factory=backend_factory,
+            reporter=reporter,
+        )
+    if reporter is not None:
+        reporter.phase_started("sam_backend_release")
+    source_release = _release_sam_cuda_cache(pipeline_config.sam3.gpus)
+    if reporter is not None:
+        gpu_details = "; ".join(
+            (
+                f"gpu={record['gpu']} "
+                f"allocated={record['allocated_before_bytes']}"
+                f"->{record['allocated_after_bytes']} "
+                f"reserved={record['reserved_before_bytes']}"
+                f"->{record['reserved_after_bytes']}"
+            )
+            for record in source_release["gpus"]
+        )
+        reporter.phase_finished(
+            "sam_backend_release",
+            detail=gpu_details or "no CUDA cache was present",
+        )
+    if not bool(source_summary.get("passed")) and (
+        requested_ids is not None or not allow_partial_source
+    ):
+        raise RuntimeError(
+            "live target/receiver source stage did not pass; its frozen diagnostics "
+            f"are at {source_run_dir}"
+        )
+
+    return process_urdf_source_run(
+        pipeline_config=pipeline_config,
+        dataset_root=resolved_dataset_root,
+        source_run_dir=source_run_dir,
+        task=task,
+        camera=camera,
+        output_root=resolved_output_root,
+        urdf_path=resolved_urdf_path,
+        mesh_root=mesh_root,
+        run_id=selected_run_id,
+        episode_ids=requested_ids,
+        skip_render=skip_render,
+        dry_run=False,
+        resume=False,
+        depth_tolerance_mm=depth_tolerance_mm,
+        minimum_eligible_nonempty_fraction=(
+            minimum_eligible_nonempty_fraction
+        ),
+        fit_config_json=fit_config_json,
+        allow_partial_source=allow_partial_source,
+        source_mode="live_target_receiver_stage",
+        source_release=source_release,
+        reporter=reporter,
+    )
+
+
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset-root", type=Path)
@@ -1628,15 +2089,21 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--gripper-backend",
         choices=GRIPPER_BACKENDS,
         default="sam",
-        help="Use the existing SAM gripper stage or replace it from a frozen run with URDF",
+        help="Use the SAM gripper stage or generate it from URDF after target/receiver",
     )
     parser.add_argument(
         "--source-run-dir",
-        help="Frozen just-process run containing QC-passed target/receiver masks",
+        help=(
+            "Optional frozen run containing QC-passed target/receiver masks; when "
+            "omitted, the URDF pipeline generates a fresh internal source stage"
+        ),
     )
     parser.add_argument(
         "--urdf-path",
-        help="RoboTwin Aloha URDF; required for --gripper-backend urdf",
+        help=(
+            "RoboTwin Aloha URDF; defaults to the bundled render asset for the "
+            "URDF backend"
+        ),
     )
     parser.add_argument("--urdf-mesh-root", type=Path)
     parser.add_argument("--urdf-depth-tolerance-mm", type=float)
@@ -1715,65 +2182,104 @@ def _run_from_args(
             reporter=reporter,
         )
     else:
-        if source_run_dir is None:
-            raise ValueError("--source-run-dir is required for the URDF backend")
-        if urdf_path is None:
-            raise ValueError("--urdf-path is required for the URDF backend")
         if args.force:
             raise ValueError(
                 "--force is not supported by the immutable URDF backend; use a new run id"
             )
-        if args.resume and not args.run_id:
-            raise ValueError("--resume requires an explicit --run-id")
         if args.dry_run and args.resume:
             raise ValueError("--dry-run and --resume cannot be used together")
-        source_summary = _read_json_object(
-            source_run_dir.expanduser().resolve() / "process_summary.json",
-            description="source process summary",
+        resolved_urdf_path = (
+            DEFAULT_BUNDLED_URDF_PATH if urdf_path is None else urdf_path
         )
-        dataset_root = (
-            Path(str(source_summary.get("dataset_root", "")))
-            if args.dataset_root is None
-            else args.dataset_root
+        selected_episode_ids = (
+            None if args.episode_ids is None else tuple(args.episode_ids)
         )
-        task = str(source_summary.get("task", "")) if args.task is None else args.task
-        camera = (
-            str(source_summary.get("camera", ""))
-            if args.camera is None
-            else args.camera
+        depth_tolerance_mm = (
+            DEFAULT_URDF_DEPTH_TOLERANCE_MM
+            if args.urdf_depth_tolerance_mm is None
+            else args.urdf_depth_tolerance_mm
         )
-        if not task or not camera:
-            raise ValueError("source process summary does not define task/camera")
-        summary = process_urdf_source_run(
-            pipeline_config=config,
-            dataset_root=dataset_root,
-            source_run_dir=source_run_dir,
-            task=task,
-            camera=camera,
-            output_root=args.output_dir,
-            urdf_path=urdf_path,
-            mesh_root=args.urdf_mesh_root,
-            run_id=args.run_id,
-            episode_ids=(
-                None if args.episode_ids is None else tuple(args.episode_ids)
-            ),
-            skip_render=args.skip_render,
-            dry_run=args.dry_run,
-            resume=args.resume,
-            depth_tolerance_mm=(
-                DEFAULT_URDF_DEPTH_TOLERANCE_MM
-                if args.urdf_depth_tolerance_mm is None
-                else args.urdf_depth_tolerance_mm
-            ),
-            minimum_eligible_nonempty_fraction=(
-                DEFAULT_URDF_MINIMUM_ELIGIBLE_NONEMPTY_FRACTION
-                if args.urdf_minimum_eligible_nonempty_fraction is None
-                else args.urdf_minimum_eligible_nonempty_fraction
-            ),
-            fit_config_json=args.urdf_fit_config_json,
-            allow_partial_source=args.allow_partial_source,
-            reporter=reporter,
+        minimum_eligible_nonempty_fraction = (
+            DEFAULT_URDF_MINIMUM_ELIGIBLE_NONEMPTY_FRACTION
+            if args.urdf_minimum_eligible_nonempty_fraction is None
+            else args.urdf_minimum_eligible_nonempty_fraction
         )
+        if source_run_dir is None:
+            if args.dry_run or args.resume:
+                raise ValueError(
+                    "live URDF mode is fresh-only; --dry-run/--resume require "
+                    "--source-run-dir"
+                )
+            dataset_root = (
+                config.dataset.root if args.dataset_root is None else args.dataset_root
+            )
+            task = config.dataset.task if args.task is None else args.task
+            camera = config.dataset.camera if args.camera is None else args.camera
+            summary = process_live_urdf_pipeline(
+                pipeline_config=config,
+                dataset_root=dataset_root,
+                task=task,
+                camera=camera,
+                output_root=args.output_dir,
+                urdf_path=resolved_urdf_path,
+                mesh_root=args.urdf_mesh_root,
+                run_id=args.run_id,
+                episode_ids=selected_episode_ids,
+                skip_render=args.skip_render,
+                depth_tolerance_mm=depth_tolerance_mm,
+                minimum_eligible_nonempty_fraction=(
+                    minimum_eligible_nonempty_fraction
+                ),
+                fit_config_json=args.urdf_fit_config_json,
+                allow_partial_source=args.allow_partial_source,
+                reporter=reporter,
+            )
+        else:
+            if args.resume and not args.run_id:
+                raise ValueError("--resume requires an explicit --run-id")
+            source_summary = _read_json_object(
+                source_run_dir.expanduser().resolve() / "process_summary.json",
+                description="source process summary",
+            )
+            dataset_root = (
+                Path(str(source_summary.get("dataset_root", "")))
+                if args.dataset_root is None
+                else args.dataset_root
+            )
+            task = (
+                str(source_summary.get("task", ""))
+                if args.task is None
+                else args.task
+            )
+            camera = (
+                str(source_summary.get("camera", ""))
+                if args.camera is None
+                else args.camera
+            )
+            if not task or not camera:
+                raise ValueError("source process summary does not define task/camera")
+            summary = process_urdf_source_run(
+                pipeline_config=config,
+                dataset_root=dataset_root,
+                source_run_dir=source_run_dir,
+                task=task,
+                camera=camera,
+                output_root=args.output_dir,
+                urdf_path=resolved_urdf_path,
+                mesh_root=args.urdf_mesh_root,
+                run_id=args.run_id,
+                episode_ids=selected_episode_ids,
+                skip_render=args.skip_render,
+                dry_run=args.dry_run,
+                resume=args.resume,
+                depth_tolerance_mm=depth_tolerance_mm,
+                minimum_eligible_nonempty_fraction=(
+                    minimum_eligible_nonempty_fraction
+                ),
+                fit_config_json=args.urdf_fit_config_json,
+                allow_partial_source=args.allow_partial_source,
+                reporter=reporter,
+            )
     return summary
 
 

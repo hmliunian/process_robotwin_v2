@@ -11,7 +11,6 @@ import pytest
 from robotwin_annotation_v2.adapters import ArtifactStore, Sam3Error
 from robotwin_annotation_v2.models import EpisodeRef, MaskStatus
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -209,6 +208,30 @@ def test_sam_batch_stops_after_fatal_cuda_error(tmp_path: Path) -> None:
         "failed",
         "not_run_after_fatal_cuda",
     ]
+
+
+def test_gripper_completion_treats_null_stage_as_incomplete(tmp_path: Path) -> None:
+    module = runpy.run_path(str(PROJECT_ROOT / "scripts/run_target_receiver.py"))
+    config = _batch_config(tmp_path)
+    store = ArtifactStore(config.output_root)
+    ref = EpisodeRef("task", 1, "cam_high")
+    episode_dir = store.episode_dir("batch-test", ref)
+    episode_dir.mkdir(parents=True)
+    (episode_dir / "masks.npz").touch()
+    ArtifactStore.write_json(
+        episode_dir / "run_manifest.json",
+        {
+            "algorithm": {"gripper_stage": None},
+            "roles": [
+                {"role": "target", "status": "ok", "qc_status": "passed"},
+                {"role": "receiver", "status": "failed"},
+            ],
+        },
+    )
+
+    assert not module["_gripper_episode_complete"](
+        config, store, "batch-test", ref
+    )
 
 
 def test_gripper_batch_reuses_one_backend_for_multiple_episodes(

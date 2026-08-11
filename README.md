@@ -40,7 +40,10 @@ src/robotwin_annotation_v2/
   adapters/                      dataset / Qwen HTTP / SAM3 / artifacts
 scripts/                         server 和运行入口
 tests/                           unit + integration
-docs/process_data_v2_architecture_design.md
+docs/README.md                   文档入口与当前状态
+docs/architecture.md             当前架构、CLI 和产物契约
+docs/experiments.md              实验结论与参数依据
+docs/datasets.md                 兼容任务与数据完整性
 ```
 
 ## 快速验证
@@ -100,6 +103,6 @@ just process <dataset_root> --verbose
 `TERM=dumb` 环境会自动使用纯文本模式。完整机器可读结果仍以 run 目录中的
 `process_summary.json` 为准。
 
-完整设计见 [docs/process_data_v2_architecture_design.md](docs/process_data_v2_architecture_design.md)。
-视频跟踪方法对比、coverage20 指标和产物位置见
-[docs/video_mask_tracking_experiment.md](docs/video_mask_tracking_experiment.md)。
+完整文档从 [docs/README.md](docs/README.md) 开始；当前实现契约见
+[docs/architecture.md](docs/architecture.md)，coverage20 实验、参数依据和证据边界见
+[docs/experiments.md](docs/experiments.md)。

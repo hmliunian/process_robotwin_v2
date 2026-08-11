@@ -462,6 +462,14 @@ class Sam3Adapter:
             return propagated
 
     def shutdown(self) -> None:
-        shutdown = getattr(self.predictor, "shutdown", None)
-        if callable(shutdown):
-            shutdown()
+        predictor = self.predictor
+        if predictor is None:
+            return
+        self.predictor = None
+        try:
+            shutdown = getattr(predictor, "shutdown", None)
+            if callable(shutdown):
+                shutdown()
+        finally:
+            if hasattr(predictor, "model"):
+                predictor.model = None

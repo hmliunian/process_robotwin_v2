@@ -271,7 +271,8 @@ def _cli_config(tmp_path: Path) -> SimpleNamespace:
             root=tmp_path / "configured-dataset",
             task="configured-task",
             camera="cam_high",
-        )
+        ),
+        sam3=SimpleNamespace(gpus=(2,)),
     )
 
 
@@ -437,6 +438,74 @@ def test_process_dataset_reports_sam_stages_without_embedded_json(
     assert backend_shutdown == [True]
 
 
+def test_process_dataset_target_receiver_only_skips_gripper_and_uses_sam_resume(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dataset = tmp_path / "dataset"
+    _touch_episode(dataset, 7)
+    monkeypatch.setattr(
+        process_module,
+        "_measure_episode",
+        lambda _episode: (6, (2, 3), 0),
+    )
+    calls: list[str] = []
+
+    def unexpected_gripper(*_args: Any, **_kwargs: Any) -> Any:
+        pytest.fail("target/receiver-only processing must not inspect or run gripper")
+
+    runtime = SimpleNamespace(
+        qwen_client_factory=lambda **_kwargs: SimpleNamespace(
+            health=lambda: {"status": "ok"}
+        ),
+        backend_factory=lambda **_kwargs: SimpleNamespace(
+            shutdown=lambda: calls.append("shutdown")
+        ),
+        execution_errors=(RuntimeError,),
+        emit_gripper_result=unexpected_gripper,
+        emit_sam_result=lambda *_args: calls.append("emit_sam") or True,
+        execute_gripper_episode=unexpected_gripper,
+        execute_sam_episode=lambda *_args: calls.append("execute_sam") or object(),
+        fatal_cuda_error=lambda _exc: False,
+        gripper_episode_complete=unexpected_gripper,
+        sam_episode_complete=lambda *_args: calls.append("sam_resume_scan") or False,
+        run_qwen=lambda *_args: calls.append("qwen"),
+    )
+    monkeypatch.setattr(process_module, "_load_sam_runtime", lambda: runtime)
+
+    summary = process_module.process_dataset(
+        process_module.load_config(Path("configs/pilot_move_pillbottle_pad.yaml")),
+        dataset_root=dataset,
+        task="task",
+        camera="cam_high",
+        output_root=tmp_path / "output",
+        run_id="target-receiver-source",
+        episode_ids=(7,),
+        skip_render=True,
+        target_receiver_only=True,
+    )
+
+    assert calls == [
+        "sam_resume_scan",
+        "qwen",
+        "execute_sam",
+        "emit_sam",
+        "shutdown",
+    ]
+    assert summary["passed"] is True
+    assert summary["records"] == [{"episode": 7, "status": "completed"}]
+
+
+def test_default_bundled_urdf_path_is_repository_asset() -> None:
+    expected = (
+        Path(__file__).resolve().parents[2]
+        / "configs/assets/aloha-agilex/arx5_description_isaac_gripper.urdf"
+    ).resolve()
+
+    assert process_module.DEFAULT_BUNDLED_URDF_PATH == expected
+    assert process_module.DEFAULT_BUNDLED_URDF_PATH.is_file()
+
+
 def test_parse_args_defaults_to_sam_and_preserves_just_sentinel_paths() -> None:
     args = process_module._parse_args(
         ["--source-run-dir", "-", "--urdf-path", "-"]
@@ -480,6 +549,11 @@ def test_main_legacy_cli_dispatches_sam_without_urdf_path(
         lambda **_kwargs: pytest.fail("legacy SAM CLI must not enter URDF mode"),
     )
     monkeypatch.setattr(
+        process_module,
+        "process_live_urdf_pipeline",
+        lambda **_kwargs: pytest.fail("legacy SAM CLI must not enter live URDF mode"),
+    )
+    monkeypatch.setattr(
         sys,
         "argv",
         [
@@ -505,6 +579,170 @@ def test_main_legacy_cli_dispatches_sam_without_urdf_path(
     assert calls["force"] is False
     assert calls["skip_render"] is False
     assert isinstance(calls["reporter"], process_module.ProcessUI)
+
+
+def test_main_live_urdf_cli_uses_bundled_asset_and_not_derived_entrypoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _cli_config(tmp_path)
+    calls: dict[str, Any] = {}
+
+    def fake_live_urdf(**kwargs: Any) -> dict[str, Any]:
+        calls.update(kwargs)
+        return {"passed": True, "gripper_backend": "urdf"}
+
+    monkeypatch.setattr(process_module, "load_config", lambda _path: config)
+    monkeypatch.setattr(
+        process_module,
+        "process_live_urdf_pipeline",
+        fake_live_urdf,
+    )
+    monkeypatch.setattr(
+        process_module,
+        "process_urdf_source_run",
+        lambda **_kwargs: pytest.fail(
+            "URDF without --source-run-dir must use the live pipeline"
+        ),
+    )
+    monkeypatch.setattr(
+        process_module,
+        "process_dataset",
+        lambda *_args, **_kwargs: pytest.fail(
+            "CLI must dispatch live URDF through its coordinator"
+        ),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "process_dataset.py",
+            "--gripper-backend",
+            "urdf",
+            "--dataset-root",
+            str(tmp_path / "dataset"),
+            "--output-dir",
+            str(tmp_path / "output"),
+            "--task",
+            "task",
+            "--camera",
+            "cam_high",
+            "--run-id",
+            "live-urdf-test",
+            "--episode-ids",
+            "7",
+            "--skip-render",
+        ],
+    )
+
+    process_module.main()
+
+    assert calls["pipeline_config"] is config
+    assert calls["dataset_root"] == tmp_path / "dataset"
+    assert calls["task"] == "task"
+    assert calls["camera"] == "cam_high"
+    assert calls["output_root"] == tmp_path / "output"
+    assert calls["urdf_path"] == process_module.DEFAULT_BUNDLED_URDF_PATH
+    assert calls["run_id"] == "live-urdf-test"
+    assert calls["episode_ids"] == (7,)
+    assert calls["skip_render"] is True
+
+
+def test_live_urdf_pipeline_runs_target_receiver_source_before_derived_urdf(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _cli_config(tmp_path)
+    dataset = tmp_path / "dataset"
+    _touch_episode(dataset, 7)
+    output_root = tmp_path / "output"
+    events: list[str] = []
+    source_calls: dict[str, Any] = {}
+    urdf_calls: dict[str, Any] = {}
+
+    def fake_source(received_config: Any, **kwargs: Any) -> dict[str, Any]:
+        events.append("target_receiver")
+        source_calls["config"] = received_config
+        source_calls.update(kwargs)
+        source_run_dir = Path(kwargs["output_root"]) / str(kwargs["run_id"])
+        source_run_dir.mkdir(parents=True)
+        summary = {
+            "format_version": "robotwin_process_dataset_summary_v1",
+            "run_id": kwargs["run_id"],
+            "dataset_root": str(Path(kwargs["dataset_root"]).resolve()),
+            "task": kwargs["task"],
+            "camera": kwargs["camera"],
+            "records": [{"episode": 7, "status": "completed"}],
+            "passed": True,
+        }
+        (source_run_dir / "process_summary.json").write_text(
+            json.dumps(summary),
+            encoding="utf-8",
+        )
+        return summary
+
+    def fake_urdf(**kwargs: Any) -> dict[str, Any]:
+        events.append("urdf")
+        urdf_calls.update(kwargs)
+        return {
+            "passed": True,
+            "gripper_backend": "urdf",
+            "run_id": kwargs["run_id"],
+        }
+
+    release_report = {
+        "gc_collected": 3,
+        "cuda_available": True,
+        "gpus": [
+            {
+                "gpu": 2,
+                "allocated_before_bytes": 10,
+                "reserved_before_bytes": 20,
+                "allocated_after_bytes": 0,
+                "reserved_after_bytes": 0,
+            }
+        ],
+    }
+
+    def fake_release(gpus: Any) -> dict[str, Any]:
+        events.append("release")
+        assert tuple(gpus) == config.sam3.gpus
+        return release_report
+
+    monkeypatch.setattr(process_module, "process_dataset", fake_source)
+    monkeypatch.setattr(process_module, "_release_sam_cuda_cache", fake_release)
+    monkeypatch.setattr(process_module, "process_urdf_source_run", fake_urdf)
+
+    summary = process_module.process_live_urdf_pipeline(
+        pipeline_config=config,
+        dataset_root=dataset,
+        task="task",
+        camera="cam_high",
+        output_root=output_root,
+        urdf_path=process_module.DEFAULT_BUNDLED_URDF_PATH,
+        run_id="live-urdf-test",
+        episode_ids=(7,),
+        skip_render=True,
+        backend_factory=lambda **_kwargs: object(),
+    )
+
+    expected_source_root = (output_root / "_sources").resolve()
+    expected_source_run = expected_source_root / "live-urdf-test-target-receiver"
+    assert events == ["target_receiver", "release", "urdf"]
+    assert source_calls["config"] is config
+    assert source_calls["output_root"] == expected_source_root
+    assert source_calls["run_id"] == "live-urdf-test-target-receiver"
+    assert source_calls["target_receiver_only"] is True
+    assert source_calls["skip_render"] is True
+    assert urdf_calls["pipeline_config"] is config
+    assert urdf_calls["source_run_dir"] == expected_source_run
+    assert urdf_calls["output_root"] == output_root.resolve()
+    assert urdf_calls["run_id"] == "live-urdf-test"
+    assert urdf_calls["urdf_path"] == process_module.DEFAULT_BUNDLED_URDF_PATH
+    assert urdf_calls["episode_ids"] == (7,)
+    assert urdf_calls["skip_render"] is True
+    assert urdf_calls["source_release"] == release_report
+    assert summary["gripper_backend"] == "urdf"
 
 
 def test_main_json_mode_prints_one_machine_readable_summary(
@@ -586,8 +824,6 @@ def test_main_json_mode_prints_failed_summary_before_exit(
 @pytest.mark.parametrize(
     ("extra_args", "message"),
     (
-        (("--gripper-backend", "urdf", "--urdf-path", "aloha.urdf"), "source-run-dir"),
-        (("--gripper-backend", "urdf", "--source-run-dir", "source"), "urdf-path"),
         (
             (
                 "--gripper-backend",
@@ -632,6 +868,20 @@ def test_main_json_mode_prints_failed_summary_before_exit(
                 "--resume",
             ),
             "cannot be used together",
+        ),
+        (
+            ("--gripper-backend", "urdf", "--dry-run"),
+            "--dry-run.*--source-run-dir",
+        ),
+        (
+            (
+                "--gripper-backend",
+                "urdf",
+                "--run-id",
+                "live-resume",
+                "--resume",
+            ),
+            "--resume.*--source-run-dir",
         ),
     ),
 )
@@ -802,6 +1052,13 @@ def test_main_urdf_cli_forwards_parameters_without_legacy_process(
 
     monkeypatch.setattr(process_module, "load_config", lambda _path: config)
     monkeypatch.setattr(process_module, "process_urdf_source_run", fake_urdf)
+    monkeypatch.setattr(
+        process_module,
+        "process_live_urdf_pipeline",
+        lambda **_kwargs: pytest.fail(
+            "explicit --source-run-dir must preserve the derived URDF path"
+        ),
+    )
     monkeypatch.setattr(
         process_module,
         "process_dataset",

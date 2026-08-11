@@ -4,11 +4,9 @@ from pathlib import Path
 from typing import Any, Iterator
 
 import numpy as np
-
 import pytest
 
 from robotwin_annotation_v2.adapters import Sam3Adapter
-
 
 SHAPE = (4, 5)
 
@@ -56,6 +54,25 @@ class FakePredictor:
 class NativeTestAdapter(Sam3Adapter):
     def _install_native_mask(self, **_kwargs: Any) -> None:
         return
+
+
+def test_shutdown_detaches_predictor_model_and_is_idempotent() -> None:
+    predictor = FakePredictor()
+    predictor.model = object()
+    shutdown_calls: list[bool] = []
+    predictor.shutdown = lambda: shutdown_calls.append(True)
+    adapter = Sam3Adapter(
+        checkpoint_path=Path("unused.pt"),
+        gpus=(0,),
+        predictor=predictor,
+    )
+
+    adapter.shutdown()
+    adapter.shutdown()
+
+    assert shutdown_calls == [True]
+    assert adapter.predictor is None
+    assert predictor.model is None
 
 
 def test_text_masks_select_highest_probability_object() -> None:
