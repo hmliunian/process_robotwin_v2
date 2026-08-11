@@ -350,6 +350,93 @@ def test_dynamic_manifest_contains_measured_contract(
     assert manifest["dataset_root"] == str(tmp_path.resolve())
 
 
+def test_process_dataset_reports_sam_stages_without_embedded_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    dataset = tmp_path / "dataset"
+    _touch_episode(dataset, 7)
+    monkeypatch.setattr(
+        process_module,
+        "_measure_episode",
+        lambda _episode: (6, (2, 3), 0),
+    )
+    backend_shutdown: list[bool] = []
+    runtime = SimpleNamespace(
+        qwen_client_factory=lambda **_kwargs: SimpleNamespace(
+            health=lambda: {"status": "ok"}
+        ),
+        backend_factory=lambda **_kwargs: SimpleNamespace(
+            shutdown=lambda: backend_shutdown.append(True)
+        ),
+        execution_errors=(RuntimeError,),
+        emit_gripper_result=lambda *_args: print('{"stage":"gripper"}') or True,
+        emit_sam_result=lambda *_args: print('{"stage":"sam"}') or True,
+        execute_gripper_episode=lambda *_args: object(),
+        execute_sam_episode=lambda *_args: object(),
+        fatal_cuda_error=lambda _exc: False,
+        gripper_episode_complete=lambda *_args: False,
+        run_qwen=lambda *_args: print('{"stage":"qwen"}'),
+    )
+    monkeypatch.setattr(process_module, "_load_sam_runtime", lambda: runtime)
+
+    class RecordingUI(process_module.ProcessUI):
+        def __init__(self) -> None:
+            super().__init__(emit_json_summary=False, verbose=False)
+            self.stages: list[tuple[str, int, str, str | None]] = []
+            self.episodes: list[tuple[int, str]] = []
+
+        def stage_started(self, episode_id: int, label: str) -> None:
+            self.stages.append(("started", episode_id, label, None))
+
+        def stage_finished(
+            self,
+            episode_id: int,
+            label: str,
+            *,
+            status: str = "completed",
+            detail: str | None = None,
+        ) -> None:
+            self.stages.append(("finished", episode_id, label, status))
+
+        def episode_finished(
+            self,
+            episode_id: int,
+            *,
+            status: str,
+            detail: str | None = None,
+        ) -> None:
+            self.episodes.append((episode_id, status))
+
+    reporter = RecordingUI()
+    summary = process_module.process_dataset(
+        process_module.load_config(Path("configs/pilot_move_pillbottle_pad.yaml")),
+        dataset_root=dataset,
+        task="task",
+        camera="cam_high",
+        output_root=tmp_path / "output",
+        run_id="ui-sam-test",
+        episode_ids=(7,),
+        skip_render=True,
+        reporter=reporter,
+    )
+
+    assert capsys.readouterr().out == ""
+    assert summary["passed"] is True
+    assert summary["records"] == [{"episode": 7, "status": "completed"}]
+    assert reporter.stages == [
+        ("started", 7, "qwen", None),
+        ("finished", 7, "qwen", "completed"),
+        ("started", 7, "target_receiver_sam", None),
+        ("finished", 7, "target_receiver_sam", "completed"),
+        ("started", 7, "gripper_sam", None),
+        ("finished", 7, "gripper_sam", "completed"),
+    ]
+    assert reporter.episodes == [(7, "completed")]
+    assert backend_shutdown == [True]
+
+
 def test_parse_args_defaults_to_sam_and_preserves_just_sentinel_paths() -> None:
     args = process_module._parse_args(
         ["--source-run-dir", "-", "--urdf-path", "-"]
@@ -362,6 +449,15 @@ def test_parse_args_defaults_to_sam_and_preserves_just_sentinel_paths() -> None:
     assert args.urdf_path == "-"
     assert process_module._optional_cli_path(args.source_run_dir) is None
     assert process_module._optional_cli_path(args.urdf_path) is None
+    assert args.ui == "auto"
+    assert args.verbose is False
+
+
+def test_parse_args_accepts_output_format_alias_and_verbose() -> None:
+    args = process_module._parse_args(["--output-format", "json", "--verbose"])
+
+    assert args.ui == "json"
+    assert args.verbose is True
 
 
 def test_main_legacy_cli_dispatches_sam_without_urdf_path(
@@ -408,6 +504,83 @@ def test_main_legacy_cli_dispatches_sam_without_urdf_path(
     assert calls["episode_ids"] is None
     assert calls["force"] is False
     assert calls["skip_render"] is False
+    assert isinstance(calls["reporter"], process_module.ProcessUI)
+
+
+def test_main_json_mode_prints_one_machine_readable_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config = _cli_config(tmp_path)
+    expected = {
+        "passed": True,
+        "gripper_backend": "sam",
+        "records": [{"episode": 7, "status": "completed"}],
+    }
+
+    monkeypatch.setattr(process_module, "load_config", lambda _path: config)
+    monkeypatch.setattr(
+        process_module,
+        "process_dataset",
+        lambda *_args, **_kwargs: expected,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "process_dataset.py",
+            "--dataset-root",
+            str(tmp_path / "dataset"),
+            "--ui",
+            "json",
+        ],
+    )
+
+    process_module.main()
+
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == expected
+    assert captured.err == ""
+
+
+def test_main_json_mode_prints_failed_summary_before_exit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config = _cli_config(tmp_path)
+    expected = {
+        "passed": False,
+        "gripper_backend": "sam",
+        "records": [{"episode": 7, "status": "failed"}],
+    }
+
+    monkeypatch.setattr(process_module, "load_config", lambda _path: config)
+    monkeypatch.setattr(
+        process_module,
+        "process_dataset",
+        lambda *_args, **_kwargs: expected,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "process_dataset.py",
+            "--dataset-root",
+            str(tmp_path / "dataset"),
+            "--ui",
+            "json",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        process_module.main()
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert json.loads(captured.out) == expected
+    assert captured.err == ""
 
 
 @pytest.mark.parametrize(

@@ -47,6 +47,11 @@ just run 7152
 # 推荐：自动发现目录中的全部 episode，一键处理并渲染
 just process ../dataset/move_pillbottle_pad_coverage20_original
 
+# 终端显示可切换为 rich、plain 或单一 JSON；默认 auto
+just process ../dataset/move_pillbottle_pad_coverage20_original --ui plain
+just process ../dataset/move_pillbottle_pad_coverage20_original --ui json \
+  > process-summary.json
+
 # 使用已有四通道 masks.npz 生成全长 overlay 视频和 review sheets
 .venv/bin/python scripts/render_coverage20_videos.py --overwrite
 ```
@@ -61,6 +66,10 @@ seed、native track、四通道 `masks.npz` 和 provenance。
 `sam-batch`、`gripper-batch` 和 `just process` 在批次中复用一个 SAM3 adapter，
 并为每个 episode 单独创建、清理视频 session。配置中的 `sam3.gpus` 使用物理 GPU
 索引时，不要再用 `CUDA_VISIBLE_DEVICES` 把同一张卡重映射成逻辑索引 0。
+
+`just process` 在交互终端显示 episode/阶段进度和最终汇总；非交互环境输出稳定日志，
+并在 stdout 保留最终 JSON。`--verbose` 可显示默认收起的阶段 payload，`NO_COLOR` 可关闭
+颜色。完整结果始终写入 run 目录中的 `process_summary.json`。
 
 overlay 视频默认写到 `artifacts/rendered_videos/coverage20_best_current/`。默认样式是
 `alpha=0.32` 的内部填充、mask 外侧 `3 px` 高亮角色轮廓，以及扩张到总计 `5 px` 的黑色

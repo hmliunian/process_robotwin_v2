@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib
+import io
 import json
 import math
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +24,7 @@ from robotwin_annotation_v2.adapters.artifact_store import ArtifactStore
 from robotwin_annotation_v2.adapters.robotwin_dataset import RoboTwinDataset
 from robotwin_annotation_v2.config import PipelineConfig, load_config
 from robotwin_annotation_v2.models import EpisodeRef
+from robotwin_annotation_v2.terminal_ui import UI_MODES, ProcessUI, create_process_ui
 from robotwin_annotation_v2.urdf_gripper_publisher import (
     UrdfGripperPublishError,
     validate_derivation_source_episode,
@@ -33,6 +36,85 @@ GRIPPER_BACKENDS = ("sam", "urdf")
 DEFAULT_URDF_DEPTH_TOLERANCE_MM = 8.0
 DEFAULT_URDF_MINIMUM_ELIGIBLE_NONEMPTY_FRACTION = 0.90
 PROCESS_SUMMARY_FORMAT_VERSION = "robotwin_process_dataset_summary_v1"
+
+
+@contextlib.contextmanager
+def _captured_stage_output(reporter: ProcessUI | None) -> Iterator[None]:
+    """Hide embedded command JSON while preserving it in verbose UI mode."""
+
+    if reporter is None:
+        yield
+        return
+    captured = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(captured):
+            yield
+    finally:
+        reporter.detail(captured.getvalue().rstrip())
+
+
+class _JsonProgressWriter(io.TextIOBase):
+    """Translate an embedded JSON-lines progress stream into UI events."""
+
+    def __init__(self, reporter: ProcessUI) -> None:
+        self._reporter = reporter
+        self._buffer = ""
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, value: str) -> int:
+        self._buffer += value
+        while "\n" in self._buffer:
+            line, self._buffer = self._buffer.split("\n", 1)
+            self._handle_line(line)
+        return len(value)
+
+    def flush(self) -> None:
+        return
+
+    def finish(self) -> None:
+        if self._buffer:
+            self._handle_line(self._buffer)
+            self._buffer = ""
+
+    def _handle_line(self, line: str) -> None:
+        stripped = line.strip()
+        if not stripped:
+            return
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            self._reporter.detail(stripped)
+            return
+        if not isinstance(payload, Mapping):
+            self._reporter.detail(stripped)
+            return
+        progress = str(payload.get("progress", ""))
+        match = re.fullmatch(r"(\d+)/(\d+)", progress)
+        episode = payload.get("episode_index")
+        if match is None or not isinstance(episode, int):
+            self._reporter.detail(stripped)
+            return
+        self._reporter.phase_progress(
+            int(match.group(1)),
+            total=int(match.group(2)),
+            episode_id=episode,
+            status=str(payload.get("status", "unknown")),
+        )
+
+
+@contextlib.contextmanager
+def _captured_json_progress(reporter: ProcessUI | None) -> Iterator[None]:
+    if reporter is None:
+        yield
+        return
+    writer = _JsonProgressWriter(reporter)
+    try:
+        with contextlib.redirect_stdout(writer):
+            yield
+    finally:
+        writer.finish()
 
 
 @dataclass(frozen=True)
@@ -472,6 +554,7 @@ def _render_processed(
     run_id: str,
     episode_ids: tuple[int, ...],
     output_dir: Path,
+    reporter: ProcessUI | None = None,
 ) -> dict[str, Any]:
     try:
         import render_coverage20_videos as render
@@ -495,7 +578,7 @@ def _render_processed(
     video_dir = output_dir / "rendered_videos"
     video_dir.mkdir(parents=True, exist_ok=True)
     records: list[dict[str, Any]] = []
-    for episode_id in episode_ids:
+    for position, episode_id in enumerate(episode_ids, start=1):
         candidate = selected[episode_id]
         artifact = render._load_masks(candidate.path)
         ref = EpisodeRef(
@@ -543,6 +626,13 @@ def _render_processed(
                 **video,
             }
         )
+        if reporter is not None:
+            reporter.phase_progress(
+                position,
+                total=len(episode_ids),
+                episode_id=episode_id,
+                status="rendered",
+            )
     manifest = {
         "format": "robotwin_coverage20_overlay_videos_v3",
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -598,6 +688,7 @@ def process_urdf_source_run(
     episode_publisher: Callable[..., Mapping[str, Any]] | None = None,
     episode_validator: Callable[..., Mapping[str, Any]] | None = None,
     render_builder: Callable[..., dict[str, Any]] | None = None,
+    reporter: ProcessUI | None = None,
 ) -> dict[str, Any]:
     """Replace gripper masks in a frozen process run with canonical URDF output."""
 
@@ -605,6 +696,14 @@ def process_urdf_source_run(
         raise ValueError("--dry-run and --resume cannot be used together")
     if run_id is not None:
         _validate_run_id(run_id)
+    if reporter is not None:
+        reporter.run_started(
+            backend="urdf",
+            dataset_root=str(dataset_root.expanduser().resolve()),
+            task=task,
+            camera=camera,
+        )
+        reporter.phase_started("dataset_contract")
 
     try:
         import render_urdf_gripper_masks as urdf_runner
@@ -643,6 +742,15 @@ def process_urdf_source_run(
                     "parquet": str(discovered_episode.parquet),
                 }
             )
+    if reporter is not None:
+        reporter.phase_finished(
+            "dataset_contract",
+            detail=(
+                f"public={len(public_discovery.episodes)} "
+                f"depth_eligible={len(expected_frame_counts)} "
+                f"excluded={len(dataset_excluded)}"
+            ),
+        )
     eligible_dataset_ids = tuple(sorted(expected_frame_counts))
     relevant_dataset_excluded = dataset_excluded
     if episode_ids is not None:
@@ -661,6 +769,8 @@ def process_urdf_source_run(
             )
     if not eligible_dataset_ids:
         raise ValueError(f"no complete URDF episodes found under {dataset_root}")
+    if reporter is not None:
+        reporter.phase_started("source_selection", total=len(eligible_dataset_ids))
     selection = select_urdf_source_episodes(
         source_run_dir,
         dataset_root=dataset_root,
@@ -674,6 +784,11 @@ def process_urdf_source_run(
         [*relevant_dataset_excluded, *selection.excluded],
         key=lambda record: int(record["episode"]),
     )
+    if reporter is not None:
+        reporter.phase_finished(
+            "source_selection",
+            detail=(f"selected={len(selection.episode_ids)} excluded={len(all_excluded)}"),
+        )
     if all_excluded and not allow_partial_source:
         examples = ", ".join(
             f"{record['episode']} ({record['reason']})"
@@ -701,6 +816,13 @@ def process_urdf_source_run(
         run_id=selected_run_id,
         resume=resume,
     )
+    if reporter is not None:
+        reporter.run_ready(run_id=selected_run_id, episode_ids=selection.episode_ids)
+        if all_excluded:
+            reporter.note(
+                f"processing partial source: excluded={len(all_excluded)}",
+                level="warning",
+            )
     backend_output_root = canonical_run_dir / "_backend"
     config = urdf_runner.RunConfig(
         dataset_root=dataset_root.expanduser().resolve(),
@@ -725,11 +847,20 @@ def process_urdf_source_run(
     runner = urdf_runner.run_experiment if experiment_runner is None else experiment_runner
     result: Mapping[str, Any]
     batch_error: str | None = None
+    if reporter is not None:
+        reporter.phase_started("urdf_backend", total=len(selection.episode_ids))
     try:
-        result = runner(config)
+        with _captured_json_progress(reporter):
+            result = runner(config)
     except urdf_runner.UrdfBatchIncompleteError as exc:
         result = exc.result
         batch_error = f"{type(exc).__name__}: {exc}"
+    if reporter is not None:
+        reporter.phase_finished(
+            "urdf_backend",
+            status="completed" if batch_error is None else "failed",
+            detail=batch_error,
+        )
 
     source_dynamic_manifest = selection.source_summary.get("dynamic_manifest")
     if not isinstance(source_dynamic_manifest, Mapping):
@@ -763,6 +894,9 @@ def process_urdf_source_run(
             }
             for episode_id in selection.episode_ids
         )
+        if reporter is not None:
+            for episode_id in selection.episode_ids:
+                reporter.episode_finished(episode_id, status="planned")
     else:
         raw_episodes = result.get("episodes")
         backend_records = raw_episodes if isinstance(raw_episodes, list) else []
@@ -773,49 +907,76 @@ def process_urdf_source_run(
             backend_by_episode[int(raw_record["episode_index"])] = raw_record
 
         publisher = publish_urdf_episode if episode_publisher is None else episode_publisher
-        for episode_id in selection.episode_ids:
+        for position, episode_id in enumerate(selection.episode_ids, start=1):
+            if reporter is not None:
+                reporter.episode_started(
+                    episode_id,
+                    position=position,
+                    total=len(selection.episode_ids),
+                )
             backend_record = backend_by_episode.get(episode_id)
             if backend_record is None:
+                error = "URDF backend manifest has no episode record"
                 records.append(
                     {
                         "episode": episode_id,
                         "status": "failed",
                         "gripper_backend": "urdf",
-                        "error": "URDF backend manifest has no episode record",
+                        "error": error,
                     }
                 )
+                if reporter is not None:
+                    reporter.episode_finished(
+                        episode_id,
+                        status="failed",
+                        detail=error,
+                    )
                 continue
             if backend_record.get("status") != "complete":
                 backend_error = str(
                     backend_record.get("error", "URDF backend episode is incomplete")
                 )
+                episode_status = (
+                    "gripper_incomplete"
+                    if "eligible nonempty fraction" in backend_error
+                    else "failed"
+                )
                 records.append(
                     {
                         "episode": episode_id,
-                        "status": (
-                            "gripper_incomplete"
-                            if "eligible nonempty fraction" in backend_error
-                            else "failed"
-                        ),
+                        "status": episode_status,
                         "gripper_backend": "urdf",
                         "error": backend_error,
                         "backend_status": backend_record.get("status"),
                     }
                 )
+                if reporter is not None:
+                    reporter.episode_finished(
+                        episode_id,
+                        status=episode_status,
+                        detail=backend_error,
+                    )
                 continue
             frozen_lineage = selection.source_lineages[episode_id]
             if backend_record.get("source_lineage") != frozen_lineage:
+                error = (
+                    "URDF backend source lineage differs from the "
+                    "preflight source contract"
+                )
                 records.append(
                     {
                         "episode": episode_id,
                         "status": "failed",
                         "gripper_backend": "urdf",
-                        "error": (
-                            "URDF backend source lineage differs from the "
-                            "preflight source contract"
-                        ),
+                        "error": error,
                     }
                 )
+                if reporter is not None:
+                    reporter.episode_finished(
+                        episode_id,
+                        status="failed",
+                        detail=error,
+                    )
                 continue
             source_episode_dir = (
                 config.source_run_dir
@@ -832,6 +993,8 @@ def process_urdf_source_run(
                 / f"episode_{episode_id:06d}"
                 / camera
             )
+            if reporter is not None:
+                reporter.stage_started(episode_id, "canonical_publish")
             try:
                 published = publisher(
                     source_episode_dir=source_episode_dir,
@@ -844,24 +1007,38 @@ def process_urdf_source_run(
                     resume=resume,
                 )
             except Exception as exc:
+                error = f"canonical publish failed: {type(exc).__name__}: {exc}"
                 records.append(
                     {
                         "episode": episode_id,
                         "status": "failed",
                         "gripper_backend": "urdf",
-                        "error": f"canonical publish failed: {type(exc).__name__}: {exc}",
+                        "error": error,
                     }
                 )
+                if reporter is not None:
+                    reporter.stage_finished(
+                        episode_id,
+                        "canonical_publish",
+                        status="failed",
+                        detail=error,
+                    )
+                    reporter.episode_finished(
+                        episode_id,
+                        status="failed",
+                        detail=error,
+                    )
                 continue
             publish_status = str(published.get("status", "published"))
+            episode_status = (
+                "skipped_complete"
+                if publish_status in {"validated_skip", "skipped_complete"}
+                else "completed"
+            )
             records.append(
                 {
                     "episode": episode_id,
-                    "status": (
-                        "skipped_complete"
-                        if publish_status in {"validated_skip", "skipped_complete"}
-                        else "completed"
-                    ),
+                    "status": episode_status,
                     "gripper_backend": "urdf",
                     "active_arm": backend_record.get("active_arm"),
                     "artifact_dir": str(destination_dir),
@@ -870,6 +1047,13 @@ def process_urdf_source_run(
                     "source_lineage_sha256": frozen_lineage["lineage_sha256"],
                 }
             )
+            if reporter is not None:
+                reporter.stage_finished(
+                    episode_id,
+                    "canonical_publish",
+                    status=episode_status,
+                )
+                reporter.episode_finished(episode_id, status=episode_status)
             renderable_ids.append(episode_id)
             published_source_lineages[episode_id] = frozen_lineage
             published_contexts[episode_id] = {
@@ -886,7 +1070,12 @@ def process_urdf_source_run(
                 if episode_validator is None
                 else episode_validator
             )
-            for episode_id in renderable_ids:
+            if reporter is not None:
+                reporter.phase_started(
+                    "canonical_validation",
+                    total=len(renderable_ids),
+                )
+            for position, episode_id in enumerate(renderable_ids, start=1):
                 context = published_contexts[episode_id]
                 try:
                     current_source = validate_derivation_source_episode(
@@ -910,6 +1099,13 @@ def process_urdf_source_run(
                             "error": f"{type(exc).__name__}: {exc}",
                         }
                     )
+                    if reporter is not None:
+                        reporter.phase_progress(
+                            position,
+                            total=len(renderable_ids),
+                            episode_id=episode_id,
+                            status="source_lineage_changed",
+                        )
                     continue
                 try:
                     canonical_validator(
@@ -927,9 +1123,36 @@ def process_urdf_source_run(
                             "error": f"{type(exc).__name__}: {exc}",
                         }
                     )
+                    if reporter is not None:
+                        reporter.phase_progress(
+                            position,
+                            total=len(renderable_ids),
+                            episode_id=episode_id,
+                            status="canonical_validation_failed",
+                        )
+                    continue
+                if reporter is not None:
+                    reporter.phase_progress(
+                        position,
+                        total=len(renderable_ids),
+                        episode_id=episode_id,
+                        status="validated",
+                    )
             if pre_render_failures:
                 records.extend(pre_render_failures)
+                if reporter is not None:
+                    reporter.phase_finished(
+                        "canonical_validation",
+                        status="failed",
+                        detail=f"failures={len(pre_render_failures)}; render blocked",
+                    )
             else:
+                if reporter is not None:
+                    reporter.phase_finished("canonical_validation")
+                    reporter.phase_started(
+                        "canonical_render",
+                        total=len(renderable_ids),
+                    )
                 try:
                     if pipeline_config is None:
                         raise ValueError(
@@ -943,21 +1166,41 @@ def process_urdf_source_run(
                         manifest=dynamic_manifest,
                         output_root=resolved_output_root,
                     )
-                    builder = _render_processed if render_builder is None else render_builder
-                    render_report = builder(
-                        dynamic,
-                        run_id=selected_run_id,
-                        episode_ids=tuple(renderable_ids),
-                        output_dir=canonical_run_dir,
-                    )
+                    if render_builder is None:
+                        render_report = _render_processed(
+                            dynamic,
+                            run_id=selected_run_id,
+                            episode_ids=tuple(renderable_ids),
+                            output_dir=canonical_run_dir,
+                            reporter=reporter,
+                        )
+                    else:
+                        render_report = render_builder(
+                            dynamic,
+                            run_id=selected_run_id,
+                            episode_ids=tuple(renderable_ids),
+                            output_dir=canonical_run_dir,
+                        )
+                    if reporter is not None:
+                        reporter.phase_finished("canonical_render")
                 except Exception as exc:
+                    error = f"{type(exc).__name__}: {exc}"
                     records.append(
                         {
                             "status": "render_failed",
                             "gripper_backend": "urdf",
-                            "error": f"{type(exc).__name__}: {exc}",
+                            "error": error,
                         }
                     )
+                    if reporter is not None:
+                        reporter.phase_finished(
+                            "canonical_render",
+                            status="render_failed",
+                            detail=error,
+                        )
+        elif reporter is not None:
+            reason = "disabled by --skip-render" if skip_render else "no publishable episodes"
+            reporter.note(f"canonical_render skipped: {reason}", level="warning")
 
     failure_statuses = {
         "failed",
@@ -1032,9 +1275,18 @@ def process_dataset(
     force: bool = False,
     skip_render: bool = False,
     backend_factory: Callable[..., Any] | None = None,
+    reporter: ProcessUI | None = None,
 ) -> dict[str, Any]:
     if run_id is not None:
         _validate_run_id(run_id)
+    if reporter is not None:
+        reporter.run_started(
+            backend="sam",
+            dataset_root=str(dataset_root.expanduser().resolve()),
+            task=task,
+            camera=camera,
+        )
+        reporter.phase_started("dataset_discovery")
     runtime = _load_sam_runtime()
     discovery = discover_episodes(dataset_root, camera=camera)
     if not discovery.episodes:
@@ -1056,6 +1308,14 @@ def process_dataset(
     unknown = sorted(set(selected_ids) - discovered_ids)
     if unknown:
         raise ValueError(f"requested episodes were not discovered: {unknown}")
+    if reporter is not None:
+        reporter.phase_finished(
+            "dataset_discovery",
+            detail=(
+                f"discovered={len(discovery.episodes)} "
+                f"selected={len(selected_ids)} skipped_inputs={len(discovery.skipped)}"
+            ),
+        )
     dynamic = _dynamic_config(
         config,
         root=dataset_root,
@@ -1068,86 +1328,190 @@ def process_dataset(
     selected_run_id = _validate_run_id(run_id or store.new_run_id())
     canonical_run_dir = store.run_dir(selected_run_id)
     _validate_sam_run_ownership(canonical_run_dir, run_id=selected_run_id)
+    if reporter is not None:
+        reporter.run_ready(run_id=selected_run_id, episode_ids=selected_ids)
+        reporter.phase_started("qwen_health")
     qwen = runtime.qwen_client_factory(
         endpoint=dynamic.qwen.endpoint,
         model=dynamic.qwen.model,
         timeout_seconds=dynamic.qwen.timeout_seconds,
     )
     health = qwen.health()
+    if reporter is not None:
+        reporter.phase_finished("qwen_health")
+        reporter.phase_started("resume_scan", total=len(selected_ids))
     records: list[dict[str, Any]] = list(discovery.skipped)
     pending: list[int] = []
-    for episode_id in selected_ids:
+    for position, episode_id in enumerate(selected_ids, start=1):
         ref = EpisodeRef(
             task,
             episode_id,
             camera,
         )
-        if (
-            not force
-            and runtime.gripper_episode_complete(dynamic, store, selected_run_id, ref)
-        ):
+        if not force and runtime.gripper_episode_complete(dynamic, store, selected_run_id, ref):
             records.append({"episode": episode_id, "status": "skipped_complete"})
+            if reporter is not None:
+                reporter.episode_finished(episode_id, status="skipped_complete")
         else:
             pending.append(episode_id)
+        if reporter is not None:
+            reporter.phase_progress(
+                position,
+                total=len(selected_ids),
+                episode_id=episode_id,
+                status=("pending" if episode_id in pending else "skipped_complete"),
+            )
+    if reporter is not None:
+        reporter.phase_finished(
+            "resume_scan",
+            detail=f"pending={len(pending)} skipped={len(selected_ids) - len(pending)}",
+        )
 
     factory = runtime.backend_factory if backend_factory is None else backend_factory
     backend: Any | None = None
     fatal_error: BaseException | None = None
     try:
         if pending:
-            backend = factory(
-                checkpoint_path=dynamic.sam3.checkpoint,
-                gpus=dynamic.sam3.gpus,
-            )
+            if reporter is not None:
+                reporter.phase_started("sam_backend_load")
+            try:
+                backend = factory(
+                    checkpoint_path=dynamic.sam3.checkpoint,
+                    gpus=dynamic.sam3.gpus,
+                )
+            except Exception as exc:
+                if reporter is not None:
+                    reporter.phase_finished(
+                        "sam_backend_load",
+                        status="failed",
+                        detail=f"{type(exc).__name__}: {exc}",
+                    )
+                raise
+            if reporter is not None:
+                reporter.phase_finished("sam_backend_load")
             for episode_id in pending:
+                position = selected_ids.index(episode_id) + 1
+                current_stage: str | None = None
+                if reporter is not None:
+                    reporter.episode_started(
+                        episode_id,
+                        position=position,
+                        total=len(selected_ids),
+                    )
                 try:
-                    runtime.run_qwen(dynamic, episode_id, selected_run_id)
+                    current_stage = "qwen"
+                    if reporter is not None:
+                        reporter.stage_started(episode_id, current_stage)
+                    with _captured_stage_output(reporter):
+                        runtime.run_qwen(dynamic, episode_id, selected_run_id)
+                    if reporter is not None:
+                        reporter.stage_finished(episode_id, current_stage)
+                    current_stage = "target_receiver_sam"
+                    if reporter is not None:
+                        reporter.stage_started(episode_id, current_stage)
                     sam_execution = runtime.execute_sam_episode(
                         dynamic,
                         episode_id,
                         selected_run_id,
                         backend,
                     )
-                    if not runtime.emit_sam_result(selected_run_id, sam_execution):
-                        records.append(
-                            {"episode": episode_id, "status": "sam_incomplete"}
+                    with _captured_stage_output(reporter):
+                        sam_complete = runtime.emit_sam_result(
+                            selected_run_id,
+                            sam_execution,
                         )
+                    if not sam_complete:
+                        records.append({"episode": episode_id, "status": "sam_incomplete"})
+                        if reporter is not None:
+                            reporter.stage_finished(
+                                episode_id,
+                                current_stage,
+                                status="sam_incomplete",
+                            )
+                            reporter.episode_finished(
+                                episode_id,
+                                status="sam_incomplete",
+                            )
+                        current_stage = None
                         continue
+                    if reporter is not None:
+                        reporter.stage_finished(episode_id, current_stage)
+                    current_stage = "gripper_sam"
+                    if reporter is not None:
+                        reporter.stage_started(episode_id, current_stage)
                     gripper_execution = runtime.execute_gripper_episode(
                         dynamic,
                         episode_id,
                         selected_run_id,
                         backend,
                     )
+                    with _captured_stage_output(reporter):
+                        gripper_complete = runtime.emit_gripper_result(
+                            selected_run_id,
+                            gripper_execution,
+                        )
+                    episode_status = "completed" if gripper_complete else "gripper_incomplete"
                     records.append(
                         {
                             "episode": episode_id,
-                            "status": (
-                                "completed"
-                                if runtime.emit_gripper_result(
-                                    selected_run_id,
-                                    gripper_execution,
-                                )
-                                else "gripper_incomplete"
-                            ),
+                            "status": episode_status,
                         }
                     )
+                    if reporter is not None:
+                        reporter.stage_finished(
+                            episode_id,
+                            current_stage,
+                            status=episode_status,
+                        )
+                        reporter.episode_finished(
+                            episode_id,
+                            status=episode_status,
+                        )
+                    current_stage = None
                 except SystemExit as exc:
+                    error = f"stage exited with code {exc.code}"
                     records.append(
                         {
                             "episode": episode_id,
                             "status": "failed",
-                            "error": f"stage exited with code {exc.code}",
+                            "error": error,
                         }
                     )
+                    if reporter is not None:
+                        if current_stage is not None:
+                            reporter.stage_finished(
+                                episode_id,
+                                current_stage,
+                                status="failed",
+                                detail=error,
+                            )
+                        reporter.episode_finished(
+                            episode_id,
+                            status="failed",
+                            detail=error,
+                        )
                 except runtime.execution_errors as exc:
+                    error = str(exc)
                     records.append(
                         {
                             "episode": episode_id,
                             "status": "failed",
-                            "error": str(exc),
+                            "error": error,
                         }
                     )
+                    if reporter is not None:
+                        if current_stage is not None:
+                            reporter.stage_finished(
+                                episode_id,
+                                current_stage,
+                                status="failed",
+                                detail=error,
+                            )
+                        reporter.episode_finished(
+                            episode_id,
+                            status="failed",
+                            detail=error,
+                        )
                     if runtime.fatal_cuda_error(exc):
                         fatal_error = exc
                         break
@@ -1166,6 +1530,14 @@ def process_dataset(
             for episode_id in selected_ids
             if episode_id not in recorded_ids
         )
+        if reporter is not None:
+            for episode_id in selected_ids:
+                if episode_id not in recorded_ids:
+                    reporter.episode_finished(
+                        episode_id,
+                        status="not_run_after_fatal_cuda",
+                        detail=str(fatal_error),
+                    )
 
     render_report: dict[str, Any] | None = None
     renderable_ids = tuple(
@@ -1174,15 +1546,35 @@ def process_dataset(
         if record.get("status") in {"completed", "skipped_complete"}
     )
     if not skip_render and fatal_error is None and renderable_ids:
+        if reporter is not None:
+            reporter.phase_started("canonical_render", total=len(renderable_ids))
         try:
             render_report = _render_processed(
                 dynamic,
                 run_id=selected_run_id,
                 episode_ids=renderable_ids,
                 output_dir=canonical_run_dir,
+                reporter=reporter,
             )
+            if reporter is not None:
+                reporter.phase_finished("canonical_render")
         except Exception as exc:
             records.append({"status": "render_failed", "error": str(exc)})
+            if reporter is not None:
+                reporter.phase_finished(
+                    "canonical_render",
+                    status="render_failed",
+                    detail=f"{type(exc).__name__}: {exc}",
+                )
+    elif reporter is not None:
+        reason = (
+            "disabled by --skip-render"
+            if skip_render
+            else "blocked by fatal CUDA error"
+            if fatal_error is not None
+            else "no renderable episodes"
+        )
+        reporter.note(f"canonical_render skipped: {reason}", level="warning")
 
     summary = {
         "format_version": "robotwin_process_dataset_summary_v1",
@@ -1265,6 +1657,15 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--skip-render", action="store_true")
+    parser.add_argument(
+        "--ui",
+        "--output-format",
+        dest="ui",
+        choices=UI_MODES,
+        default="auto",
+        help="Terminal output mode; auto uses Rich on a TTY and plain logs otherwise",
+    )
+    parser.add_argument("-v", "--verbose", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -1274,8 +1675,10 @@ def _optional_cli_path(value: str | None) -> Path | None:
     return Path(value)
 
 
-def main() -> None:
-    args = _parse_args()
+def _run_from_args(
+    args: argparse.Namespace,
+    reporter: ProcessUI,
+) -> dict[str, Any]:
     if args.run_id is not None:
         _validate_run_id(args.run_id)
     config = load_config(args.config)
@@ -1309,6 +1712,7 @@ def main() -> None:
             episode_ids=None if args.episode_ids is None else tuple(args.episode_ids),
             force=args.force,
             skip_render=args.skip_render,
+            reporter=reporter,
         )
     else:
         if source_run_dir is None:
@@ -1368,8 +1772,25 @@ def main() -> None:
             ),
             fit_config_json=args.urdf_fit_config_json,
             allow_partial_source=args.allow_partial_source,
+            reporter=reporter,
         )
-    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    return summary
+
+
+def main() -> None:
+    args = _parse_args()
+    reporter = create_process_ui(args.ui, verbose=args.verbose)
+    try:
+        summary = _run_from_args(args, reporter)
+    except BaseException as exc:
+        reporter.failed(exc)
+        raise
+    else:
+        reporter.finish(summary)
+        if reporter.emit_json_summary:
+            print(json.dumps(summary, ensure_ascii=False, indent=2))
+    finally:
+        reporter.close()
     if not summary["passed"]:
         raise SystemExit(1)
 
