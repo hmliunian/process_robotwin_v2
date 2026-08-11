@@ -8,7 +8,6 @@ import pytest
 from PIL import Image
 
 import scripts.render_coverage20_videos as render_module
-
 from scripts.render_coverage20_videos import (
     HALO_COLOR,
     ROLE_COLORS,
@@ -277,3 +276,61 @@ def test_build_sheets_includes_gripper_pages(
         "gripper_early.jpg",
         "gripper_late.jpg",
     }
+
+
+def test_build_sheets_accepts_explicit_review_roles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    render_dir = tmp_path / "render"
+    render_dir.mkdir()
+    render_manifest = render_dir / "manifest.json"
+    render_manifest.write_text(
+        json.dumps(
+            {
+                "episodes": [
+                    {
+                        "episode_index": 1,
+                        "source_masks": str(tmp_path / "missing/masks.npz"),
+                        "output_video": str(tmp_path / "overlay.mp4"),
+                        "review_roles": [
+                            {
+                                "role": "target",
+                                "status": "ok",
+                                "output_window": [0, 4],
+                            },
+                            {
+                                "role": "receiver",
+                                "status": "ok",
+                                "output_window": [4, 8],
+                            },
+                            {
+                                "role": "gripper_left",
+                                "status": "ok",
+                                "output_window": [1, 8],
+                            },
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    requested: list[set[int]] = []
+
+    def fake_decode(
+        _video_path: Path,
+        frame_ids: set[int],
+    ) -> dict[int, Image.Image]:
+        requested.append(frame_ids)
+        return {
+            frame_id: Image.fromarray(np.zeros((8, 10, 3), dtype=np.uint8))
+            for frame_id in frame_ids
+        }
+
+    monkeypatch.setattr(render_module, "_decode_selected", fake_decode)
+
+    outputs = build_sheets(render_manifest, render_dir / "review_sheets")
+
+    assert requested == [{1, 2, 4, 5, 8}]
+    assert len(outputs) == 6

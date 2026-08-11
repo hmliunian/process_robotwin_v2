@@ -1,0 +1,70 @@
+{
+  "format_version": "robotwin_aloha_gripper_render_asset_v1",
+  "source": {
+    "archive": "robotwin2_embodiments_c15cc97.zip",
+    "urdf": "embodiments/aloha-agilex/urdf/arx5_description_isaac.urdf",
+    "urdf_sha256": "097c59fb19a7b482249c6097df8319586ea7cfd268c015516f103b289a7e761a"
+  },
+  "files": [
+    {
+      "path": "arx5_description_isaac_gripper.urdf",
+      "bytes": 14539,
+      "sha256": "db73108d14f1dae3affb2d145717f60dd9db4487d71957b2e5e61fcd6c81223a"
+    },
+    {
+      "path": "meshes/base_arm.dae",
+      "bytes": 103529,
+      "sha256": "cfe3f44bf9860d72acac2abd21a50422d72efd4de6fac72af44e02b2ea6a52df"
+    },
+    {
+      "path": "meshes/link1.dae",
+      "bytes": 141347,
+      "sha256": "49480bb69e5daffdd9092b33d9af6c6b3e6b9a069419e3e76fb9947e3e1753f9"
+    },
+    {
+      "path": "meshes/link2.dae",
+      "bytes": 1529979,
+      "sha256": "9bb90c7a6c6d9bfab562349bf647f833433d71f2804a7981eba775f31e78723d"
+    },
+    {
+      "path": "meshes/link3.dae",
+      "bytes": 1620958,
+      "sha256": "1eabf99eb30c6cc9bf7c61bf650102fd22d35ac2ce67f36e42d700e3e2442318"
+    },
+    {
+      "path": "meshes/link4.dae",
+      "bytes": 249774,
+      "sha256": "3b50cf11a5271fe34aca0c186e623137875fd02c764cb7238c20b898f175f150"
+    },
+    {
+      "path": "meshes/link5.dae",
+      "bytes": 568590,
+      "sha256": "c8a96bc00fa9c67723d0a2626bfd015b00a872d7be1588b61f0ae002dd189b13"
+    },
+    {
+      "path": "meshes/link6.dae",
+      "bytes": 562991,
+      "sha256": "e0c0f316065921fdab8704e5301baaa2b8c50867846a19c489393bc4ab83cbfa"
+    },
+    {
+      "path": "meshes/link7.dae",
+      "bytes": 77172,
+      "sha256": "cf87ef550d6ab5d71058e7da63ba6ac4c492a9385b3ca0eed37eee0fd0cab97e"
+    },
+    {
+      "path": "meshes/link8.dae",
+      "bytes": 77778,
+      "sha256": "e58e8cbc674bb7465ec81a2db6c4b1d08ccf1d63352e245739aa6418d62b0fd7"
+    },
+    {
+      "path": "meshes/Image_269.png",
+      "bytes": 250,
+      "sha256": "372012c8cb6982b9a7ee254beb825aab80af143a832f664eaecf69fdbd9987e6"
+    },
+    {
+      "path": "meshes/Image_290.png",
+      "bytes": 245,
+      "sha256": "6c6a1150da771c04ede783ae05194b2d8359292196809fff137e76f31a5bf974"
+    }
+  ]
+}

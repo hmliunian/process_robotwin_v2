@@ -40,7 +40,10 @@ src/robotwin_annotation_v2/
   adapters/                      dataset / Qwen HTTP / SAM3 / artifacts
 scripts/                         server 和运行入口
 tests/                           unit + integration
-docs/process_data_v2_architecture_design.md
+docs/README.md                   文档入口与当前状态
+docs/architecture.md             当前架构、CLI 和产物契约
+docs/experiments.md              实验结论与参数依据
+docs/datasets.md                 兼容任务与数据完整性
 ```
 
 ## 快速验证
@@ -79,6 +82,27 @@ episode 默认跳过，CUDA 级故障会立即终止 worker。`run` 会按 qwen 
 四通道 overlay 视频以及 target/receiver/gripper 的 early/late review sheets。它假定
 Qwen server 已由 `just serve-qwen` 在另一个终端启动。
 
-完整设计见 [docs/process_data_v2_architecture_design.md](docs/process_data_v2_architecture_design.md)。
-视频跟踪方法对比、coverage20 指标和产物位置见
-[docs/video_mask_tracking_experiment.md](docs/video_mask_tracking_experiment.md)。
+交互终端默认显示 episode 总进度、当前阶段、跳过/失败状态、耗时和最终 artifact；stderr
+不是交互终端时改为稳定的逐行日志，stdout 被重定向时仍会写出最终 JSON。可显式选择输出方式：
+
+```bash
+# 强制动态终端 UI
+just process <dataset_root> --ui rich
+
+# 适合日志采集的无 ANSI 逐行输出
+just process <dataset_root> --ui plain
+
+# stdout 只输出一个可直接解析的最终 summary
+just process <dataset_root> --ui json > process-summary.json
+
+# 回放嵌套 Qwen/SAM/URDF 阶段的详细 payload
+just process <dataset_root> --verbose
+```
+
+`--output-format` 是 `--ui` 的等价别名；设置 `NO_COLOR` 会关闭 Rich 颜色，`CI` 或
+`TERM=dumb` 环境会自动使用纯文本模式。完整机器可读结果仍以 run 目录中的
+`process_summary.json` 为准。
+
+完整文档从 [docs/README.md](docs/README.md) 开始；当前实现契约见
+[docs/architecture.md](docs/architecture.md)，coverage20 实验、参数依据和证据边界见
+[docs/experiments.md](docs/experiments.md)。

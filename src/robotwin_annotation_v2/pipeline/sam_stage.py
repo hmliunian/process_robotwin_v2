@@ -26,7 +26,6 @@ from ..models import (
 )
 from .gripper_stage import GripperStageResult
 
-
 INSTANCE_NAMES = ("target_0", "receiver_0", "gripper_left", "gripper_right")
 ROLES = ("target", "receiver", "gripper", "gripper")
 
@@ -697,6 +696,7 @@ def save_sam_artifacts(
     )
     provenance = {
         "format_version": "robotwin_frame_provenance_v2",
+        "gripper_backend": "sam",
         "composition": "native_track clipped_to role_output_window",
         "channels": {
             "target_0": {
@@ -742,6 +742,7 @@ def save_sam_artifacts(
         )
         provenance["channels"][gripper_role_name] = {
             "status": gripper_result.status,
+            "backend": "sam",
             "active_arm": gripper_result.active_arm,
             "seed_frame_id": gripper_result.seed_frame_id,
             "selected_candidate": gripper_result.selected_candidate,
@@ -774,6 +775,7 @@ def save_sam_artifacts(
         )
     manifest.update(
         {
+            "gripper_backend": "sam",
             "semantic_prompt_sha256": semantic_plan.prompt_sha256,
             "algorithm": {
                 "seed": "sam3_text_only_primary_query",
@@ -788,6 +790,8 @@ def save_sam_artifacts(
                 "gripper_stage": None
                 if gripper_result is None
                 else {
+                    "backend": "sam",
+                    "producer": "sam3_pose_roi_qwen_selected_candidate",
                     "seed": "pose_roi_text_box_qwen_selected_candidate",
                     "propagation": "sam3_native_mask_forward_backward",
                     "visibility": (
@@ -805,13 +809,16 @@ def save_sam_artifacts(
             "gripper_qc": None
             if gripper_result is None
             else {
+                "backend": "sam",
                 "status": gripper_result.status,
+                "qc_status": gripper_result.qc_result.status.value,
                 "active_arm": gripper_result.active_arm,
                 "selected_candidate": gripper_result.selected_candidate,
                 "confidence": gripper_result.qc_result.confidence,
                 "reason": gripper_result.qc_result.reason,
                 "forced_fallback": gripper_result.qc_result.forced_fallback,
                 "nonempty_frames": len(gripper_result.nonempty_frame_ids),
+                "quality": None,
             },
             "artifacts": {
                 "masks": str(masks_path.relative_to(episode_dir)),

@@ -36,7 +36,6 @@ from robotwin_annotation_v2.pipeline import (
     save_sam_artifacts,
 )
 
-
 FRAME_SHAPE = (5, 6)
 
 
@@ -410,6 +409,7 @@ def test_save_sam_artifacts_marks_grippers_not_annotated(tmp_path: Path) -> None
         ]
     manifest = json.loads((episode_dir / "run_manifest.json").read_text())
     assert manifest["format_version"] == "robotwin_mask_run_v2"
+    assert manifest["gripper_backend"] == "sam"
     assert not manifest["algorithm"]["per_frame_text_observation"]
     assert manifest["algorithm"]["canonical_envelope_usage"] == "seed_diagnostic_only"
     assert manifest["channels"]["gripper_left"] == "not_annotated"
@@ -417,6 +417,8 @@ def test_save_sam_artifacts_marks_grippers_not_annotated(tmp_path: Path) -> None
     assert (episode_dir / "receiver_0/canonical_envelope.png").is_file()
     assert (episode_dir / "target_0/temporal_qc.json").is_file()
     assert not (episode_dir / "target_0/text_observations.npz").exists()
+    provenance = json.loads((episode_dir / "frame_provenance.json").read_text())
+    assert provenance["gripper_backend"] == "sam"
 
 
 def test_save_sam_artifacts_writes_active_gripper_channel(tmp_path: Path) -> None:
@@ -489,13 +491,32 @@ def test_save_sam_artifacts_writes_active_gripper_channel(tmp_path: Path) -> Non
     manifest = json.loads((episode_dir / "run_manifest.json").read_text())
     assert manifest["channels"]["gripper_right"] == 3
     assert manifest["channels"]["gripper_left"] == "not_annotated"
+    assert manifest["algorithm"]["gripper_stage"]["backend"] == "sam"
+    assert manifest["gripper_qc"]["backend"] == "sam"
+    assert manifest["gripper_qc"]["status"] == "ok"
+    assert manifest["gripper_qc"]["qc_status"] == "passed"
     assert manifest["gripper_qc"]["selected_candidate"] == "A"
+    assert set(manifest["gripper_qc"]) == {
+        "backend",
+        "status",
+        "qc_status",
+        "active_arm",
+        "selected_candidate",
+        "confidence",
+        "reason",
+        "forced_fallback",
+        "nonempty_frames",
+        "quality",
+    }
+    assert manifest["gripper_qc"]["quality"] is None
     assert [role["role"] for role in manifest["roles"]] == [
         "target",
         "receiver",
         "gripper_right",
     ]
     provenance = json.loads((episode_dir / "frame_provenance.json").read_text())
+    assert provenance["gripper_backend"] == "sam"
+    assert provenance["channels"]["gripper_right"]["backend"] == "sam"
     assert provenance["channels"]["gripper_right"]["active_window"] == [2, 17]
     assert provenance["channels"]["gripper_left"]["status"] == "not_annotated"
     assert (episode_dir / "gripper_right/native_track.npz").is_file()
