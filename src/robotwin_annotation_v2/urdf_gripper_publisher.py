@@ -24,6 +24,15 @@ URDF_PRODUCT_FORMAT_VERSION = "robotwin_urdf_gripper_masks_v2"
 PROCESS_SUMMARY_FORMAT_VERSION = "robotwin_process_dataset_summary_v1"
 LOOP_FORMAT_VERSION = "robotwin_loop_context_v1"
 DERIVATION_SOURCE_LINEAGE_FORMAT_VERSION = "robotwin_derivation_source_lineage_v1"
+DERIVATION_SOURCE_LINEAGE_V2_FORMAT_VERSION = (
+    "robotwin_derivation_source_lineage_v2"
+)
+SOURCE_RUN_CONTRACT_FORMAT_VERSION = "robotwin_source_run_contract_v1"
+SOURCE_EPISODE_COMPLETION_RECEIPT_FORMAT_VERSION = (
+    "robotwin_source_episode_completion_receipt_v1"
+)
+SOURCE_RUN_CONTRACT_FILENAME = "source_run_contract.json"
+SOURCE_EPISODE_COMPLETION_RECEIPT_FILENAME = "completion_receipt.json"
 DERIVATION_FORMAT_VERSION = "robotwin_urdf_gripper_derivation_v1"
 PUBLISHER_IMPLEMENTATION_FORMAT_VERSION = (
     "robotwin_urdf_gripper_publisher_implementation_v1"
@@ -44,6 +53,7 @@ SOURCE_EXCLUDED_NAMES = {
     "gripper_left",
     "gripper_right",
     "gripper_failure.json",
+    SOURCE_EPISODE_COMPLETION_RECEIPT_FILENAME,
 }
 GENERATED_FILENAMES = {
     "masks.npz",
@@ -126,6 +136,83 @@ def _canonical_json_sha256(value: Mapping[str, Any]) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(serialized).hexdigest()
+
+
+def _immutable_json_bytes(value: Mapping[str, Any]) -> bytes:
+    return (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+
+def _write_immutable_json(
+    path: Path,
+    value: Mapping[str, Any],
+    *,
+    description: str,
+) -> None:
+    serialized = _immutable_json_bytes(value)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists() or path.is_symlink():
+        if not path.is_file() or path.is_symlink():
+            raise UrdfGripperPublishError(
+                f"{description} path is not a regular file: {path}"
+            )
+        if path.read_bytes() != serialized:
+            raise UrdfGripperPublishError(
+                f"refusing to replace immutable {description}: {path}"
+            )
+        return
+
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(serialized)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            if (
+                not path.is_file()
+                or path.is_symlink()
+                or path.read_bytes() != serialized
+            ):
+                raise UrdfGripperPublishError(
+                    f"refusing to replace immutable {description}: {path}"
+                )
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _strict_integer_ids(value: Any, *, label: str) -> tuple[int, ...]:
+    if not isinstance(value, list) or any(
+        isinstance(item, bool) or not isinstance(item, int) or item < 0
+        for item in value
+    ):
+        raise UrdfGripperPublishError(
+            f"{label} must be a list of non-negative integer episode ids"
+        )
+    result = tuple(int(item) for item in value)
+    if len(set(result)) != len(result):
+        raise UrdfGripperPublishError(f"{label} repeats an episode id")
+    return result
+
+
+def _validate_self_hash(
+    value: Mapping[str, Any],
+    *,
+    hash_key: str,
+    label: str,
+) -> None:
+    recorded = value.get(hash_key)
+    if not isinstance(recorded, str) or len(recorded) != 64:
+        raise UrdfGripperPublishError(f"{label} has no valid {hash_key}")
+    unhashed = {key: _json_clone(item) for key, item in value.items() if key != hash_key}
+    if _canonical_json_sha256(unhashed) != recorded:
+        raise UrdfGripperPublishError(f"{label} content hash is invalid")
 
 
 def _source_file_identity(path: Path, *, source_run_dir: Path) -> dict[str, Any]:
@@ -517,6 +604,202 @@ def _validate_source_manifest(
     )
 
 
+def _validate_source_run_contract(
+    contract: Mapping[str, Any],
+    *,
+    source_run_dir: Path,
+    task: str,
+    camera: str,
+    episode_index: int,
+    expected_dataset_root: Path | None,
+) -> Path:
+    expected_keys = {
+        "format_version",
+        "run_id",
+        "dataset_root",
+        "task",
+        "camera",
+        "dynamic_manifest",
+        "requested_episode_ids",
+        "contract_sha256",
+    }
+    if set(contract) != expected_keys:
+        raise UrdfGripperPublishError(
+            "source run contract keys differ from the immutable schema"
+        )
+    if contract.get("format_version") != SOURCE_RUN_CONTRACT_FORMAT_VERSION:
+        raise UrdfGripperPublishError("source run contract format is unsupported")
+    _validate_self_hash(
+        contract,
+        hash_key="contract_sha256",
+        label="source run contract",
+    )
+    if contract.get("run_id") != source_run_dir.name:
+        raise UrdfGripperPublishError(
+            "source run contract run_id differs from its directory"
+        )
+    if contract.get("task") != task or contract.get("camera") != camera:
+        raise UrdfGripperPublishError(
+            "source run contract task/camera differs from the requested episode"
+        )
+    raw_dataset_root = contract.get("dataset_root")
+    if not isinstance(raw_dataset_root, str) or not raw_dataset_root.strip():
+        raise UrdfGripperPublishError("source run contract has no valid dataset_root")
+    dataset_root = Path(raw_dataset_root).expanduser().resolve()
+    if raw_dataset_root != str(dataset_root):
+        raise UrdfGripperPublishError(
+            "source run contract dataset_root is not canonical"
+        )
+    if (
+        expected_dataset_root is not None
+        and dataset_root != expected_dataset_root.expanduser().resolve()
+    ):
+        raise UrdfGripperPublishError(
+            "source run contract dataset_root differs from the requested dataset"
+        )
+
+    requested_ids = _strict_integer_ids(
+        contract.get("requested_episode_ids"),
+        label="source run contract requested_episode_ids",
+    )
+    if episode_index not in requested_ids:
+        raise UrdfGripperPublishError(
+            "source run contract does not contain the requested episode"
+        )
+    dynamic = contract.get("dynamic_manifest")
+    if not isinstance(dynamic, Mapping):
+        raise UrdfGripperPublishError(
+            "source run contract has no dynamic_manifest object"
+        )
+    expected_dynamic = {
+        "task": task,
+        "camera": camera,
+        "dataset_root": str(dataset_root),
+    }
+    for key, expected in expected_dynamic.items():
+        if dynamic.get(key) != expected:
+            raise UrdfGripperPublishError(
+                f"source dynamic manifest {key} differs from the source run contract"
+            )
+    regression_ids = _strict_integer_ids(
+        dynamic.get("regression_episode_ids"),
+        label="source dynamic manifest regression_episode_ids",
+    )
+    if not set(requested_ids).issubset(regression_ids):
+        raise UrdfGripperPublishError(
+            "source run contract requests episodes outside the dynamic manifest"
+        )
+    return dataset_root
+
+
+def write_source_run_contract(
+    source_run_dir: Path,
+    *,
+    run_id: str,
+    dataset_root: Path,
+    task: str,
+    camera: str,
+    dynamic_manifest: Mapping[str, Any],
+    requested_episode_ids: Sequence[int],
+) -> dict[str, Any]:
+    """Atomically create the immutable metadata anchor for a streaming source run."""
+
+    run_dir = source_run_dir.expanduser().resolve()
+    if not run_id or run_id != run_dir.name or "/" in run_id or ".." in run_id:
+        raise UrdfGripperPublishError(
+            "source run contract run_id must match its simple directory name"
+        )
+    if run_dir.exists() and (not run_dir.is_dir() or run_dir.is_symlink()):
+        raise UrdfGripperPublishError(
+            f"source run contract directory is invalid: {run_dir}"
+        )
+    run_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        requested = list(requested_episode_ids)
+    except TypeError as exc:
+        raise UrdfGripperPublishError(
+            "requested_episode_ids must contain only integers"
+        ) from exc
+    if any(
+        isinstance(item, bool) or not isinstance(item, int) or item < 0
+        for item in requested
+    ):
+        raise UrdfGripperPublishError(
+            "requested_episode_ids must contain only non-negative integers"
+        )
+    if not requested:
+        raise UrdfGripperPublishError("requested_episode_ids must not be empty")
+    contract: dict[str, Any] = {
+        "format_version": SOURCE_RUN_CONTRACT_FORMAT_VERSION,
+        "run_id": run_id,
+        "dataset_root": str(dataset_root.expanduser().resolve()),
+        "task": task,
+        "camera": camera,
+        "dynamic_manifest": _json_clone(dynamic_manifest),
+        "requested_episode_ids": requested,
+    }
+    contract["contract_sha256"] = _canonical_json_sha256(contract)
+    probe_episode = requested[0] if requested else -1
+    _validate_source_run_contract(
+        contract,
+        source_run_dir=run_dir,
+        task=task,
+        camera=camera,
+        episode_index=probe_episode,
+        expected_dataset_root=dataset_root,
+    )
+    path = run_dir / SOURCE_RUN_CONTRACT_FILENAME
+    _write_immutable_json(path, contract, description="source run contract")
+    return _json_clone(contract)
+
+
+def validate_source_run_contract(
+    source_run_dir: Path,
+    *,
+    run_id: str,
+    dataset_root: Path,
+    task: str,
+    camera: str,
+    requested_episode_ids: Sequence[int],
+) -> dict[str, Any]:
+    """Validate one persisted streaming-source contract against caller expectations."""
+
+    run_dir = source_run_dir.expanduser().resolve()
+    contract = _read_json_object(
+        run_dir / SOURCE_RUN_CONTRACT_FILENAME,
+        description="source run contract",
+    )
+    try:
+        expected_requested = list(requested_episode_ids)
+    except TypeError as exc:
+        raise UrdfGripperPublishError(
+            "requested_episode_ids must contain only integers"
+        ) from exc
+    requested = _strict_integer_ids(
+        expected_requested,
+        label="expected requested_episode_ids",
+    )
+    if not requested:
+        raise UrdfGripperPublishError("requested_episode_ids must not be empty")
+    _validate_source_run_contract(
+        contract,
+        source_run_dir=run_dir,
+        task=task,
+        camera=camera,
+        episode_index=requested[0],
+        expected_dataset_root=dataset_root,
+    )
+    if contract.get("run_id") != run_id:
+        raise UrdfGripperPublishError(
+            "source run contract run_id differs from the expected run"
+        )
+    if contract.get("requested_episode_ids") != expected_requested:
+        raise UrdfGripperPublishError(
+            "source run contract requested episode ids differ from the expected run"
+        )
+    return _json_clone(contract)
+
+
 def _validate_source_summary(
     summary: Mapping[str, Any],
     *,
@@ -692,7 +975,109 @@ def _validate_source_provenance(
             )
 
 
-def validate_derivation_source_episode(
+def _source_episode_dependency_identities(
+    source_episode_dir: Path,
+    *,
+    source_run_dir: Path,
+    source_material: Mapping[str, Path],
+) -> list[dict[str, Any]]:
+    dependencies = dict(source_material)
+    for filename in sorted(GENERATED_FILENAMES):
+        dependencies[filename] = source_episode_dir / filename
+    return [
+        _source_file_identity(path, source_run_dir=source_run_dir)
+        for _, path in sorted(dependencies.items())
+    ]
+
+
+def _validate_source_completion_receipt(
+    receipt: Mapping[str, Any],
+    *,
+    source_run_dir: Path,
+    source_episode_dir: Path,
+    source_run_contract_path: Path,
+    task: str,
+    camera: str,
+    episode_index: int,
+    frame_count: int,
+    frame_shape: tuple[int, int],
+    episode_artifacts: Sequence[Mapping[str, Any]],
+) -> None:
+    expected_keys = {
+        "format_version",
+        "source_run_id",
+        "episode",
+        "status",
+        "frame_count",
+        "frame_shape_hw",
+        "source_run_contract",
+        "episode_artifacts",
+        "receipt_sha256",
+    }
+    if set(receipt) != expected_keys:
+        raise UrdfGripperPublishError(
+            "source completion receipt keys differ from the immutable schema"
+        )
+    if (
+        receipt.get("format_version")
+        != SOURCE_EPISODE_COMPLETION_RECEIPT_FORMAT_VERSION
+    ):
+        raise UrdfGripperPublishError(
+            "source completion receipt format is unsupported"
+        )
+    _validate_self_hash(
+        receipt,
+        hash_key="receipt_sha256",
+        label="source completion receipt",
+    )
+    if receipt.get("source_run_id") != source_run_dir.name:
+        raise UrdfGripperPublishError(
+            "source completion receipt run_id differs from its directory"
+        )
+    expected_episode = {
+        "task": task,
+        "episode_index": episode_index,
+        "episode_id": f"{episode_index:06d}",
+        "camera": camera,
+    }
+    if receipt.get("episode") != expected_episode:
+        raise UrdfGripperPublishError(
+            "source completion receipt episode identity is not canonical"
+        )
+    if receipt.get("status") not in {"completed", "skipped_complete"}:
+        raise UrdfGripperPublishError(
+            "source completion receipt status is not complete"
+        )
+    if receipt.get("frame_count") != frame_count:
+        raise UrdfGripperPublishError(
+            "source completion receipt frame_count differs from source masks"
+        )
+    if receipt.get("frame_shape_hw") != list(frame_shape):
+        raise UrdfGripperPublishError(
+            "source completion receipt frame shape differs from source masks"
+        )
+    expected_contract_identity = _source_file_identity(
+        source_run_contract_path,
+        source_run_dir=source_run_dir,
+    )
+    if receipt.get("source_run_contract") != expected_contract_identity:
+        raise UrdfGripperPublishError(
+            "source run contract differs from the completion receipt"
+        )
+    if receipt.get("episode_artifacts") != list(episode_artifacts):
+        raise UrdfGripperPublishError(
+            "source episode artifacts differ from the completion receipt"
+        )
+    expected_receipt_path = (
+        source_episode_dir / SOURCE_EPISODE_COMPLETION_RECEIPT_FILENAME
+    )
+    if not expected_receipt_path.is_file() or expected_receipt_path.is_symlink():
+        raise UrdfGripperPublishError(
+            f"source completion receipt is not a regular file: {expected_receipt_path}"
+        )
+
+
+def _validate_derivation_source_episode(
     source_episode_dir: Path,
     *,
     task: str,
@@ -700,9 +1085,8 @@ def validate_derivation_source_episode(
     episode_index: int,
     expected_frame_count: int | None = None,
     expected_dataset_root: Path | None = None,
+    require_completion_receipt: bool,
 ) -> DerivationSourceEpisode:
-    """Validate and content-address every inherited source dependency."""
-
     episode_dir = source_episode_dir.expanduser().resolve()
     if not episode_dir.is_dir() or episode_dir.is_symlink():
         raise FileNotFoundError(f"source episode directory is missing: {episode_dir}")
@@ -719,19 +1103,35 @@ def validate_derivation_source_episode(
             "source episode path is not <run>/<task>/episode_<id>/<camera>"
         )
 
-    summary_path = source_run_dir / "process_summary.json"
-    summary = _read_json_object(
-        summary_path,
-        description="source process summary",
-    )
-    dataset_root = _validate_source_summary(
-        summary,
-        source_run_dir=source_run_dir,
-        task=task,
-        camera=camera,
-        episode_index=episode_index,
-        expected_dataset_root=expected_dataset_root,
-    )
+    contract_path = source_run_dir / SOURCE_RUN_CONTRACT_FILENAME
+    uses_incremental_contract = contract_path.exists() or contract_path.is_symlink()
+    if uses_incremental_contract:
+        source_metadata = _read_json_object(
+            contract_path,
+            description="source run contract",
+        )
+        dataset_root = _validate_source_run_contract(
+            source_metadata,
+            source_run_dir=source_run_dir,
+            task=task,
+            camera=camera,
+            episode_index=episode_index,
+            expected_dataset_root=expected_dataset_root,
+        )
+    else:
+        summary_path = source_run_dir / "process_summary.json"
+        source_metadata = _read_json_object(
+            summary_path,
+            description="source process summary",
+        )
+        dataset_root = _validate_source_summary(
+            source_metadata,
+            source_run_dir=source_run_dir,
+            task=task,
+            camera=camera,
+            episode_index=episode_index,
+            expected_dataset_root=expected_dataset_root,
+        )
     source = _load_source_masks(episode_dir / "masks.npz")
     frame_count = int(source["frame_count"])
     if expected_frame_count is not None and frame_count != expected_frame_count:
@@ -758,7 +1158,7 @@ def validate_derivation_source_episode(
         episode_index=episode_index,
         frame_count=frame_count,
         source_episode_dir=episode_dir,
-        source_run_id=str(summary["run_id"]),
+        source_run_id=str(source_metadata["run_id"]),
         role_windows=role_windows,
     )
     provenance = _read_json_object(
@@ -767,7 +1167,7 @@ def validate_derivation_source_episode(
     )
     _validate_source_provenance(provenance, role_windows=role_windows)
 
-    dynamic = summary["dynamic_manifest"]
+    dynamic = source_metadata["dynamic_manifest"]
     raw_shape = dynamic.get("frame_shape_hw")
     frame_shape = tuple(int(item) for item in np.asarray(source["masks"]).shape[2:])
     if (
@@ -794,36 +1194,87 @@ def validate_derivation_source_episode(
         "frame_provenance": episode_dir / "frame_provenance.json",
         "masks": episode_dir / "masks.npz",
     }
-    lineage: dict[str, Any] = {
-        "format_version": DERIVATION_SOURCE_LINEAGE_FORMAT_VERSION,
-        "source_run": {
-            "run_id": summary["run_id"],
-            "path": str(source_run_dir),
-            "dataset_root": str(dataset_root),
-            "process_summary": _source_file_identity(
-                summary_path,
-                source_run_dir=source_run_dir,
-            ),
-        },
-        "episode": {
-            "task": task,
-            "episode_index": episode_index,
-            "episode_id": f"{episode_index:06d}",
-            "camera": camera,
-        },
-        "frame_count": frame_count,
-        "frame_shape_hw": list(frame_shape),
-        "control_artifacts": {
-            key: _source_file_identity(path, source_run_dir=source_run_dir)
-            for key, path in control_paths.items()
-        },
-        "role_artifacts": role_identities,
+    control_identities = {
+        key: _source_file_identity(path, source_run_dir=source_run_dir)
+        for key, path in control_paths.items()
     }
+    episode_identity = {
+        "task": task,
+        "episode_index": episode_index,
+        "episode_id": f"{episode_index:06d}",
+        "camera": camera,
+    }
+    lineage: dict[str, Any]
+    if uses_incremental_contract:
+        episode_artifacts = _source_episode_dependency_identities(
+            episode_dir,
+            source_run_dir=source_run_dir,
+            source_material=source_material,
+        )
+        receipt_path = episode_dir / SOURCE_EPISODE_COMPLETION_RECEIPT_FILENAME
+        if require_completion_receipt:
+            receipt = _read_json_object(
+                receipt_path,
+                description="source completion receipt",
+            )
+            _validate_source_completion_receipt(
+                receipt,
+                source_run_dir=source_run_dir,
+                source_episode_dir=episode_dir,
+                source_run_contract_path=contract_path,
+                task=task,
+                camera=camera,
+                episode_index=episode_index,
+                frame_count=frame_count,
+                frame_shape=frame_shape,
+                episode_artifacts=episode_artifacts,
+            )
+        lineage = {
+            "format_version": DERIVATION_SOURCE_LINEAGE_V2_FORMAT_VERSION,
+            "source_run": {
+                "run_id": source_metadata["run_id"],
+                "path": str(source_run_dir),
+                "dataset_root": str(dataset_root),
+                "source_run_contract": _source_file_identity(
+                    contract_path,
+                    source_run_dir=source_run_dir,
+                ),
+            },
+            "episode": episode_identity,
+            "frame_count": frame_count,
+            "frame_shape_hw": list(frame_shape),
+            "episode_artifacts": episode_artifacts,
+            "control_artifacts": control_identities,
+            "role_artifacts": role_identities,
+        }
+        if require_completion_receipt:
+            lineage["completion_receipt"] = _source_file_identity(
+                receipt_path,
+                source_run_dir=source_run_dir,
+            )
+    else:
+        lineage = {
+            "format_version": DERIVATION_SOURCE_LINEAGE_FORMAT_VERSION,
+            "source_run": {
+                "run_id": source_metadata["run_id"],
+                "path": str(source_run_dir),
+                "dataset_root": str(dataset_root),
+                "process_summary": _source_file_identity(
+                    summary_path,
+                    source_run_dir=source_run_dir,
+                ),
+            },
+            "episode": episode_identity,
+            "frame_count": frame_count,
+            "frame_shape_hw": list(frame_shape),
+            "control_artifacts": control_identities,
+            "role_artifacts": role_identities,
+        }
     lineage["lineage_sha256"] = _canonical_json_sha256(lineage)
     return DerivationSourceEpisode(
         source_run_dir=source_run_dir,
         episode_dir=episode_dir,
-        summary=_json_clone(summary),
+        summary=_json_clone(source_metadata),
         loop=_json_clone(loop),
         manifest=_json_clone(manifest),
         provenance=_json_clone(provenance),
@@ -832,6 +1283,127 @@ def validate_derivation_source_episode(
         source_algorithm=source_algorithm,
         source_material=source_material,
         lineage=lineage,
+    )
+
+
+def write_source_episode_completion_receipt(
+    source_episode_dir: Path,
+    *,
+    task: str,
+    camera: str,
+    episode_index: int,
+    status: str = "completed",
+    expected_frame_count: int | None = None,
+    expected_dataset_root: Path | None = None,
+) -> dict[str, Any]:
+    """Validate one source episode, then atomically mark it ready for derivation."""
+
+    if status not in {"completed", "skipped_complete"}:
+        raise UrdfGripperPublishError(
+            "source completion receipt status must be completed or skipped_complete"
+        )
+    validated = _validate_derivation_source_episode(
+        source_episode_dir,
+        task=task,
+        camera=camera,
+        episode_index=episode_index,
+        expected_frame_count=expected_frame_count,
+        expected_dataset_root=expected_dataset_root,
+        require_completion_receipt=False,
+    )
+    if (
+        validated.lineage.get("format_version")
+        != DERIVATION_SOURCE_LINEAGE_V2_FORMAT_VERSION
+    ):
+        raise UrdfGripperPublishError(
+            "a source run contract is required before writing completion receipts"
+        )
+    receipt: dict[str, Any] = {
+        "format_version": SOURCE_EPISODE_COMPLETION_RECEIPT_FORMAT_VERSION,
+        "source_run_id": validated.lineage["source_run"]["run_id"],
+        "episode": _json_clone(validated.lineage["episode"]),
+        "status": status,
+        "frame_count": validated.frame_count,
+        "frame_shape_hw": _json_clone(validated.lineage["frame_shape_hw"]),
+        "source_run_contract": _json_clone(
+            validated.lineage["source_run"]["source_run_contract"]
+        ),
+        "episode_artifacts": _json_clone(
+            validated.lineage["episode_artifacts"]
+        ),
+    }
+    receipt["receipt_sha256"] = _canonical_json_sha256(receipt)
+    receipt_path = (
+        validated.episode_dir / SOURCE_EPISODE_COMPLETION_RECEIPT_FILENAME
+    )
+    _write_immutable_json(
+        receipt_path,
+        receipt,
+        description="source completion receipt",
+    )
+    _validate_derivation_source_episode(
+        source_episode_dir,
+        task=task,
+        camera=camera,
+        episode_index=episode_index,
+        expected_frame_count=expected_frame_count,
+        expected_dataset_root=expected_dataset_root,
+        require_completion_receipt=True,
+    )
+    return _json_clone(receipt)
+
+
+def validate_derivation_source_episode(
+    source_episode_dir: Path,
+    *,
+    task: str,
+    camera: str,
+    episode_index: int,
+    expected_frame_count: int | None = None,
+    expected_dataset_root: Path | None = None,
+) -> DerivationSourceEpisode:
+    """Validate and content-address every inherited source dependency."""
+
+    return _validate_derivation_source_episode(
+        source_episode_dir,
+        task=task,
+        camera=camera,
+        episode_index=episode_index,
+        expected_frame_count=expected_frame_count,
+        expected_dataset_root=expected_dataset_root,
+        require_completion_receipt=True,
+    )
+
+
+def validate_source_episode_completion_receipt(
+    source_episode_dir: Path,
+    *,
+    task: str,
+    camera: str,
+    episode_index: int,
+    expected_frame_count: int | None = None,
+    expected_dataset_root: Path | None = None,
+) -> dict[str, Any]:
+    """Validate a receipt and all contract/artifact identities it freezes."""
+
+    validated = validate_derivation_source_episode(
+        source_episode_dir,
+        task=task,
+        camera=camera,
+        episode_index=episode_index,
+        expected_frame_count=expected_frame_count,
+        expected_dataset_root=expected_dataset_root,
+    )
+    if (
+        validated.lineage.get("format_version")
+        != DERIVATION_SOURCE_LINEAGE_V2_FORMAT_VERSION
+    ):
+        raise UrdfGripperPublishError(
+            "source completion receipts are only available for v2 lineage"
+        )
+    return _read_json_object(
+        validated.episode_dir / SOURCE_EPISODE_COMPLETION_RECEIPT_FILENAME,
+        description="source completion receipt",
     )
 
 
@@ -907,6 +1479,7 @@ def _backend_provenance(
         "camera",
         "depth_tolerance_mm",
         "minimum_eligible_nonempty_fraction",
+        "egl_device_id",
         "fit_config",
         "implementation",
     )
@@ -1568,4 +2141,8 @@ __all__ = [
     "publisher_implementation_identity",
     "validate_derivation_source_episode",
     "validate_published_urdf_episode",
+    "validate_source_episode_completion_receipt",
+    "validate_source_run_contract",
+    "write_source_episode_completion_receipt",
+    "write_source_run_contract",
 ]

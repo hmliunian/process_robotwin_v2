@@ -20,6 +20,22 @@ from scripts.process_dataset import (
 )
 
 
+class _EpisodeRecordingUI(process_module.ProcessUI):
+    def __init__(self) -> None:
+        super().__init__(emit_json_summary=False, verbose=False)
+        self.finished_episodes: list[tuple[int, str]] = []
+
+    def episode_finished(
+        self,
+        episode_id: int,
+        *,
+        status: str,
+        detail: str | None = None,
+    ) -> None:
+        del detail
+        self.finished_episodes.append((episode_id, status))
+
+
 def _touch_episode(
     root: Path,
     episode_id: int,
@@ -520,6 +536,27 @@ def test_parse_args_defaults_to_sam_and_preserves_just_sentinel_paths() -> None:
     assert process_module._optional_cli_path(args.urdf_path) is None
     assert args.ui == "auto"
     assert args.verbose is False
+    assert args.urdf_egl_device_id is None
+    assert args.urdf_pipeline_buffer_size == 2
+    assert args.no_urdf_pipeline is False
+
+
+def test_parse_args_accepts_urdf_pipeline_controls() -> None:
+    args = process_module._parse_args(
+        [
+            "--gripper-backend",
+            "urdf",
+            "--urdf-egl-device-id",
+            "3",
+            "--urdf-pipeline-buffer-size",
+            "4",
+            "--no-urdf-pipeline",
+        ]
+    )
+
+    assert args.urdf_egl_device_id == 3
+    assert args.urdf_pipeline_buffer_size == 4
+    assert args.no_urdf_pipeline is True
 
 
 def test_parse_args_accepts_output_format_alias_and_verbose() -> None:
@@ -646,6 +683,9 @@ def test_main_live_urdf_cli_uses_bundled_asset_and_not_derived_entrypoint(
     assert calls["run_id"] == "live-urdf-test"
     assert calls["episode_ids"] == (7,)
     assert calls["skip_render"] is True
+    assert calls["urdf_pipeline"] is True
+    assert calls["urdf_pipeline_buffer_size"] == 2
+    assert calls["urdf_egl_device_id"] is None
 
 
 def test_live_urdf_pipeline_runs_target_receiver_source_before_derived_urdf(
@@ -743,6 +783,58 @@ def test_live_urdf_pipeline_runs_target_receiver_source_before_derived_urdf(
     assert urdf_calls["skip_render"] is True
     assert urdf_calls["source_release"] == release_report
     assert summary["gripper_backend"] == "urdf"
+
+
+def test_live_urdf_pipeline_streams_by_default_and_reuses_backend_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _cli_config(tmp_path)
+    dataset = tmp_path / "dataset"
+    _touch_episode(dataset, 7)
+    streamed: dict[str, Any] = {}
+    canonical: dict[str, Any] = {}
+    prepared = {"status": "complete", "episodes": []}
+
+    def fake_stream(*_args: Any, **kwargs: Any) -> tuple[Any, Any, Any]:
+        streamed.update(kwargs)
+        return {"passed": True}, prepared, None
+
+    def fake_canonical(**kwargs: Any) -> dict[str, Any]:
+        canonical.update(kwargs)
+        return {"passed": True, "gripper_backend": "urdf"}
+
+    monkeypatch.setattr(process_module, "_select_urdf_egl_device", lambda *_args: 3)
+    monkeypatch.setattr(
+        process_module, "_run_streaming_source_urdf_workers", fake_stream
+    )
+    monkeypatch.setattr(
+        process_module,
+        "_release_sam_cuda_cache",
+        lambda _gpus: {"gc_collected": 0, "cuda_available": True, "gpus": []},
+    )
+    monkeypatch.setattr(process_module, "process_urdf_source_run", fake_canonical)
+
+    summary = process_module.process_live_urdf_pipeline(
+        pipeline_config=config,
+        dataset_root=dataset,
+        task="task",
+        camera="cam_high",
+        output_root=tmp_path / "output",
+        urdf_path=process_module.DEFAULT_BUNDLED_URDF_PATH,
+        run_id="streaming-test",
+        episode_ids=(7,),
+        skip_render=True,
+    )
+
+    assert streamed["episode_ids"] == (7,)
+    assert streamed["buffer_size"] == 2
+    assert streamed["urdf_run_config"].egl_device_id == 3
+    assert canonical["prepared_backend_result"] is prepared
+    assert canonical["prepared_backend_error"] is None
+    assert canonical["report_lifecycle"] is False
+    assert canonical["egl_device_id"] == 3
+    assert summary["passed"] is True
 
 
 def test_main_json_mode_prints_one_machine_readable_summary(
@@ -1436,6 +1528,7 @@ def test_process_urdf_source_run_records_shared_render_failure(
     def failed_render(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
         raise RuntimeError("sheet generation failed")
 
+    reporter = _EpisodeRecordingUI()
     summary = process_module.process_urdf_source_run(
         pipeline_config=process_module.load_config(
             Path("configs/pilot_move_pillbottle_pad.yaml")
@@ -1452,6 +1545,7 @@ def test_process_urdf_source_run_records_shared_render_failure(
         episode_publisher=fake_publish,
         episode_validator=lambda **_kwargs: {"status": "completed"},
         render_builder=failed_render,
+        reporter=reporter,
     )
 
     assert summary["passed"] is False
@@ -1462,6 +1556,7 @@ def test_process_urdf_source_run_records_shared_render_failure(
         "error": "RuntimeError: sheet generation failed",
     }
     assert Path(summary["artifact"]).is_file()
+    assert reporter.finished_episodes == [(7, "completed")]
 
 
 def test_process_urdf_source_run_blocks_render_when_source_changes_after_publish(
@@ -1560,6 +1655,7 @@ def test_process_urdf_source_run_blocks_render_on_canonical_revalidation_failure
             "published masks differ from the canonical contract"
         )
 
+    reporter = _EpisodeRecordingUI()
     summary = process_module.process_urdf_source_run(
         pipeline_config=process_module.load_config(
             Path("configs/pilot_move_pillbottle_pad.yaml")
@@ -1578,6 +1674,7 @@ def test_process_urdf_source_run_blocks_render_on_canonical_revalidation_failure
         render_builder=lambda *_args, **_kwargs: pytest.fail(
             "shared renderer must not run after canonical validation fails"
         ),
+        reporter=reporter,
     )
 
     assert summary["passed"] is False
@@ -1586,6 +1683,7 @@ def test_process_urdf_source_run_blocks_render_on_canonical_revalidation_failure
     assert not any(
         record.get("status") == "render_failed" for record in summary["records"]
     )
+    assert reporter.finished_episodes == [(7, "canonical_validation_failed")]
 
 
 def test_process_urdf_source_run_renders_successes_after_partial_backend_failure(
@@ -1791,3 +1889,188 @@ def test_process_urdf_source_run_propagates_non_batch_runner_errors(
     assert publisher_called is False
     assert renderer_called is False
     assert not (tmp_path / "output/urdf-resume/process_summary.json").exists()
+
+
+class _ProtocolReceiveConnection:
+    def __init__(self) -> None:
+        self.messages: list[tuple[Any, ...]] = []
+
+    def poll(self, _timeout: float = 0.0) -> bool:
+        return bool(self.messages)
+
+    def recv(self) -> tuple[Any, ...]:
+        return self.messages.pop(0)
+
+    def close(self) -> None:
+        pass
+
+
+class _ProtocolSendConnection:
+    def __init__(self, receiver: _ProtocolReceiveConnection) -> None:
+        self.receiver = receiver
+
+    def send(self, message: tuple[Any, ...]) -> None:
+        self.receiver.messages.append(message)
+
+    def close(self) -> None:
+        pass
+
+
+class _ProtocolQueue:
+    def __init__(self, maxsize: int) -> None:
+        self.maxsize = maxsize
+        self.items: list[Any] = []
+
+    def put_nowait(self, value: Any) -> None:
+        if len(self.items) >= self.maxsize:
+            raise process_module.Full
+        self.items.append(value)
+
+    def close(self) -> None:
+        pass
+
+    def cancel_join_thread(self) -> None:
+        pass
+
+
+class _ProtocolProcess:
+    def __init__(
+        self,
+        context: _ProtocolContext,
+        *,
+        kwargs: dict[str, Any],
+        name: str,
+    ) -> None:
+        self.context = context
+        self.kwargs = kwargs
+        self.name = name
+        self.alive = False
+        self.exitcode = 0
+        self.terminated = False
+
+    def start(self) -> None:
+        sender = self.kwargs["connection"]
+        if self.name == "robotwin-streaming-source":
+            if self.context.source_error:
+                sender.send(("error", "SourceError", "boom", "source traceback"))
+            elif self.context.source_hard_exit:
+                return
+            else:
+                sender.send(("source_episode", 7, "completed"))
+                sender.send(("result", {"passed": True, "run_id": "source"}))
+        else:
+            self.alive = True
+
+    def is_alive(self) -> bool:
+        if self.name == "robotwin-streaming-urdf" and self.alive:
+            queue = self.kwargs["ready_queue"]
+            if None in queue.items:
+                sender = self.kwargs["connection"]
+                result = None if self.context.empty_backend else {"status": "complete"}
+                error = "empty backend" if result is None else None
+                sender.send(("result", result, error))
+                self.alive = False
+        return self.alive
+
+    def join(self, timeout: float | None = None) -> None:
+        del timeout
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.alive = False
+
+
+class _ProtocolContext:
+    def __init__(
+        self,
+        *,
+        source_error: bool = False,
+        source_hard_exit: bool = False,
+        empty_backend: bool = False,
+    ) -> None:
+        self.source_error = source_error
+        self.source_hard_exit = source_hard_exit
+        self.empty_backend = empty_backend
+        self.processes: list[_ProtocolProcess] = []
+
+    def Pipe(self, duplex: bool = False) -> tuple[Any, Any]:
+        assert duplex is False
+        receiver = _ProtocolReceiveConnection()
+        return receiver, _ProtocolSendConnection(receiver)
+
+    def Queue(self, maxsize: int) -> _ProtocolQueue:
+        return _ProtocolQueue(maxsize)
+
+    def Process(self, *, kwargs: dict[str, Any], name: str, **_rest: Any) -> Any:
+        process = _ProtocolProcess(self, kwargs=kwargs, name=name)
+        self.processes.append(process)
+        return process
+
+
+def _run_protocol_coordinator(
+    monkeypatch: pytest.MonkeyPatch,
+    context: _ProtocolContext,
+) -> tuple[dict[str, Any], dict[str, Any], str | None]:
+    monkeypatch.setattr(process_module.mp, "get_context", lambda _method: context)
+    return process_module._run_streaming_source_urdf_workers(
+        SimpleNamespace(),
+        dataset_root=Path("/dataset"),
+        task="task",
+        camera="cam_high",
+        source_output_root=Path("/sources"),
+        source_run_id="source",
+        episode_ids=(7,),
+        urdf_run_config=SimpleNamespace(episode_ids=(7,)),
+        buffer_size=2,
+        reporter=None,
+    )
+
+
+def test_streaming_coordinator_returns_both_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, backend, error = _run_protocol_coordinator(
+        monkeypatch, _ProtocolContext()
+    )
+
+    assert source["passed"] is True
+    assert backend == {"status": "complete"}
+    assert error is None
+
+
+def test_streaming_coordinator_terminates_peer_on_child_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _ProtocolContext(source_error=True)
+
+    with pytest.raises(RuntimeError, match="SourceError: boom"):
+        _run_protocol_coordinator(monkeypatch, context)
+
+    urdf_process = next(
+        process for process in context.processes if process.name == "robotwin-streaming-urdf"
+    )
+    assert urdf_process.terminated is True
+
+
+def test_streaming_coordinator_empty_backend_result_is_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(RuntimeError, match="empty backend"):
+        _run_protocol_coordinator(
+            monkeypatch,
+            _ProtocolContext(empty_backend=True),
+        )
+
+
+def test_streaming_coordinator_hard_source_exit_is_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _ProtocolContext(source_hard_exit=True)
+
+    with pytest.raises(RuntimeError, match="source process exited without a result"):
+        _run_protocol_coordinator(monkeypatch, context)
+
+    urdf_process = next(
+        process for process in context.processes if process.name == "robotwin-streaming-urdf"
+    )
+    assert urdf_process.terminated is True

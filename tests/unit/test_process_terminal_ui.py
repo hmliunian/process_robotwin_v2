@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import sys
 from collections.abc import Mapping
 from typing import Any
 
@@ -121,6 +122,41 @@ def test_plain_ui_only_replays_captured_detail_in_verbose_mode() -> None:
 
     assert "large payload" not in quiet_stream.getvalue()
     assert "large payload" in verbose_stream.getvalue()
+
+
+def test_plain_ui_emits_lane_events_and_reclassified_episode_once() -> None:
+    stream = io.StringIO()
+    clock = FakeClock()
+    ui = PlainProcessUI(
+        stream=stream,
+        emit_json_summary=False,
+        verbose=False,
+        clock=clock,
+    )
+
+    ui.run_ready(run_id="pipeline", episode_ids=(1,))
+    ui.lane_started("source", "Qwen + SAM", total=1)
+    clock.advance(2)
+    ui.lane_progress(
+        "source",
+        1,
+        total=1,
+        episode_id=1,
+        status="complete",
+        detail="receipt ready",
+    )
+    ui.lane_finished("source")
+    ui.episode_finished(1, status="completed")
+    ui.episode_finished(1, status="completed")
+    ui.episode_finished(1, status="canonical_validation_failed")
+
+    output = stream.getvalue()
+    assert "lane=source label=Qwen + SAM status=running total=1" in output
+    assert "lane=source status=running completed=1 total=1 episode=000001" in output
+    assert "lane=source status=completed elapsed=00:02" in output
+    assert output.count("episode=000001 status=completed\n") == 1
+    assert "episode=000001 status=canonical_validation_failed" in output
+    assert ui._episode_states[1].status == "canonical_validation_failed"
 
 
 def test_auto_non_tty_uses_plain_ui_and_preserves_json_summary() -> None:
@@ -252,7 +288,9 @@ def test_rich_ui_renders_and_closes_without_color_codes_when_requested() -> None
     )
 
     assert isinstance(ui, RichProcessUI)
+    original_stdout = sys.stdout
     ui.run_started(backend="urdf", dataset_root="/dataset", task="task", camera="cam")
+    assert sys.stdout is original_stdout
     ui.run_ready(run_id="rich-run", episode_ids=(1,))
     ui.episode_started(1, position=1, total=1)
     ui.stage_started(1, "canonical_publish")
@@ -272,3 +310,106 @@ def test_rich_ui_renders_and_closes_without_color_codes_when_requested() -> None
     assert "rich-run" in output
     assert "\x1b[31m" not in output
     assert "\x1b[32m" not in output
+
+
+def test_rich_dashboard_keeps_multiple_lanes_and_reclassifies_stats() -> None:
+    pytest.importorskip("rich")
+    stream = io.StringIO()
+    ui = RichProcessUI(
+        stream=stream,
+        emit_json_summary=False,
+        verbose=False,
+        force_terminal=True,
+        no_color=True,
+    )
+
+    try:
+        ui.run_started(backend="urdf", dataset_root="/dataset", task="task", camera="cam")
+        live = ui._live
+        ui.run_ready(run_id="pipeline-run", episode_ids=(1, 2, 3, 4, 5, 6))
+        ui.lane_started("source", "Qwen + SAM", total=6)
+        ui.lane_started("urdf", "URDF render", total=6)
+        ui.lane_progress("source", 2, total=6, episode_id=5, status="running")
+        ui.lane_progress("urdf", 1, total=6, episode_id=6, status="running")
+        assert ui._overall_equivalent(ui._episode_stats()) == pytest.approx(1.5)
+        ui.episode_finished(1, status="completed")
+        ui.episode_finished(2, status="failed")
+        ui.episode_finished(2, status="failed")
+        ui.episode_finished(3, status="skipped_complete")
+        ui.episode_finished(4, status="not_run_after_fatal_cuda")
+
+        assert ui._live is live
+        assert ui._episode_stats() == {
+            "total": 6,
+            "success": 1,
+            "failed": 1,
+            "skipped": 1,
+            "running": 2,
+            "remaining": 0,
+            "not_run": 1,
+        }
+
+        ui.episode_finished(1, status="canonical_validation_failed")
+        assert ui._episode_stats() == {
+            "total": 6,
+            "success": 0,
+            "failed": 2,
+            "skipped": 1,
+            "running": 2,
+            "remaining": 0,
+            "not_run": 1,
+        }
+    finally:
+        ui.close()
+
+    output = stream.getvalue()
+    assert "source" in output
+    assert "urdf" in output
+    assert "Success" in output
+    assert "Not-run" in output
+    assert "Process Summary" not in output
+
+
+def test_rich_routine_events_only_update_live_dashboard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("rich")
+    ui = RichProcessUI(
+        stream=io.StringIO(),
+        emit_json_summary=False,
+        verbose=True,
+        force_terminal=True,
+        no_color=True,
+    )
+
+    class StubLive:
+        def __init__(self) -> None:
+            self.updates = 0
+
+        def update(self, renderable: object, *, refresh: bool) -> None:
+            del renderable
+            assert not refresh
+            self.updates += 1
+
+        def stop(self) -> None:
+            return
+
+    live = StubLive()
+    ui._live = live
+
+    def reject_permanent_line(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise AssertionError("routine event wrote a permanent console line")
+
+    monkeypatch.setattr(ui._console, "print", reject_permanent_line)
+    ui.run_started(backend="urdf", dataset_root="/dataset", task="task", camera="cam")
+    ui.run_ready(run_id="run", episode_ids=(1,))
+    ui.lane_started("source", "Qwen + SAM", total=1)
+    ui.lane_progress("source", 0, total=1, episode_id=1, detail="working")
+    ui.stage_started(1, "target_receiver_sam")
+    ui.note("latest warning", level="warning")
+    ui.detail("diagnostic payload")
+    ui.episode_finished(1, status="failed", detail="bad mask")
+
+    assert live.updates == 8
+    assert ui._latest_message == "episode_000001: failed — bad mask"

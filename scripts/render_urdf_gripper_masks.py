@@ -18,7 +18,7 @@ from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime, timezone
 from fractions import Fraction
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence, cast
 
 import numpy as np
 
@@ -167,6 +167,7 @@ class RunConfig:
     skip_overlay: bool = False
     dry_run: bool = False
     resume: bool = False
+    egl_device_id: int | None = None
 
     @property
     def run_dir(self) -> Path:
@@ -213,6 +214,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--overlay-preset", default="medium")
     parser.add_argument("--skip-overlay", action="store_true")
     parser.add_argument(
+        "--egl-device-id",
+        type=int,
+        help="Physical GPU id exposed to EGL while constructing the renderer",
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help="Resume this run id; only fully validated episode directories are skipped",
@@ -250,6 +256,8 @@ def parse_args(argv: Sequence[str] | None = None) -> RunConfig:
         raise ValueError("--overlay-alpha must be between zero and one")
     if not 0 <= args.overlay_crf <= 51:
         raise ValueError("--overlay-crf must be between 0 and 51")
+    if args.egl_device_id is not None and args.egl_device_id < 0:
+        raise ValueError("--egl-device-id must be non-negative")
     return RunConfig(
         dataset_root=args.dataset_root.expanduser().resolve(),
         source_run_dir=args.source_run_dir.expanduser().resolve(),
@@ -275,6 +283,7 @@ def parse_args(argv: Sequence[str] | None = None) -> RunConfig:
         skip_overlay=bool(args.skip_overlay),
         dry_run=bool(args.dry_run),
         resume=bool(args.resume),
+        egl_device_id=args.egl_device_id,
     )
 
 
@@ -282,11 +291,19 @@ def _is_within(path: Path, parent: Path) -> bool:
     return path == parent or parent in path.parents
 
 
-def validate_run_config(config: RunConfig) -> None:
+def validate_run_config(
+    config: RunConfig,
+    *,
+    allow_existing_output: bool = False,
+) -> None:
     if config.dry_run and config.resume:
         raise ValueError("dry_run and resume cannot be enabled together")
     if not config.episode_ids:
         raise ValueError("at least one episode id is required")
+    if any(value < 0 for value in config.episode_ids):
+        raise ValueError("episode ids must be non-negative")
+    if len(set(config.episode_ids)) != len(config.episode_ids):
+        raise ValueError("episode ids must be unique")
     if not config.run_id or "/" in config.run_id or "\\" in config.run_id:
         raise ValueError("run_id must be a simple non-empty directory name")
     if config.run_id in {".", ".."} or ".." in Path(config.run_id).parts:
@@ -305,15 +322,19 @@ def validate_run_config(config: RunConfig) -> None:
         0.0 <= config.minimum_eligible_nonempty_fraction <= 1.0
     ):
         raise ValueError("minimum_eligible_nonempty_fraction must be finite and in [0, 1]")
+    if config.egl_device_id is not None and (
+        isinstance(config.egl_device_id, bool) or config.egl_device_id < 0
+    ):
+        raise ValueError("egl_device_id must be a non-negative integer")
     if _is_within(config.output_root, config.dataset_root):
         raise ValueError("output_root must be outside the source dataset")
     if _is_within(config.output_root, config.source_run_dir):
         raise ValueError("output_root must be outside the immutable source run")
-    if config.run_dir.exists() and not config.resume:
+    if config.run_dir.exists() and not config.resume and not allow_existing_output:
         raise FileExistsError(f"output run already exists: {config.run_dir}")
     if config.run_dir.exists() and not config.run_dir.is_dir():
         raise FileExistsError(f"output run path is not a directory: {config.run_dir}")
-    if config.resume and not config.run_dir.is_dir():
+    if config.resume and not config.run_dir.is_dir() and not allow_existing_output:
         raise FileNotFoundError(f"resume run directory is missing: {config.run_dir}")
 
 
@@ -918,12 +939,22 @@ def create_renderer(
     from robotwin_annotation_v2.urdf_gripper_renderer import AlohaUrdfRenderer
 
     height, width = frame_shape
-    renderer = AlohaUrdfRenderer(
-        config.urdf_path,
-        mesh_root=config.mesh_root,
-        width=width,
-        height=height,
-    )
+    previous_egl_device = os.environ.get("EGL_DEVICE_ID")
+    if config.egl_device_id is not None:
+        os.environ["EGL_DEVICE_ID"] = str(config.egl_device_id)
+    try:
+        renderer = AlohaUrdfRenderer(
+            config.urdf_path,
+            mesh_root=config.mesh_root,
+            width=width,
+            height=height,
+        )
+    finally:
+        if config.egl_device_id is not None:
+            if previous_egl_device is None:
+                os.environ.pop("EGL_DEVICE_ID", None)
+            else:
+                os.environ["EGL_DEVICE_ID"] = previous_egl_device
     return renderer, _fit_config(config.fit_config_json)
 
 
@@ -1469,99 +1500,106 @@ def validate_completed_episode(
     }
 
 
+def _build_episode_plan(config: RunConfig, episode_index: int) -> EpisodePlan:
+    source_path = resolve_source_masks(
+        config.source_run_dir,
+        task=config.task,
+        episode_index=episode_index,
+        camera=config.camera,
+    )
+    source_loop_path = resolve_source_loop(
+        config.source_run_dir,
+        task=config.task,
+        episode_index=episode_index,
+        camera=config.camera,
+    )
+    source_loop = load_authoritative_loop_context(
+        source_loop_path,
+        expected_task=config.task,
+        expected_episode_index=episode_index,
+        expected_camera=config.camera,
+    )
+    episode = load_urdf_gripper_episode(
+        config.dataset_root,
+        episode_index,
+        camera=config.camera,
+        authoritative_loop=source_loop.events,
+    )
+    if source_loop.frame_count != episode.frame_count:
+        raise UrdfMaskRunError(
+            f"source loop frame count mismatch: loop={source_loop.frame_count}, "
+            f"parquet={episode.frame_count}"
+        )
+    source = load_four_channel_masks(source_path, frame_count=episode.frame_count)
+    try:
+        validated_source = validate_derivation_source_episode(
+            source_path.parent,
+            task=config.task,
+            camera=config.camera,
+            episode_index=episode_index,
+            expected_frame_count=episode.frame_count,
+            expected_dataset_root=config.dataset_root,
+        )
+    except Exception as exc:
+        raise UrdfMaskRunError(
+            f"source lineage validation failed for episode {episode_index}: {exc}"
+        ) from exc
+    lineage_masks = validated_source.lineage["control_artifacts"]["masks"]
+    lineage_loop = validated_source.lineage["control_artifacts"]["loop"]
+    current_masks = _file_identity(source_path)
+    current_loop = _file_identity(source_loop_path)
+    if any(
+        current.get(key) != frozen.get(key)
+        for current, frozen in (
+            (current_masks, lineage_masks),
+            (current_loop, lineage_loop),
+        )
+        for key in ("sha256", "bytes")
+    ):
+        raise UrdfMaskRunError(
+            f"source artifacts changed while planning episode {episode_index}"
+        )
+    return EpisodePlan(
+        episode_index=episode_index,
+        frame_count=episode.frame_count,
+        frame_shape=source.frame_shape,
+        loop=source_loop.events,
+        source_masks=source.path,
+        source_loop=source_loop.path,
+        parquet=episode.paths.parquet,
+        sidecar=episode.paths.sidecar,
+        rgb_video=episode.paths.rgb_video,
+        depth_video=episode.paths.depth_video,
+        source_lineage=validated_source.lineage,
+        input_identities={
+            "source_masks": _file_identity(source.path),
+            "source_loop": _file_identity(source_loop.path),
+            "parquet": _file_identity(episode.paths.parquet),
+            "sidecar": _file_identity(episode.paths.sidecar),
+            "rgb_video": _file_identity(episode.paths.rgb_video),
+            "depth_video": _file_identity(episode.paths.depth_video),
+        },
+    )
+
+
+def build_episode_plan(config: RunConfig, episode_index: int) -> EpisodePlan:
+    """Build one source-ready episode plan without preflighting later episodes."""
+
+    validate_run_config(config, allow_existing_output=True)
+    if episode_index not in config.episode_ids:
+        raise ValueError(f"episode {episode_index} is not declared by this run")
+    return _build_episode_plan(config, episode_index)
+
+
 def build_plan(config: RunConfig) -> tuple[EpisodePlan, ...]:
     validate_run_config(config)
-    plans: list[EpisodePlan] = []
-    common_shape: tuple[int, int] | None = None
-    for episode_index in config.episode_ids:
-        source_path = resolve_source_masks(
-            config.source_run_dir,
-            task=config.task,
-            episode_index=episode_index,
-            camera=config.camera,
+    plans = tuple(_build_episode_plan(config, value) for value in config.episode_ids)
+    frame_shapes = {plan.frame_shape for plan in plans}
+    if len(frame_shapes) > 1:
+        raise UrdfMaskRunError(
+            f"all episodes must share one frame shape: {sorted(frame_shapes)}"
         )
-        source_loop_path = resolve_source_loop(
-            config.source_run_dir,
-            task=config.task,
-            episode_index=episode_index,
-            camera=config.camera,
-        )
-        source_loop = load_authoritative_loop_context(
-            source_loop_path,
-            expected_task=config.task,
-            expected_episode_index=episode_index,
-            expected_camera=config.camera,
-        )
-        episode = load_urdf_gripper_episode(
-            config.dataset_root,
-            episode_index,
-            camera=config.camera,
-            authoritative_loop=source_loop.events,
-        )
-        if source_loop.frame_count != episode.frame_count:
-            raise UrdfMaskRunError(
-                f"source loop frame count mismatch: loop={source_loop.frame_count}, "
-                f"parquet={episode.frame_count}"
-            )
-        source = load_four_channel_masks(source_path, frame_count=episode.frame_count)
-        try:
-            validated_source = validate_derivation_source_episode(
-                source_path.parent,
-                task=config.task,
-                camera=config.camera,
-                episode_index=episode_index,
-                expected_frame_count=episode.frame_count,
-                expected_dataset_root=config.dataset_root,
-            )
-        except Exception as exc:
-            raise UrdfMaskRunError(
-                f"source lineage validation failed for episode {episode_index}: {exc}"
-            ) from exc
-        lineage_masks = validated_source.lineage["control_artifacts"]["masks"]
-        lineage_loop = validated_source.lineage["control_artifacts"]["loop"]
-        current_masks = _file_identity(source_path)
-        current_loop = _file_identity(source_loop_path)
-        if any(
-            current.get(key) != frozen.get(key)
-            for current, frozen in (
-                (current_masks, lineage_masks),
-                (current_loop, lineage_loop),
-            )
-            for key in ("sha256", "bytes")
-        ):
-            raise UrdfMaskRunError(
-                f"source artifacts changed while planning episode {episode_index}"
-            )
-        if common_shape is None:
-            common_shape = source.frame_shape
-        elif source.frame_shape != common_shape:
-            raise UrdfMaskRunError(
-                f"all episodes must share one frame shape: {source.frame_shape} != {common_shape}"
-            )
-        plans.append(
-            EpisodePlan(
-                episode_index=episode_index,
-                frame_count=episode.frame_count,
-                frame_shape=source.frame_shape,
-                loop=source_loop.events,
-                source_masks=source.path,
-                source_loop=source_loop.path,
-                parquet=episode.paths.parquet,
-                sidecar=episode.paths.sidecar,
-                rgb_video=episode.paths.rgb_video,
-                depth_video=episode.paths.depth_video,
-                source_lineage=validated_source.lineage,
-                input_identities={
-                    "source_masks": _file_identity(source.path),
-                    "source_loop": _file_identity(source_loop.path),
-                    "parquet": _file_identity(episode.paths.parquet),
-                    "sidecar": _file_identity(episode.paths.sidecar),
-                    "rgb_video": _file_identity(episode.paths.rgb_video),
-                    "depth_video": _file_identity(episode.paths.depth_video),
-                },
-            )
-        )
-    return tuple(plans)
+    return plans
 
 
 def _git_revision() -> str | None:
@@ -1615,6 +1653,7 @@ def _run_contract(
         "minimum_eligible_nonempty_fraction": (
             config.minimum_eligible_nonempty_fraction
         ),
+        "egl_device_id": config.egl_device_id,
         "fit_config": {
             "file": fit_identity,
             "kwargs": _jsonable(dict(fit_config)),
@@ -1785,6 +1824,323 @@ def _failure_record(plan: EpisodePlan, exc: Exception) -> dict[str, Any]:
         "error_type": type(exc).__name__,
         "error": str(exc),
     }
+
+
+class IncrementalUrdfEpisodeWorker:
+    """Render source-ready episodes one at a time with one persistent renderer."""
+
+    def __init__(
+        self,
+        config: RunConfig,
+        *,
+        renderer: Any | None = None,
+        fit_config: Mapping[str, Any] | None = None,
+    ) -> None:
+        if config.dry_run:
+            raise ValueError("incremental URDF workers do not support dry_run")
+        validate_run_config(config)
+        configured_fit = _fit_config(config.fit_config_json)
+        self._fit_config = (
+            configured_fit if fit_config is None else dict(fit_config)
+        )
+        self.config = config
+        self._renderer = renderer
+        self._owns_renderer = renderer is None
+        self._renderer_frame_shape: tuple[int, int] | None = None
+        self._closed = False
+        self._finalized = False
+        self._manifest_path = config.run_dir / "manifest.json"
+        self._plans: dict[int, EpisodePlan] = {}
+        self._plan_contracts: dict[int, dict[str, Any]] = {}
+        base_contract = _run_contract(config, (), fit_config=self._fit_config)
+
+        if config.resume:
+            manifest = _load_json_object(
+                self._manifest_path,
+                description="run manifest",
+            )
+            if manifest.get("format_version") != RUN_FORMAT_VERSION:
+                raise UrdfMaskRunError("cannot resume unsupported manifest format")
+            if manifest.get("run_id") != config.run_id:
+                raise UrdfMaskRunError("resume manifest run id does not match")
+            previous_contract = manifest.get("run_contract")
+            if not isinstance(previous_contract, dict):
+                raise UrdfMaskRunError("resume manifest has no run contract")
+            previous_stable = {
+                key: value
+                for key, value in previous_contract.items()
+                if key != "episode_plans"
+            }
+            expected_stable = {
+                key: value for key, value in base_contract.items() if key != "episode_plans"
+            }
+            if previous_stable != expected_stable:
+                raise UrdfMaskRunError(
+                    "resume configuration/assets differ from the immutable run contract"
+                )
+            raw_plans = previous_contract.get("episode_plans")
+            if not isinstance(raw_plans, list):
+                raise UrdfMaskRunError("resume run contract episode_plans must be a list")
+            for raw in raw_plans:
+                if not isinstance(raw, dict) or "episode_index" not in raw:
+                    raise UrdfMaskRunError("resume run contract has an invalid episode plan")
+                episode_index = int(raw["episode_index"])
+                if episode_index in self._plan_contracts:
+                    raise UrdfMaskRunError(
+                        f"resume run contract repeats episode {episode_index}"
+                    )
+                self._plan_contracts[episode_index] = raw
+            frame_shapes = {
+                tuple(int(value) for value in raw.get("frame_shape_hw", ()))
+                for raw in self._plan_contracts.values()
+            }
+            if any(len(shape) != 2 for shape in frame_shapes) or len(frame_shapes) > 1:
+                raise UrdfMaskRunError(
+                    "resume run contract does not declare one common frame shape"
+                )
+            if frame_shapes:
+                self._renderer_frame_shape = next(iter(frame_shapes))
+            manifest["status"] = "running"
+            manifest["resumed_at"] = datetime.now(timezone.utc).isoformat()
+            self._manifest = manifest
+        else:
+            config.run_dir.mkdir(parents=True, exist_ok=False)
+            self._manifest = _new_run_manifest(config, (), base_contract)
+            self._manifest["episode_count"] = len(config.episode_ids)
+            self._manifest["episodes"] = [
+                {"episode_index": value, "status": "pending"}
+                for value in config.episode_ids
+            ]
+        self._record_map = _episode_record_map(self._manifest)
+        unexpected = set(self._record_map) - set(config.episode_ids)
+        if unexpected:
+            raise UrdfMaskRunError(
+                f"run manifest contains undeclared episodes: {sorted(unexpected)}"
+            )
+        for episode_index in config.episode_ids:
+            self._record_map.setdefault(
+                episode_index,
+                {"episode_index": episode_index, "status": "pending"},
+            )
+        self._checkpoint()
+
+    def _ordered_records(self) -> list[dict[str, Any]]:
+        return [self._record_map[value] for value in self.config.episode_ids]
+
+    def _checkpoint(self) -> None:
+        position = {value: index for index, value in enumerate(self.config.episode_ids)}
+        contract = dict(self._manifest["run_contract"])
+        contract["episode_plans"] = [
+            self._plan_contracts[value]
+            for value in sorted(self._plan_contracts, key=position.__getitem__)
+        ]
+        self._manifest["run_contract"] = contract
+        self._manifest["episodes"] = self._ordered_records()
+        _checkpoint_manifest(self._manifest_path, self._manifest)
+
+    def _register_plan(self, plan: EpisodePlan) -> None:
+        plan_payload = plan.to_json()
+        previous = self._plan_contracts.get(plan.episode_index)
+        if previous is not None and previous != plan_payload:
+            raise UrdfMaskRunError(
+                f"episode {plan.episode_index} differs from its immutable run plan"
+            )
+        if self._renderer_frame_shape is not None and (
+            plan.frame_shape != self._renderer_frame_shape
+        ):
+            raise UrdfMaskRunError(
+                "all episodes must share the renderer frame shape: "
+                f"{plan.frame_shape} != {self._renderer_frame_shape}"
+            )
+        self._plans[plan.episode_index] = plan
+        self._plan_contracts[plan.episode_index] = plan_payload
+        self._checkpoint()
+
+    def _ensure_renderer(self, frame_shape: tuple[int, int]) -> Any:
+        if self._renderer is None:
+            self._renderer, _ = create_renderer(self.config, frame_shape)
+        if self._renderer_frame_shape is None:
+            self._renderer_frame_shape = frame_shape
+        elif self._renderer_frame_shape != frame_shape:
+            raise UrdfMaskRunError(
+                f"renderer frame shape changed: {frame_shape} != "
+                f"{self._renderer_frame_shape}"
+            )
+        return self._renderer
+
+    def _validate_or_render(self, plan: EpisodePlan) -> dict[str, Any]:
+        output_dir = self.config.run_dir / f"episode_{plan.episode_index:06d}"
+        previous_record = self._record_map[plan.episode_index]
+        previous_status = previous_record.get("status")
+        if output_dir.exists():
+            completed = validate_completed_episode(output_dir, plan, self.config)
+            if previous_status == "complete":
+                _anchor_completed_manifest_record(
+                    previous_record,
+                    completed,
+                    skip_overlay=self.config.skip_overlay,
+                )
+                completed["resume_action"] = "validated_skip"
+            elif previous_status in {"pending", "failed"}:
+                completed["resume_action"] = "crash_recovered"
+            else:
+                raise UrdfMaskRunError(
+                    f"manifest episode status is invalid: {previous_status!r}"
+                )
+            return completed
+        if previous_status == "complete":
+            raise UrdfMaskRunError(
+                "manifest marks episode complete but its published directory is missing: "
+                f"{output_dir}"
+            )
+
+        temporary_dir = self.config.run_dir / (
+            f".episode_{plan.episode_index:06d}.{uuid.uuid4().hex}.tmp"
+        )
+        temporary_dir.mkdir(parents=False, exist_ok=False)
+        try:
+            episode = load_urdf_gripper_episode(
+                self.config.dataset_root,
+                plan.episode_index,
+                camera=self.config.camera,
+                authoritative_loop=plan.loop,
+            )
+            source = load_four_channel_masks(
+                plan.source_masks,
+                frame_count=episode.frame_count,
+            )
+            calibration = load_camera_calibration(
+                episode.paths.sidecar,
+                camera=self.config.camera,
+                frame_count=episode.frame_count,
+            )
+            depth = decode_depth_video(
+                episode.paths.depth_video,
+                frame_count=episode.frame_count,
+                frame_shape=source.frame_shape,
+            )
+            product = render_episode_product(
+                self._ensure_renderer(plan.frame_shape),
+                self._fit_config,
+                episode,
+                calibration,
+                depth,
+                frame_shape=source.frame_shape,
+                tolerance_mm=self.config.depth_tolerance_mm,
+            )
+            combined, diagnostics = save_episode_artifacts(
+                temporary_dir,
+                episode,
+                source,
+                product,
+                tolerance_mm=self.config.depth_tolerance_mm,
+                minimum_eligible_nonempty_fraction=(
+                    self.config.minimum_eligible_nonempty_fraction
+                ),
+            )
+            overlay: dict[str, Any] | None = None
+            if not self.config.skip_overlay:
+                overlay = render_overlay_video(
+                    episode.paths.rgb_video,
+                    combined,
+                    temporary_dir / "overlay.mp4",
+                    alpha=self.config.overlay_alpha,
+                    crf=self.config.overlay_crf,
+                    preset=self.config.overlay_preset,
+                )
+            finalize_episode_diagnostics(
+                temporary_dir,
+                diagnostics,
+                overlay=overlay,
+            )
+            validate_completed_episode(temporary_dir, plan, self.config)
+            if output_dir.exists():
+                raise UrdfMaskRunError(
+                    "episode output appeared during rendering; refusing overwrite: "
+                    f"{output_dir}"
+                )
+            os.replace(temporary_dir, output_dir)
+            return validate_completed_episode(output_dir, plan, self.config)
+        finally:
+            if temporary_dir.exists():
+                shutil.rmtree(temporary_dir)
+
+    def process_episode(self, episode_index: int) -> dict[str, Any]:
+        """Plan, render, validate, and checkpoint one newly source-ready episode."""
+
+        if self._closed:
+            raise RuntimeError("incremental URDF worker is closed")
+        if self._finalized:
+            raise RuntimeError("incremental URDF worker is finalized")
+        if episode_index not in self.config.episode_ids:
+            raise ValueError(f"episode {episode_index} is not declared by this run")
+        plan: EpisodePlan | None = None
+        try:
+            plan = build_episode_plan(self.config, episode_index)
+            self._register_plan(plan)
+            record = self._validate_or_render(plan)
+        except Exception as exc:  # noqa: BLE001 - one episode failure is checkpointed
+            if plan is None:
+                record = {
+                    "episode_index": episode_index,
+                    "status": "failed",
+                    "failed_at": datetime.now(timezone.utc).isoformat(),
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+            else:
+                record = _failure_record(plan, exc)
+            self._manifest["failures"].append(record)
+        self._record_map[episode_index] = record
+        self._checkpoint()
+        return cast("dict[str, Any]", _jsonable(record))
+
+    def snapshot(self) -> dict[str, Any]:
+        snapshot = cast("dict[str, Any]", _jsonable(self._manifest))
+        snapshot["manifest_path"] = str(self._manifest_path)
+        return snapshot
+
+    def finalize(self) -> dict[str, Any]:
+        if self._closed:
+            raise RuntimeError("incremental URDF worker is closed")
+        for episode_index in self.config.episode_ids:
+            record = self._record_map[episode_index]
+            if record.get("status") != "pending":
+                continue
+            failure = {
+                "episode_index": episode_index,
+                "status": "failed",
+                "failed_at": datetime.now(timezone.utc).isoformat(),
+                "error_type": "SourceEpisodeUnavailable",
+                "error": "source episode did not become ready",
+            }
+            self._record_map[episode_index] = failure
+            self._manifest["failures"].append(failure)
+        incomplete_ids = [
+            value
+            for value in self.config.episode_ids
+            if self._record_map[value].get("status") != "complete"
+        ]
+        self._manifest["status"] = "failed" if incomplete_ids else "complete"
+        self._finalized = True
+        self._checkpoint()
+        result = self.snapshot()
+        if incomplete_ids:
+            raise UrdfBatchIncompleteError(
+                f"URDF gripper run failed for episodes {incomplete_ids}; "
+                f"see {self._manifest_path}",
+                result=result,
+            )
+        return result
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        if self._owns_renderer and self._renderer is not None:
+            close = getattr(self._renderer, "close", None)
+            if callable(close):
+                close()
+        self._closed = True
 
 
 def run_experiment(

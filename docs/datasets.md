@@ -131,12 +131,15 @@ clean/randomized、左右臂、颜色和物体型号；通过后再扩
 
 ## 7. 已抽取数据和运行
 
-严格 RGBD 数据集：
+当前已准备的严格 RGBD 数据集：
 
 ```text
 /DATA/disk8/xuran/add_mask_robotwin/dataset/
   place_empty_cup_full550_original
+  place_container_plate_full547_original
 ```
+
+### 7.1 `place_empty_cup_full550_original`
 
 episode 15950–16499，四路 RGB/depth 均为 550/550，已提供：
 
@@ -164,6 +167,29 @@ just config=configs/pilot_place_empty_cup.yaml \
 已有 frozen source 只有 456/550 对象结果满足 QC；使用它做 URDF 子集时必须显式
 `--source-run-dir` 和 `--allow-partial-source`。456 条只完成合同 dry-run，尚不能表述为正式
 full render；已完成的左右臂 pilot 和数字见 [experiments.md](experiments.md#44-place_empty_cup_full550-扩展)。
+
+### 7.2 `place_container_plate_full547_original`
+
+原任务 episode 14850–15399；去除没有 replay geometry/depth 的 14941、15022、15360 后，
+保留 547 条四路 RGB/depth 完整 episode。文件保持原始全局 episode id 和逐文件字节内容，
+提取清单记录在数据根的 `EXTRACT_MANIFEST.json`。已提供：
+
+```text
+configs/datasets/place_container_plate_full547.json
+configs/pilot_place_container_plate.yaml
+```
+
+live URDF 全量运行无需再传 `--episode-ids` 或 `--allow-partial-source`：
+
+```bash
+just config=configs/pilot_place_container_plate.yaml \
+  process ../dataset/place_container_plate_full547_original \
+  --gripper-backend urdf
+```
+
+这里的“无需 `--allow-partial-source`”仅指 547 条数据全部满足 depth 合同；默认仍会在任一
+target/receiver source 未通过 QC 时 fail closed。若希望 source 阶段仍覆盖全部 547 条、随后
+只对 QC 通过项继续 URDF，可显式追加 `--allow-partial-source`。
 
 `scripts/process_dataset.py` 使用 Parquet 帧数为有效长度；原始 RGB/depth 多出的尾帧不会进入
 mask。任务适配前还应检查 prompt 中 target/receiver 角色定义，以及新类别在 Qwen/SAM
