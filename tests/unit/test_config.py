@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -11,7 +12,6 @@ from robotwin_annotation_v2.config import (
     Sam3Config,
     load_config,
 )
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -41,6 +41,23 @@ def test_pilot_config_loads_new_pipeline_contract() -> None:
         hard_axial_front_m=0.045,
         fixed_half_width_m=0.085,
     )
+
+
+def test_place_container_plate_config_pins_depth_complete_subset() -> None:
+    config = load_config(PROJECT_ROOT / "configs/pilot_place_container_plate.yaml")
+    manifest = json.loads(config.dataset.manifest.read_text(encoding="utf-8"))
+
+    assert config.dataset.task == "place_container_plate"
+    assert config.dataset.smoke_episode_ids == (14850,)
+    assert len(config.dataset.regression_episode_ids) == 547
+    assert config.dataset.regression_episode_ids == tuple(
+        manifest["regression_episode_ids"]
+    )
+    assert {int(value) for value in manifest["excluded_source_episodes"]} == {
+        14941,
+        15022,
+        15360,
+    }
 
 
 def test_config_rejects_automatic_query_fallback(tmp_path: Path) -> None:

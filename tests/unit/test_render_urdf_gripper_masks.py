@@ -13,6 +13,7 @@ import pytest
 import scripts.render_urdf_gripper_masks as render_module
 from robotwin_annotation_v2.urdf_gripper_data import ActiveGripperLoop
 from scripts.render_urdf_gripper_masks import (
+    IncrementalUrdfEpisodeWorker,
     RunConfig,
     UrdfMaskProduct,
     collect_asset_identity,
@@ -879,6 +880,91 @@ def test_runner_closes_only_renderer_it_creates(
     run_experiment(injected_config, renderer=injected, fit_config={})
 
     assert injected.closed is False
+
+
+def test_incremental_worker_processes_and_checkpoints_source_ready_episode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _integration_config(tmp_path, run_id="incremental-complete")
+    _mock_integration_pipeline(monkeypatch, tmp_path)
+    worker = IncrementalUrdfEpisodeWorker(
+        config,
+        renderer=object(),
+        fit_config={},
+    )
+
+    record = worker.process_episode(7152)
+    checkpoint = worker.snapshot()
+    result = worker.finalize()
+    worker.close()
+
+    assert record["status"] == "complete"
+    assert checkpoint["status"] == "running"
+    assert checkpoint["successful_episode_count"] == 1
+    assert result["status"] == "complete"
+    assert result["episodes"] == [record]
+    assert result["run_contract"]["episode_plans"][0]["episode_index"] == 7152
+    manifest = json.loads((config.run_dir / "manifest.json").read_text())
+    assert manifest["status"] == "complete"
+    assert manifest["episodes"][0]["artifacts"] == record["artifacts"]
+
+
+def test_incremental_worker_finalizes_unready_source_episode_as_failed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = _integration_config(tmp_path, run_id="incremental-missing-source")
+    config = RunConfig(**{**base.__dict__, "episode_ids": (7152, 7153)})
+    _mock_integration_pipeline(monkeypatch, tmp_path)
+    worker = IncrementalUrdfEpisodeWorker(
+        config,
+        renderer=object(),
+        fit_config={},
+    )
+    assert worker.process_episode(7152)["status"] == "complete"
+
+    with pytest.raises(render_module.UrdfBatchIncompleteError) as caught:
+        worker.finalize()
+    worker.close()
+
+    result = caught.value.result
+    assert result["status"] == "failed"
+    assert result["episodes"][1]["episode_index"] == 7153
+    assert result["episodes"][1]["error_type"] == "SourceEpisodeUnavailable"
+
+
+def test_create_renderer_scopes_egl_device_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from robotwin_annotation_v2 import urdf_gripper_renderer
+
+    observed: list[str | None] = []
+
+    class FakeRenderer:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            observed.append(render_module.os.environ.get("EGL_DEVICE_ID"))
+
+    monkeypatch.setattr(urdf_gripper_renderer, "AlohaUrdfRenderer", FakeRenderer)
+    monkeypatch.setenv("EGL_DEVICE_ID", "11")
+    config = RunConfig(
+        dataset_root=tmp_path,
+        source_run_dir=tmp_path,
+        output_root=tmp_path / "output",
+        run_id="egl-scope",
+        urdf_path=tmp_path / "aloha.urdf",
+        mesh_root=None,
+        episode_ids=(7152,),
+        egl_device_id=4,
+    )
+
+    renderer, fit_config = render_module.create_renderer(config, (2, 3))
+
+    assert isinstance(renderer, FakeRenderer)
+    assert fit_config == {}
+    assert observed == ["4"]
+    assert render_module.os.environ["EGL_DEVICE_ID"] == "11"
 
 
 def test_quality_gate_rejects_too_many_empty_eligible_frames(tmp_path: Path) -> None:

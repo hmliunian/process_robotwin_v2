@@ -15,6 +15,10 @@ from robotwin_annotation_v2.urdf_gripper_publisher import (
     publisher_implementation_identity,
     validate_derivation_source_episode,
     validate_published_urdf_episode,
+    validate_source_episode_completion_receipt,
+    validate_source_run_contract,
+    write_source_episode_completion_receipt,
+    write_source_run_contract,
 )
 
 TASK = "place_empty_cup"
@@ -388,6 +392,7 @@ def _write_backend_episode(
                 "camera": CAMERA,
                 "depth_tolerance_mm": 8.0,
                 "minimum_eligible_nonempty_fraction": 0.9,
+                "egl_device_id": 3,
                 "fit_config": {},
                 "episode_plans": [
                     {
@@ -440,6 +445,177 @@ def _fixture(tmp_path: Path) -> PublishFixture:
         / CAMERA
     )
     return PublishFixture(source, backend, destination, record, source_masks, track)
+
+
+def _incremental_fixture(tmp_path: Path) -> PublishFixture:
+    source = (
+        tmp_path
+        / "frozen-source-run"
+        / TASK
+        / f"episode_{EPISODE_INDEX:06d}"
+        / CAMERA
+    )
+    source_masks = _write_source_episode(source)
+    source_run = source.parents[2]
+    summary_path = source_run / "process_summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary_path.unlink()
+    summary["dynamic_manifest"]["regression_episode_ids"].append(8)
+    write_source_run_contract(
+        source_run,
+        run_id=SOURCE_RUN_ID,
+        dataset_root=Path(summary["dataset_root"]),
+        task=TASK,
+        camera=CAMERA,
+        dynamic_manifest=summary["dynamic_manifest"],
+        requested_episode_ids=[EPISODE_INDEX],
+    )
+    write_source_episode_completion_receipt(
+        source,
+        task=TASK,
+        camera=CAMERA,
+        episode_index=EPISODE_INDEX,
+        expected_frame_count=FRAME_COUNT,
+    )
+    backend = tmp_path / "backend-run" / f"episode_{EPISODE_INDEX:06d}"
+    track, record = _write_backend_episode(
+        backend,
+        source / "masks.npz",
+        source_masks,
+    )
+    destination = (
+        tmp_path
+        / "public-runs"
+        / RUN_ID
+        / TASK
+        / f"episode_{EPISODE_INDEX:06d}"
+        / CAMERA
+    )
+    return PublishFixture(source, backend, destination, record, source_masks, track)
+
+
+def test_incremental_source_can_publish_before_process_summary_exists(
+    tmp_path: Path,
+) -> None:
+    fixture = _incremental_fixture(tmp_path)
+    source_run = fixture.source_episode_dir.parents[2]
+
+    assert not (source_run / "process_summary.json").exists()
+    contract = validate_source_run_contract(
+        source_run,
+        run_id=SOURCE_RUN_ID,
+        dataset_root=source_run.parent / "dataset",
+        task=TASK,
+        camera=CAMERA,
+        requested_episode_ids=[EPISODE_INDEX],
+    )
+    receipt = validate_source_episode_completion_receipt(
+        fixture.source_episode_dir,
+        task=TASK,
+        camera=CAMERA,
+        episode_index=EPISODE_INDEX,
+        expected_frame_count=FRAME_COUNT,
+    )
+    assert contract["requested_episode_ids"] == [EPISODE_INDEX]
+    assert receipt["status"] == "completed"
+    validated = validate_derivation_source_episode(
+        fixture.source_episode_dir,
+        task=TASK,
+        camera=CAMERA,
+        episode_index=EPISODE_INDEX,
+        expected_frame_count=FRAME_COUNT,
+    )
+    assert validated.lineage["format_version"] == (
+        "robotwin_derivation_source_lineage_v2"
+    )
+    assert validated.summary["format_version"] == "robotwin_source_run_contract_v1"
+    assert validated.lineage["source_run"]["source_run_contract"]["path"] == (
+        "source_run_contract.json"
+    )
+    assert validated.lineage["completion_receipt"]["path"].endswith(
+        "/completion_receipt.json"
+    )
+    artifact_paths = {
+        identity["path"] for identity in validated.lineage["episode_artifacts"]
+    }
+    assert any(path.endswith("/masks.npz") for path in artifact_paths)
+    assert any(path.endswith("/semantic_plan.json") for path in artifact_paths)
+
+    _write_json(source_run / "process_summary.json", {"mutable_final_summary": True})
+    after_summary = validate_derivation_source_episode(
+        fixture.source_episode_dir,
+        task=TASK,
+        camera=CAMERA,
+        episode_index=EPISODE_INDEX,
+    )
+    assert after_summary.lineage == validated.lineage
+
+    record = fixture.publish()
+    assert record["status"] == "completed"
+    assert record["source_lineage"] == validated.lineage
+
+
+@pytest.mark.parametrize(
+    ("target", "message"),
+    (
+        ("contract", "source run contract content hash is invalid"),
+        ("receipt", "source completion receipt content hash is invalid"),
+        ("artifact", "source episode artifacts differ from the completion receipt"),
+    ),
+)
+def test_incremental_source_rejects_mutated_provenance_dependencies(
+    tmp_path: Path,
+    target: str,
+    message: str,
+) -> None:
+    fixture = _incremental_fixture(tmp_path)
+    if target == "contract":
+        path = fixture.source_episode_dir.parents[2] / "source_run_contract.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["camera"] = "tampered_camera"
+        _write_json(path, payload)
+    elif target == "receipt":
+        path = fixture.source_episode_dir / "completion_receipt.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["status"] = "skipped_complete"
+        _write_json(path, payload)
+    else:
+        path = fixture.source_episode_dir / "semantic_plan.json"
+        path.write_bytes(path.read_bytes() + b"tampered\n")
+
+    with pytest.raises(UrdfGripperPublishError, match=message):
+        validate_derivation_source_episode(
+            fixture.source_episode_dir,
+            task=TASK,
+            camera=CAMERA,
+            episode_index=EPISODE_INDEX,
+        )
+
+
+def test_legacy_source_without_contract_keeps_process_summary_lineage(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+
+    validated = validate_derivation_source_episode(
+        fixture.source_episode_dir,
+        task=TASK,
+        camera=CAMERA,
+        episode_index=EPISODE_INDEX,
+    )
+
+    assert validated.lineage["format_version"] == (
+        "robotwin_derivation_source_lineage_v1"
+    )
+    assert set(validated.lineage["source_run"]) == {
+        "run_id",
+        "path",
+        "dataset_root",
+        "process_summary",
+    }
+    assert validated.summary["format_version"] == (
+        "robotwin_process_dataset_summary_v1"
+    )
 
 
 def test_publish_writes_canonical_mask_schema_and_only_replaces_gripper(
@@ -592,6 +768,10 @@ def test_publish_preserves_source_material_and_removes_old_sam_gripper_metadata(
         "source_lineage"
     ]["lineage_sha256"]
     assert derivation["publisher"] == publisher_implementation_identity()
+    backend_contract = manifest["algorithm"]["gripper_stage"]["backend_provenance"][
+        "run_contract"
+    ]
+    assert backend_contract["egl_device_id"] == 3
     assert OLD_GRIPPER_MARKER not in json.dumps(manifest, sort_keys=True)
 
     provenance = json.loads(

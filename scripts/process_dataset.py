@@ -12,11 +12,15 @@ import json
 import math
 import multiprocessing as mp
 import re
+import subprocess
+import sys
 import traceback
+from collections import deque
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
+from queue import Full
 from typing import Any
 
 import av
@@ -31,6 +35,8 @@ from robotwin_annotation_v2.terminal_ui import UI_MODES, ProcessUI, create_proce
 from robotwin_annotation_v2.urdf_gripper_publisher import (
     UrdfGripperPublishError,
     validate_derivation_source_episode,
+    write_source_episode_completion_receipt,
+    write_source_run_contract,
 )
 
 CHUNK_PATTERN = re.compile(r"chunk-(\d{3})$")
@@ -45,6 +51,7 @@ DEFAULT_BUNDLED_URDF_PATH = (
 )
 DEFAULT_URDF_DEPTH_TOLERANCE_MM = 8.0
 DEFAULT_URDF_MINIMUM_ELIGIBLE_NONEMPTY_FRACTION = 0.90
+DEFAULT_URDF_PIPELINE_BUFFER_SIZE = 2
 PROCESS_SUMMARY_FORMAT_VERSION = "robotwin_process_dataset_summary_v1"
 
 
@@ -236,12 +243,69 @@ def _release_sam_cuda_cache(gpus: Sequence[int]) -> dict[str, Any]:
     return report
 
 
+def _select_urdf_egl_device(
+    sam_gpus: Sequence[int],
+    requested: int | None,
+) -> int | None:
+    """Select a physical EGL GPU that does not host the live SAM worker."""
+
+    sam_devices = {int(value) for value in sam_gpus}
+    if requested is not None:
+        if isinstance(requested, bool) or requested < 0:
+            raise ValueError("URDF EGL device id must be a non-negative integer")
+        if requested in sam_devices:
+            raise ValueError(
+                "streaming URDF requires an EGL GPU different from the SAM GPU"
+            )
+        return requested
+
+    try:
+        completed = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,memory.free",
+                "--format=csv,noheader,nounits",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+
+    candidates: list[tuple[int, int]] = []
+    for raw_line in completed.stdout.splitlines():
+        parts = [part.strip() for part in raw_line.split(",")]
+        if len(parts) != 2:
+            continue
+        try:
+            device_id = int(parts[0])
+            free_mib = int(parts[1])
+        except ValueError:
+            continue
+        if device_id not in sam_devices:
+            candidates.append((free_mib, device_id))
+    if not candidates:
+        return None
+    highest_free = max(value[0] for value in candidates)
+    return min(device_id for free_mib, device_id in candidates if free_mib == highest_free)
+
+
 class _ProcessEventSender(ProcessUI):
     """Forward child-process UI events to the live pipeline parent."""
 
-    def __init__(self, connection: Any) -> None:
+    def __init__(
+        self,
+        connection: Any,
+        *,
+        lane_name: str | None = None,
+        episode_ids: Sequence[int] = (),
+    ) -> None:
         super().__init__(emit_json_summary=False, verbose=True)
         self._connection = connection
+        self._lane_name = lane_name
+        self._lane_completed = 0
+        self._lane_total = len(episode_ids)
 
     def _send(self, method: str, *args: Any, **kwargs: Any) -> None:
         self._connection.send(("event", method, args, kwargs))
@@ -274,8 +338,52 @@ class _ProcessEventSender(ProcessUI):
     ) -> None:
         self._send("phase_finished", label, status=status, detail=detail)
 
+    def lane_started(
+        self,
+        name: str,
+        label: str,
+        total: int | None = None,
+    ) -> None:
+        self._send("lane_started", name, label, total)
+
+    def lane_progress(
+        self,
+        name: str,
+        completed: int,
+        total: int | None = None,
+        episode_id: int | None = None,
+        status: str | None = None,
+        detail: str | None = None,
+    ) -> None:
+        self._send(
+            "lane_progress",
+            name,
+            completed,
+            total,
+            episode_id,
+            status,
+            detail,
+        )
+
+    def lane_finished(
+        self,
+        name: str,
+        status: str = "completed",
+        detail: str | None = None,
+    ) -> None:
+        self._send("lane_finished", name, status, detail)
+
     def stage_started(self, episode_id: int, label: str) -> None:
         self._send("stage_started", episode_id, label)
+        if self._lane_name is not None:
+            self._send(
+                "lane_progress",
+                self._lane_name,
+                self._lane_completed,
+                self._lane_total,
+                episode_id,
+                label,
+            )
 
     def stage_finished(
         self,
@@ -292,6 +400,28 @@ class _ProcessEventSender(ProcessUI):
             status=status,
             detail=detail,
         )
+        if self._lane_name is not None:
+            self._send(
+                "lane_progress",
+                self._lane_name,
+                self._lane_completed,
+                self._lane_total,
+                episode_id,
+                status,
+                detail or label,
+            )
+
+    def source_episode_terminal(self, episode_id: int, status: str) -> None:
+        self._lane_completed += 1
+        self._send(
+            "lane_progress",
+            self._lane_name or "source",
+            self._lane_completed,
+            self._lane_total,
+            episode_id,
+            status,
+        )
+        self._connection.send(("source_episode", episode_id, status))
 
     def note(self, message: str, *, level: str = "info") -> None:
         self._send("note", message, level=level)
@@ -310,8 +440,19 @@ def _target_receiver_source_process_entry(
     output_root: Path,
     run_id: str,
     episode_ids: tuple[int, ...],
+    incremental: bool = False,
 ) -> None:
-    reporter = _ProcessEventSender(connection)
+    worker_log_path = output_root / "logs" / f"{run_id}.source-worker.log"
+    worker_log_path.parent.mkdir(parents=True, exist_ok=True)
+    worker_log = worker_log_path.open("a", encoding="utf-8", buffering=1)
+    original_stdout, original_stderr = sys.stdout, sys.stderr
+    sys.stdout = worker_log
+    sys.stderr = worker_log
+    reporter = _ProcessEventSender(
+        connection,
+        lane_name="source" if incremental else None,
+        episode_ids=episode_ids,
+    )
     try:
         summary = process_dataset(
             pipeline_config,
@@ -325,9 +466,13 @@ def _target_receiver_source_process_entry(
             skip_render=True,
             target_receiver_only=True,
             report_lifecycle=False,
+            incremental_source=incremental,
+            episode_terminal_callback=(
+                reporter.source_episode_terminal if incremental else None
+            ),
             reporter=reporter,
         )
-    except BaseException as exc:
+    except BaseException as exc:  # noqa: BLE001 - serialize child termination
         connection.send(
             (
                 "error",
@@ -339,7 +484,346 @@ def _target_receiver_source_process_entry(
     else:
         connection.send(("result", summary))
     finally:
+        sys.stdout = original_stdout
+        sys.stderr = original_stderr
+        worker_log.close()
         connection.close()
+
+
+def _incremental_urdf_process_entry(
+    connection: Any,
+    ready_queue: Any,
+    run_config: Any,
+) -> None:
+    """Consume source-ready episode ids with one persistent EGL renderer."""
+
+    worker_log_path = (
+        Path(run_config.output_root) / "logs" / f"{run_config.run_id}.worker.log"
+    )
+    worker_log_path.parent.mkdir(parents=True, exist_ok=True)
+    worker_log = worker_log_path.open("a", encoding="utf-8", buffering=1)
+    original_stdout, original_stderr = sys.stdout, sys.stderr
+    sys.stdout = worker_log
+    sys.stderr = worker_log
+    try:
+        try:
+            import render_urdf_gripper_masks as urdf_runner
+        except ModuleNotFoundError:
+            from scripts import render_urdf_gripper_masks as urdf_runner
+
+        worker: Any | None = None
+        completed = 0
+        try:
+            while True:
+                item = ready_queue.get()
+                if item is None:
+                    break
+                episode_id, position = item
+                connection.send(
+                    (
+                        "event",
+                        "lane_progress",
+                        (
+                            "urdf",
+                            completed,
+                            len(run_config.episode_ids),
+                            episode_id,
+                            "rendering",
+                            f"source position {position}",
+                        ),
+                        {},
+                    )
+                )
+                if worker is None:
+                    worker = urdf_runner.IncrementalUrdfEpisodeWorker(run_config)
+                record = worker.process_episode(episode_id)
+                completed += 1
+                status = str(record.get("status", "failed"))
+                connection.send(
+                    (
+                        "event",
+                        "lane_progress",
+                        (
+                            "urdf",
+                            completed,
+                            len(run_config.episode_ids),
+                            episode_id,
+                            status,
+                        ),
+                        {},
+                    )
+                )
+                connection.send(("urdf_episode", episode_id, record))
+
+            if worker is None:
+                connection.send(
+                    (
+                        "result",
+                        None,
+                        "no source episode became ready for the URDF worker",
+                    )
+                )
+            else:
+                try:
+                    result = worker.finalize()
+                except urdf_runner.UrdfBatchIncompleteError as exc:
+                    connection.send(
+                        (
+                            "result",
+                            exc.result,
+                            f"{type(exc).__name__}: {exc}",
+                        )
+                    )
+                else:
+                    connection.send(("result", result, None))
+        finally:
+            if worker is not None:
+                worker.close()
+    except BaseException as exc:  # noqa: BLE001 - serialize child termination
+        connection.send(
+            (
+                "error",
+                type(exc).__name__,
+                str(exc),
+                traceback.format_exc(),
+            )
+        )
+    finally:
+        sys.stdout = original_stdout
+        sys.stderr = original_stderr
+        worker_log.close()
+        connection.close()
+
+
+def _run_streaming_source_urdf_workers(
+    pipeline_config: PipelineConfig,
+    *,
+    dataset_root: Path,
+    task: str,
+    camera: str,
+    source_output_root: Path,
+    source_run_id: str,
+    episode_ids: tuple[int, ...],
+    urdf_run_config: Any,
+    buffer_size: int,
+    reporter: ProcessUI | None,
+) -> tuple[dict[str, Any], dict[str, Any], str | None]:
+    """Overlap the source producer and incremental URDF consumer."""
+
+    if buffer_size < 1:
+        raise ValueError("URDF pipeline buffer size must be positive")
+    context = mp.get_context("spawn")
+    source_receive, source_send = context.Pipe(duplex=False)
+    urdf_receive, urdf_send = context.Pipe(duplex=False)
+    ready_queue = context.Queue(maxsize=buffer_size)
+    source_process = context.Process(
+        target=_target_receiver_source_process_entry,
+        kwargs={
+            "connection": source_send,
+            "pipeline_config": pipeline_config,
+            "dataset_root": dataset_root,
+            "task": task,
+            "camera": camera,
+            "output_root": source_output_root,
+            "run_id": source_run_id,
+            "episode_ids": episode_ids,
+            "incremental": True,
+        },
+        name="robotwin-streaming-source",
+    )
+    urdf_process = context.Process(
+        target=_incremental_urdf_process_entry,
+        kwargs={
+            "connection": urdf_send,
+            "ready_queue": ready_queue,
+            "run_config": urdf_run_config,
+        },
+        name="robotwin-streaming-urdf",
+    )
+
+    source_summary: dict[str, Any] | None = None
+    backend_result: dict[str, Any] | None = None
+    source_result_received = False
+    urdf_result_received = False
+    backend_error: str | None = None
+    child_error: tuple[str, str, str] | None = None
+    ready_backlog: deque[tuple[int, int]] = deque()
+    source_position = 0
+    source_open = True
+    urdf_open = True
+    sentinel_sent = False
+
+    def forward_event(message: tuple[Any, ...]) -> None:
+        if reporter is not None:
+            _, method, args, kwargs = message
+            getattr(reporter, method)(*args, **kwargs)
+
+    def receive_source() -> None:
+        nonlocal child_error, source_open, source_position, source_result_received
+        nonlocal source_summary
+        try:
+            message = source_receive.recv()
+        except EOFError:
+            source_open = False
+            if not source_result_received and child_error is None:
+                child_error = (
+                    "SourceProcessError",
+                    "source process pipe closed without a terminal result",
+                    "",
+                )
+            return
+        kind = message[0] if isinstance(message, tuple) and message else None
+        if kind == "event":
+            forward_event(message)
+        elif kind == "source_episode":
+            _, episode_id, status = message
+            source_position += 1
+            if status in {"completed", "skipped_complete"}:
+                ready_backlog.append((int(episode_id), source_position))
+            elif reporter is not None:
+                reporter.episode_finished(int(episode_id), status=str(status))
+        elif kind == "result":
+            source_result_received = True
+            raw_summary = message[1]
+            if not isinstance(raw_summary, Mapping):
+                child_error = (
+                    "ProtocolError",
+                    "source process returned a non-object summary",
+                    "",
+                )
+            else:
+                source_summary = dict(raw_summary)
+        elif kind == "error":
+            _, error_type, error, child_traceback = message
+            child_error = (error_type, error, child_traceback)
+        else:
+            child_error = ("ProtocolError", "invalid source-process message", "")
+
+    def receive_urdf() -> None:
+        nonlocal backend_error, backend_result, child_error, urdf_open
+        nonlocal urdf_result_received
+        try:
+            message = urdf_receive.recv()
+        except EOFError:
+            urdf_open = False
+            if not urdf_result_received and child_error is None:
+                child_error = (
+                    "UrdfProcessError",
+                    "URDF process pipe closed without a terminal result",
+                    "",
+                )
+            return
+        kind = message[0] if isinstance(message, tuple) and message else None
+        if kind == "event":
+            forward_event(message)
+        elif kind == "urdf_episode":
+            _, episode_id, record = message
+            if record.get("status") != "complete" and reporter is not None:
+                reporter.episode_finished(
+                    int(episode_id),
+                    status="gripper_incomplete",
+                    detail=str(record.get("error", "URDF episode failed")),
+                )
+        elif kind == "result":
+            urdf_result_received = True
+            raw_result, backend_error = message[1], message[2]
+            backend_result = None if raw_result is None else dict(raw_result)
+        elif kind == "error":
+            _, error_type, error, child_traceback = message
+            child_error = (error_type, error, child_traceback)
+        else:
+            child_error = ("ProtocolError", "invalid URDF-process message", "")
+
+    urdf_process.start()
+    source_process.start()
+    urdf_send.close()
+    source_send.close()
+    try:
+        while not (source_result_received and urdf_result_received) and child_error is None:
+            progressed = False
+            if ready_backlog:
+                try:
+                    ready_queue.put_nowait(ready_backlog[0])
+                except Full:
+                    pass
+                else:
+                    ready_backlog.popleft()
+                    progressed = True
+
+            if not ready_backlog and source_open and source_receive.poll(0.02):
+                receive_source()
+                progressed = True
+            if urdf_open and urdf_receive.poll(0.02):
+                receive_urdf()
+                progressed = True
+
+            if source_summary is not None and not ready_backlog and not sentinel_sent:
+                try:
+                    ready_queue.put_nowait(None)
+                except Full:
+                    pass
+                else:
+                    sentinel_sent = True
+                    progressed = True
+
+            if (
+                not source_process.is_alive()
+                and not source_result_received
+                and source_open
+            ):
+                while source_open and source_receive.poll():
+                    receive_source()
+                if not source_result_received and child_error is None:
+                    child_error = (
+                        "SourceProcessError",
+                        f"source process exited without a result: exitcode={source_process.exitcode}",
+                        "",
+                    )
+            if (
+                not urdf_process.is_alive()
+                and not urdf_result_received
+                and urdf_open
+            ):
+                while urdf_open and urdf_receive.poll():
+                    receive_urdf()
+                if not urdf_result_received and child_error is None:
+                    child_error = (
+                        "UrdfProcessError",
+                        f"URDF process exited without a result: exitcode={urdf_process.exitcode}",
+                        "",
+                    )
+            if not progressed:
+                # Both poll calls above already provide a short cooperative wait.
+                continue
+    except BaseException:
+        for process in (source_process, urdf_process):
+            if process.is_alive():
+                process.terminate()
+        raise
+    finally:
+        for process in (source_process, urdf_process):
+            process.join(timeout=5)
+            if process.is_alive():
+                process.terminate()
+                process.join()
+        source_receive.close()
+        urdf_receive.close()
+        ready_queue.close()
+        ready_queue.cancel_join_thread()
+
+    if child_error is not None:
+        error_type, error, child_traceback = child_error
+        raise RuntimeError(
+            f"streaming pipeline worker failed: {error_type}: {error}\n{child_traceback}"
+        )
+    if source_summary is None:
+        raise RuntimeError("streaming source did not produce a terminal summary")
+    if backend_result is None:
+        raise RuntimeError(
+            "streaming URDF worker produced no backend result: "
+            f"{backend_error or 'no source episode became ready'}"
+        )
+    return source_summary, backend_result, backend_error
 
 
 def _run_target_receiver_source_process(
@@ -930,6 +1414,11 @@ def process_urdf_source_run(
     episode_publisher: Callable[..., Mapping[str, Any]] | None = None,
     episode_validator: Callable[..., Mapping[str, Any]] | None = None,
     render_builder: Callable[..., dict[str, Any]] | None = None,
+    prepared_backend_result: Mapping[str, Any] | None = None,
+    prepared_backend_error: str | None = None,
+    egl_device_id: int | None = None,
+    report_lifecycle: bool = True,
+    pipeline_episode_ids: tuple[int, ...] | None = None,
     reporter: ProcessUI | None = None,
 ) -> dict[str, Any]:
     """Replace gripper masks in a frozen process run with canonical URDF output."""
@@ -938,7 +1427,7 @@ def process_urdf_source_run(
         raise ValueError("--dry-run and --resume cannot be used together")
     if run_id is not None:
         _validate_run_id(run_id)
-    if reporter is not None:
+    if reporter is not None and report_lifecycle:
         reporter.run_started(
             backend="urdf",
             dataset_root=str(dataset_root.expanduser().resolve()),
@@ -1056,9 +1545,9 @@ def process_urdf_source_run(
     _validate_urdf_run_ownership(
         canonical_run_dir,
         run_id=selected_run_id,
-        resume=resume,
+        resume=resume or prepared_backend_result is not None,
     )
-    if reporter is not None:
+    if reporter is not None and report_lifecycle:
         reporter.run_ready(run_id=selected_run_id, episode_ids=selection.episode_ids)
         if all_excluded:
             reporter.note(
@@ -1085,24 +1574,41 @@ def process_urdf_source_run(
         skip_overlay=True,
         dry_run=dry_run,
         resume=resume,
+        egl_device_id=egl_device_id,
     )
     runner = urdf_runner.run_experiment if experiment_runner is None else experiment_runner
     result: Mapping[str, Any]
-    batch_error: str | None = None
+    batch_error: str | None = prepared_backend_error
     if reporter is not None:
         reporter.phase_started("urdf_backend", total=len(selection.episode_ids))
-    try:
-        with _captured_json_progress(reporter):
-            result = runner(config)
-    except urdf_runner.UrdfBatchIncompleteError as exc:
-        result = exc.result
-        batch_error = f"{type(exc).__name__}: {exc}"
+    if prepared_backend_result is not None:
+        result = prepared_backend_result
+    else:
+        try:
+            with _captured_json_progress(reporter):
+                result = runner(config)
+        except urdf_runner.UrdfBatchIncompleteError as exc:
+            result = exc.result
+            batch_error = f"{type(exc).__name__}: {exc}"
     if reporter is not None:
         reporter.phase_finished(
             "urdf_backend",
             status="completed" if batch_error is None else "failed",
             detail=batch_error,
         )
+        if not report_lifecycle:
+            reporter.lane_progress(
+                "urdf",
+                len(selection.episode_ids),
+                len(selection.episode_ids),
+                status="completed" if batch_error is None else "failed",
+                detail=batch_error,
+            )
+            reporter.lane_finished(
+                "urdf",
+                status="completed" if batch_error is None else "failed",
+                detail=batch_error,
+            )
 
     source_dynamic_manifest = selection.source_summary.get("dynamic_manifest")
     if not isinstance(source_dynamic_manifest, Mapping):
@@ -1123,6 +1629,34 @@ def process_urdf_source_run(
     renderable_ids: list[int] = []
     published_source_lineages: dict[int, Mapping[str, Any]] = {}
     published_contexts: dict[int, dict[str, Any]] = {}
+    published_episode_statuses: dict[int, str] = {}
+    report_pipeline_lanes = reporter is not None and not report_lifecycle
+    lane_episode_ids = (
+        selection.episode_ids
+        if pipeline_episode_ids is None
+        else pipeline_episode_ids
+    )
+    lane_positions = {
+        episode_id: position
+        for position, episode_id in enumerate(lane_episode_ids, start=1)
+    }
+    lane_total = len(lane_episode_ids)
+
+    def publish_progress(
+        position: int,
+        episode_id: int,
+        status: str,
+        detail: str | None = None,
+    ) -> None:
+        if report_pipeline_lanes and reporter is not None:
+            reporter.lane_progress(
+                "publish",
+                lane_positions.get(episode_id, position),
+                lane_total,
+                episode_id,
+                status,
+                detail,
+            )
 
     if dry_run:
         records.extend(
@@ -1173,6 +1707,7 @@ def process_urdf_source_run(
                         status="failed",
                         detail=error,
                     )
+                publish_progress(position, episode_id, "failed", error)
                 continue
             if backend_record.get("status") != "complete":
                 backend_error = str(
@@ -1198,6 +1733,7 @@ def process_urdf_source_run(
                         status=episode_status,
                         detail=backend_error,
                     )
+                publish_progress(position, episode_id, episode_status, backend_error)
                 continue
             frozen_lineage = selection.source_lineages[episode_id]
             if backend_record.get("source_lineage") != frozen_lineage:
@@ -1219,6 +1755,7 @@ def process_urdf_source_run(
                         status="failed",
                         detail=error,
                     )
+                publish_progress(position, episode_id, "failed", error)
                 continue
             source_episode_dir = (
                 config.source_run_dir
@@ -1270,6 +1807,7 @@ def process_urdf_source_run(
                         status="failed",
                         detail=error,
                     )
+                publish_progress(position, episode_id, "failed", error)
                 continue
             publish_status = str(published.get("status", "published"))
             episode_status = (
@@ -1295,15 +1833,27 @@ def process_urdf_source_run(
                     "canonical_publish",
                     status=episode_status,
                 )
-                reporter.episode_finished(episode_id, status=episode_status)
+                if skip_render:
+                    reporter.episode_finished(episode_id, status=episode_status)
+            publish_progress(position, episode_id, episode_status)
             renderable_ids.append(episode_id)
             published_source_lineages[episode_id] = frozen_lineage
+            published_episode_statuses[episode_id] = episode_status
             published_contexts[episode_id] = {
                 "source_episode_dir": source_episode_dir,
                 "backend_episode_dir": backend_episode_dir,
                 "destination_dir": destination_dir,
                 "backend_episode_record": backend_record,
             }
+
+        if report_pipeline_lanes and reporter is not None:
+            reporter.lane_progress(
+                "publish",
+                lane_total,
+                lane_total,
+                status="completed",
+            )
+            reporter.lane_finished("publish")
 
         if not skip_render and renderable_ids:
             pre_render_failures: list[dict[str, Any]] = []
@@ -1317,7 +1867,9 @@ def process_urdf_source_run(
                     "canonical_validation",
                     total=len(renderable_ids),
                 )
-            for position, episode_id in enumerate(renderable_ids, start=1):
+            selection_positions = lane_positions
+            for phase_position, episode_id in enumerate(renderable_ids, start=1):
+                position = selection_positions[episode_id]
                 context = published_contexts[episode_id]
                 try:
                     current_source = validate_derivation_source_episode(
@@ -1343,11 +1895,25 @@ def process_urdf_source_run(
                     )
                     if reporter is not None:
                         reporter.phase_progress(
-                            position,
+                            phase_position,
                             total=len(renderable_ids),
                             episode_id=episode_id,
                             status="source_lineage_changed",
                         )
+                        reporter.episode_finished(
+                            episode_id,
+                            status="source_lineage_changed",
+                            detail=f"{type(exc).__name__}: {exc}",
+                        )
+                        if report_pipeline_lanes:
+                            reporter.lane_progress(
+                                "validation",
+                                position,
+                                lane_total,
+                                episode_id,
+                                "source_lineage_changed",
+                                str(exc),
+                            )
                     continue
                 try:
                     canonical_validator(
@@ -1367,19 +1933,61 @@ def process_urdf_source_run(
                     )
                     if reporter is not None:
                         reporter.phase_progress(
-                            position,
+                            phase_position,
                             total=len(renderable_ids),
                             episode_id=episode_id,
                             status="canonical_validation_failed",
                         )
+                        reporter.episode_finished(
+                            episode_id,
+                            status="canonical_validation_failed",
+                            detail=f"{type(exc).__name__}: {exc}",
+                        )
+                        if report_pipeline_lanes:
+                            reporter.lane_progress(
+                                "validation",
+                                position,
+                                lane_total,
+                                episode_id,
+                                "canonical_validation_failed",
+                                str(exc),
+                            )
                     continue
                 if reporter is not None:
                     reporter.phase_progress(
-                        position,
+                        phase_position,
                         total=len(renderable_ids),
                         episode_id=episode_id,
                         status="validated",
                     )
+                    if report_pipeline_lanes:
+                        reporter.lane_progress(
+                            "validation",
+                            position,
+                            lane_total,
+                            episode_id,
+                            "validated",
+                        )
+                    reporter.episode_finished(
+                        episode_id,
+                        status=published_episode_statuses[episode_id],
+                    )
+            if report_pipeline_lanes and reporter is not None:
+                reporter.lane_progress(
+                    "validation",
+                    lane_total,
+                    lane_total,
+                    status="failed" if pre_render_failures else "completed",
+                )
+                reporter.lane_finished(
+                    "validation",
+                    status="failed" if pre_render_failures else "completed",
+                    detail=(
+                        f"failures={len(pre_render_failures)}"
+                        if pre_render_failures
+                        else None
+                    ),
+                )
             if pre_render_failures:
                 records.extend(pre_render_failures)
                 if reporter is not None:
@@ -1388,6 +1996,19 @@ def process_urdf_source_run(
                         status="failed",
                         detail=f"failures={len(pre_render_failures)}; render blocked",
                     )
+                    if report_pipeline_lanes:
+                        reporter.lane_progress(
+                            "render",
+                            lane_total,
+                            lane_total,
+                            status="skipped",
+                            detail="blocked by canonical validation failures",
+                        )
+                        reporter.lane_finished(
+                            "render",
+                            status="skipped",
+                            detail="blocked by canonical validation failures",
+                        )
             else:
                 if reporter is not None:
                     reporter.phase_finished("canonical_validation")
@@ -1425,6 +2046,14 @@ def process_urdf_source_run(
                         )
                     if reporter is not None:
                         reporter.phase_finished("canonical_render")
+                        if report_pipeline_lanes:
+                            reporter.lane_progress(
+                                "render",
+                                lane_total,
+                                lane_total,
+                                status="completed",
+                            )
+                            reporter.lane_finished("render")
                 except Exception as exc:
                     error = f"{type(exc).__name__}: {exc}"
                     records.append(
@@ -1440,9 +2069,37 @@ def process_urdf_source_run(
                             status="render_failed",
                             detail=error,
                         )
+                        if report_pipeline_lanes:
+                            reporter.lane_progress(
+                                "render",
+                                lane_total,
+                                lane_total,
+                                status="failed",
+                                detail=error,
+                            )
+                            reporter.lane_finished(
+                                "render", status="failed", detail=error
+                            )
         elif reporter is not None:
             reason = "disabled by --skip-render" if skip_render else "no publishable episodes"
             reporter.note(f"canonical_render skipped: {reason}", level="warning")
+            if report_pipeline_lanes and not skip_render:
+                reporter.lane_progress(
+                    "validation",
+                    lane_total,
+                    lane_total,
+                    status="skipped",
+                    detail=reason,
+                )
+                reporter.lane_finished("validation", status="skipped", detail=reason)
+                reporter.lane_progress(
+                    "render",
+                    lane_total,
+                    lane_total,
+                    status="skipped",
+                    detail=reason,
+                )
+                reporter.lane_finished("render", status="skipped", detail=reason)
 
     failure_statuses = {
         "failed",
@@ -1526,9 +2183,13 @@ def process_dataset(
     skip_render: bool = False,
     target_receiver_only: bool = False,
     report_lifecycle: bool = True,
+    incremental_source: bool = False,
+    episode_terminal_callback: Callable[[int, str], None] | None = None,
     backend_factory: Callable[..., Any] | None = None,
     reporter: ProcessUI | None = None,
 ) -> dict[str, Any]:
+    if incremental_source and not target_receiver_only:
+        raise ValueError("incremental source receipts require target_receiver_only mode")
     if run_id is not None:
         _validate_run_id(run_id)
     if reporter is not None:
@@ -1581,6 +2242,31 @@ def process_dataset(
     selected_run_id = _validate_run_id(run_id or store.new_run_id())
     canonical_run_dir = store.run_dir(selected_run_id)
     _validate_sam_run_ownership(canonical_run_dir, run_id=selected_run_id)
+    if incremental_source:
+        write_source_run_contract(
+            canonical_run_dir,
+            run_id=selected_run_id,
+            dataset_root=dataset_root,
+            task=task,
+            camera=camera,
+            dynamic_manifest=manifest,
+            requested_episode_ids=selected_ids,
+        )
+
+    def episode_terminal(episode_id: int, status: str) -> None:
+        if incremental_source and status in {"completed", "skipped_complete"}:
+            ref = EpisodeRef(task, episode_id, camera)
+            write_source_episode_completion_receipt(
+                store.episode_dir(selected_run_id, ref),
+                task=task,
+                camera=camera,
+                episode_index=episode_id,
+                status=status,
+                expected_dataset_root=dataset_root,
+            )
+        if episode_terminal_callback is not None:
+            episode_terminal_callback(episode_id, status)
+
     if reporter is not None and report_lifecycle:
         reporter.run_ready(run_id=selected_run_id, episode_ids=selected_ids)
     if reporter is not None:
@@ -1609,6 +2295,7 @@ def process_dataset(
         )
         if not force and completion_check(dynamic, store, selected_run_id, ref):
             records.append({"episode": episode_id, "status": "skipped_complete"})
+            episode_terminal(episode_id, "skipped_complete")
             if reporter is not None and report_lifecycle:
                 reporter.episode_finished(episode_id, status="skipped_complete")
         else:
@@ -1681,6 +2368,7 @@ def process_dataset(
                         )
                     if not sam_complete:
                         records.append({"episode": episode_id, "status": "sam_incomplete"})
+                        episode_terminal(episode_id, "sam_incomplete")
                         if reporter is not None:
                             reporter.stage_finished(
                                 episode_id,
@@ -1703,6 +2391,7 @@ def process_dataset(
                                 "status": "completed",
                             }
                         )
+                        episode_terminal(episode_id, "completed")
                         if reporter is not None and report_lifecycle:
                             reporter.episode_finished(
                                 episode_id,
@@ -1731,6 +2420,7 @@ def process_dataset(
                             "status": episode_status,
                         }
                     )
+                    episode_terminal(episode_id, episode_status)
                     if reporter is not None:
                         reporter.stage_finished(
                             episode_id,
@@ -1752,6 +2442,7 @@ def process_dataset(
                             "error": error,
                         }
                     )
+                    episode_terminal(episode_id, "failed")
                     if reporter is not None:
                         if current_stage is not None:
                             reporter.stage_finished(
@@ -1775,6 +2466,7 @@ def process_dataset(
                             "error": error,
                         }
                     )
+                    episode_terminal(episode_id, "failed")
                     if reporter is not None:
                         if current_stage is not None:
                             reporter.stage_finished(
@@ -1807,6 +2499,9 @@ def process_dataset(
             for episode_id in selected_ids
             if episode_id not in recorded_ids
         )
+        for episode_id in selected_ids:
+            if episode_id not in recorded_ids:
+                episode_terminal(episode_id, "not_run_after_fatal_cuda")
         if reporter is not None and report_lifecycle:
             for episode_id in selected_ids:
                 if episode_id not in recorded_ids:
@@ -1916,6 +2611,9 @@ def process_live_urdf_pipeline(
     ),
     fit_config_json: Path | None = None,
     allow_partial_source: bool = False,
+    urdf_pipeline: bool = True,
+    urdf_pipeline_buffer_size: int = DEFAULT_URDF_PIPELINE_BUFFER_SIZE,
+    urdf_egl_device_id: int | None = None,
     backend_factory: Callable[..., Any] | None = None,
     reporter: ProcessUI | None = None,
 ) -> dict[str, Any]:
@@ -1990,10 +2688,114 @@ def process_live_urdf_pipeline(
         source_episode_ids = depth_eligible_ids
 
     if reporter is not None:
+        reporter.run_started(
+            backend="urdf",
+            dataset_root=str(resolved_dataset_root),
+            task=task,
+            camera=camera,
+        )
+        reporter.run_ready(run_id=selected_run_id, episode_ids=source_episode_ids)
+        reporter.lane_started("source", "Source (Qwen + SAM)", len(source_episode_ids))
+        reporter.lane_started("urdf", "URDF render", len(source_episode_ids))
+        reporter.lane_started("publish", "Canonical publish", len(source_episode_ids))
+        if not skip_render:
+            reporter.lane_started(
+                "validation",
+                "Canonical validation",
+                len(source_episode_ids),
+            )
+            reporter.lane_started(
+                "render",
+                "Review render",
+                len(source_episode_ids),
+            )
         reporter.note(
             f"target/receiver source will be frozen at {source_run_dir}"
         )
-    if backend_factory is None:
+
+    selected_egl_device: int | None = None
+    if urdf_pipeline and backend_factory is None:
+        selected_egl_device = _select_urdf_egl_device(
+            pipeline_config.sam3.gpus,
+            urdf_egl_device_id,
+        )
+        if selected_egl_device is None and reporter is not None:
+            reporter.note(
+                "no independent EGL GPU is available; using the serial URDF path",
+                level="warning",
+            )
+    elif urdf_egl_device_id is not None:
+        if isinstance(urdf_egl_device_id, bool) or urdf_egl_device_id < 0:
+            raise ValueError("URDF EGL device id must be a non-negative integer")
+        # The serial path releases SAM before EGL starts, so sharing is safe.
+        selected_egl_device = urdf_egl_device_id
+
+    prepared_backend_result: Mapping[str, Any] | None = None
+    prepared_backend_error: str | None = None
+    streaming = urdf_pipeline and backend_factory is None and selected_egl_device is not None
+    if streaming:
+        try:
+            import render_urdf_gripper_masks as urdf_runner
+        except ModuleNotFoundError:
+            from scripts import render_urdf_gripper_masks as urdf_runner
+
+        streaming_config = urdf_runner.RunConfig(
+            dataset_root=resolved_dataset_root,
+            source_run_dir=source_run_dir,
+            output_root=canonical_run_dir / "_backend",
+            run_id="urdf",
+            urdf_path=resolved_urdf_path,
+            mesh_root=(
+                None if mesh_root is None else mesh_root.expanduser().resolve()
+            ),
+            episode_ids=source_episode_ids,
+            task=task,
+            camera=camera,
+            depth_tolerance_mm=depth_tolerance_mm,
+            minimum_eligible_nonempty_fraction=(
+                minimum_eligible_nonempty_fraction
+            ),
+            fit_config_json=(
+                None
+                if fit_config_json is None
+                else fit_config_json.expanduser().resolve()
+            ),
+            skip_overlay=True,
+            dry_run=False,
+            resume=False,
+            egl_device_id=selected_egl_device,
+        )
+        if reporter is not None:
+            reporter.note(
+                "streaming Source -> URDF pipeline enabled: "
+                f"sam_gpus={list(pipeline_config.sam3.gpus)} "
+                f"egl_gpu={selected_egl_device} buffer={urdf_pipeline_buffer_size}"
+            )
+        source_summary, prepared_result, prepared_backend_error = (
+            _run_streaming_source_urdf_workers(
+                pipeline_config,
+                dataset_root=resolved_dataset_root,
+                task=task,
+                camera=camera,
+                source_output_root=source_output_root,
+                source_run_id=source_run_id,
+                episode_ids=source_episode_ids,
+                urdf_run_config=streaming_config,
+                buffer_size=urdf_pipeline_buffer_size,
+                reporter=reporter,
+            )
+        )
+        prepared_backend_result = prepared_result
+        if reporter is not None:
+            reporter.lane_finished("source", status="completed")
+            reporter.lane_finished(
+                "urdf",
+                status=(
+                    "completed" if prepared_backend_error is None else "failed"
+                ),
+                detail=prepared_backend_error,
+            )
+    elif backend_factory is None:
         source_summary = _run_target_receiver_source_process(
             pipeline_config,
             dataset_root=resolved_dataset_root,
@@ -2004,6 +2806,11 @@ def process_live_urdf_pipeline(
             episode_ids=source_episode_ids,
             reporter=reporter,
         )
+        if reporter is not None:
+            reporter.lane_progress(
+                "source", len(source_episode_ids), len(source_episode_ids)
+            )
+            reporter.lane_finished("source")
     else:
         source_summary = process_dataset(
             pipeline_config,
@@ -2020,6 +2827,11 @@ def process_live_urdf_pipeline(
             backend_factory=backend_factory,
             reporter=reporter,
         )
+        if reporter is not None:
+            reporter.lane_progress(
+                "source", len(source_episode_ids), len(source_episode_ids)
+            )
+            reporter.lane_finished("source")
     if reporter is not None:
         reporter.phase_started("sam_backend_release")
     source_release = _release_sam_cuda_cache(pipeline_config.sam3.gpus)
@@ -2068,6 +2880,11 @@ def process_live_urdf_pipeline(
         allow_partial_source=allow_partial_source,
         source_mode="live_target_receiver_stage",
         source_release=source_release,
+        prepared_backend_result=prepared_backend_result,
+        prepared_backend_error=prepared_backend_error,
+        egl_device_id=selected_egl_device,
+        report_lifecycle=False,
+        pipeline_episode_ids=source_episode_ids,
         reporter=reporter,
     )
 
@@ -2112,6 +2929,25 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=float,
     )
     parser.add_argument("--urdf-fit-config-json", type=Path)
+    parser.add_argument(
+        "--urdf-egl-device-id",
+        type=int,
+        help=(
+            "Physical GPU for EGL rendering; live URDF mode otherwise selects the "
+            "freest GPU not used by SAM"
+        ),
+    )
+    parser.add_argument(
+        "--urdf-pipeline-buffer-size",
+        type=int,
+        default=DEFAULT_URDF_PIPELINE_BUFFER_SIZE,
+        help="Maximum source-ready episodes queued ahead of the URDF worker",
+    )
+    parser.add_argument(
+        "--no-urdf-pipeline",
+        action="store_true",
+        help="Disable Source-to-URDF overlap and use the legacy serial execution path",
+    )
     parser.add_argument(
         "--allow-partial-source",
         action="store_true",
@@ -2159,6 +2995,9 @@ def _run_from_args(
             or args.urdf_depth_tolerance_mm is not None
             or args.urdf_minimum_eligible_nonempty_fraction is not None
             or args.urdf_fit_config_json is not None
+            or args.urdf_egl_device_id is not None
+            or args.urdf_pipeline_buffer_size != DEFAULT_URDF_PIPELINE_BUFFER_SIZE
+            or args.no_urdf_pipeline
             or args.allow_partial_source
         ):
             raise ValueError("URDF-only options require --gripper-backend urdf")
@@ -2232,6 +3071,9 @@ def _run_from_args(
                 ),
                 fit_config_json=args.urdf_fit_config_json,
                 allow_partial_source=args.allow_partial_source,
+                urdf_pipeline=not args.no_urdf_pipeline,
+                urdf_pipeline_buffer_size=args.urdf_pipeline_buffer_size,
+                urdf_egl_device_id=args.urdf_egl_device_id,
                 reporter=reporter,
             )
         else:
@@ -2278,6 +3120,7 @@ def _run_from_args(
                 ),
                 fit_config_json=args.urdf_fit_config_json,
                 allow_partial_source=args.allow_partial_source,
+                egl_device_id=args.urdf_egl_device_id,
                 reporter=reporter,
             )
     return summary

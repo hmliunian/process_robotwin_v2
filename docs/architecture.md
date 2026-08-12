@@ -680,3 +680,130 @@ exact-run overlay/review。URDF 还需核对 source object channels 逐像素相
 
 active-wrist 的 close/open phase-seed 方案仍是未实施实验，不得将其 seed window、full-video
 QC 或 no-gripper profile当作当前 `cam_high` pipeline 的行为。
+
+## 12. 全量数据集兼容性与 target 基数
+
+### 12.1 统计口径
+
+本节扫描日期为 2026-08-11，统计对象是完整 RoboTwin 2.0 数据集：50 个 coarse task、
+27,500 个 episode，每个 task 固定包含 50 条 clean 和 500 条 randomized。coarse task 以
+`meta/episodes.jsonl` 的 `full_structured_tasks[0]` 为 authority；事件结构另外审计了全部
+27,500 个 Parquet 的 `observation.state`。
+
+“直接兼容当前 pick-and-place pipeline”同时要求：
+
+1. 一个独立、可移动的刚体 target；
+2. 一个稳定且可识别、最终与 target 直接接触的 receiver 或目标区域；
+3. 单 active arm、一次完整 grasp → transport → release；
+4. 不需要额外受控实体、动态/articulated receiver 或任务专用 outcome。
+
+“单 target”采用更宽但明确的实体口径：统计被机器人直接控制并主动改变 pose 的独立
+root-level movable entity。静态 reference/receiver 和 fixed-root articulated link 不计；同一
+物体被 handover 或双臂共同夹持仍计一个；后续又被抓起移动的 receiver 计另一个 target；
+容器内随容器被动运动的 payload 不逐个计数。因此“单 target”只是数据模型复杂度，不等于
+满足当前 pick-and-place 时间线或 receiver 语义。
+
+### 12.2 当前 pick-and-place 覆盖
+
+保守的 full-task 兼容集是 **10/50 个 task、5,500/27,500 个 episode（20.00%）**：
+
+```text
+move_pillbottle_pad
+move_stapler_pad
+place_container_plate
+place_empty_cup
+place_fan
+place_mouse_pad
+place_object_scale
+place_object_stand
+place_phone_stand
+place_shoe
+```
+
+其中 `move_pillbottle_pad` 是现有 pilot；[datasets.md](datasets.md) 中列出的 9 类是“pilot
+之外可直接扩展”的任务，不能把 9 误写成全数据集兼容总数。这 5,500 条全部通过一次完整
+loop 且双手最终 open 的 state 检查；其中 5,401 条 `geometry_valid=true`。geometry flag 只
+表示 corrected replay geometry 可用，不替代 backend 自己的 depth/discovery 检查。
+
+`place_bread_basket` 是唯一的 episode-level 混合边界：144 条为单 bread、406 条为双 bread。
+144 条单 bread episode 均通过完整 loop 和 geometry 检查，可以在显式预筛选后条件纳入。
+因此 episode 级的条件上限是 **5,644 条（20.52%）**，其中 5,545 条 geometry valid；不能把
+整个 `place_bread_basket` task 标为直接兼容。
+
+### 12.3 target 基数
+
+| 实际 target 数 | task 组成 | episode | 全集占比 |
+| --- | --- | ---: | ---: |
+| 1 | 27 个固定单 target task + `place_bread_basket` 的 144 条 | **14,994** | **54.52%** |
+| 2 | 11 个固定双 target task + `place_bread_basket` 的 406 条 | **6,456** | **23.48%** |
+| 3 | 5 个固定三 target task | **2,750** | **10.00%** |
+| 0 | 6 个 fixed-root contact/articulation task | **3,300** | **12.00%** |
+| 合计 | 50 个 task | **27,500** | **100.00%** |
+
+task-level 可概括为 27 个 always-single、17 个 multi-capable（含一个 1–2 可变 task）和
+6 个没有独立 movable target 的 task。多 target 合计 9,206 条（33.48%）。
+
+27 个 always-single task：
+
+```text
+adjust_bottle              beat_block_hammer          dump_bin_bigbin
+grab_roller                handover_block              handover_mic
+hanging_mug                lift_pot                    move_can_pot
+move_pillbottle_pad        move_playingcard_away       move_stapler_pad
+place_a2b_left             place_a2b_right             place_container_plate
+place_empty_cup            place_fan                   place_mouse_pad
+place_object_scale         place_object_stand          place_phone_stand
+place_shoe                 put_object_cabinet          rotate_qrcode
+shake_bottle               shake_bottle_horizontally   stamp_seal
+```
+
+17 个 multi-capable task：
+
+- 固定 2 target：`pick_diverse_bottles`、`pick_dual_bottles`、`place_bread_skillet`、
+  `place_burger_fries`、`place_can_basket`、`place_cans_plasticbox`、`place_dual_shoes`、
+  `place_object_basket`、`scan_object`、`stack_blocks_two`、`stack_bowls_two`；
+- 固定 3 target：`blocks_ranking_rgb`、`blocks_ranking_size`、`put_bottles_dustbin`、
+  `stack_blocks_three`、`stack_bowls_three`；
+- 1–2 target 可变：`place_bread_basket`。
+
+6 个没有独立 movable target 的 task：`click_alarmclock`、`click_bell`、`open_laptop`、
+`open_microwave`、`press_stapler`、`turn_switch`。它们仍有 task entity，但需要
+`parent + part/link/action_site`，不能强塞进当前 rigid `target_0`。
+
+### 12.4 为什么 state loop 不能单独判兼容
+
+全量 state 审计得到：
+
+| gate | episode | 说明 |
+| --- | ---: | --- |
+| 当前 detector 返回 exactly-one complete loop | 11,969 | 只累计完整 loop |
+| 再要求 episode 结束时双手都 open | 8,944 | 去掉 3,025 条未结束动作 |
+| full-task 语义也满足当前 pick-and-place 合同 | 5,500 | 保守直接兼容集 |
+| 再加入预筛后的单 bread 子集 | 5,644 | episode-level 条件集 |
+
+严格的双手终态 gate 仍包含 3,300 条语义假阳性：`move_can_pot`、
+`move_playingcard_away`、`place_a2b_left/right`、`rotate_qrcode` 和 `stamp_seal`。它们的 state
+形状像一次 pick-and-place，但终点是相对区域、重新定向或接触动作，不满足当前“最终直接
+接触 receiver”合同。
+
+另外，`detect_arm_loops()` 遇到后续不完整 close 会停止扫描并保留此前完整 loop，
+`detect_episode_loop()` 只检查已收集的完整 candidate 数量。这会让另一只手或同一只手在
+episode 尾部仍 closed 的 3,025 条样本通过 exactly-one 检查。state detector 应继续作为事件
+候选 gate，但 task profile、实体基数和终态检查必须是独立的 compatibility gate。
+
+### 12.5 对可扩展架构的直接要求
+
+全量任务不能只用 `receiver: optional` 区分。最小可扩展 profile 至少应覆盖：
+
+| profile | 典型任务 | 需要新增的合同 |
+| --- | --- | --- |
+| `pick_place` | 当前 10 类 + 单 bread 子集 | 当前 target/receiver + 单 loop |
+| `relative_place` | `move_can_pot`、`place_a2b_*` | reference、relation、goal region |
+| `grasp_hold/reorient` | `adjust_bottle`、`shake_*`、`rotate_qrcode` | open-ended window、pose/trajectory outcome |
+| `multi_entity` | `pick_*`、stack/ranking、双物体 place | 动态 entity/channel、并行或连续事件 |
+| `multi_stage_place` | handover、动态 basket/skillet、cabinet | 多 effector、多 segment、动态/articulated receiver |
+| `tool_contact` | hammer、stamp、scan、click/press | tool、patient/action-site、contact outcome |
+| `articulate` | `open_*`、`turn_switch` | parent/link/handle、joint/visual outcome |
+
+因此 14,994 条单-target episode 中，只有 5,500 条可按 full task 直接进入当前 pipeline；
+其余单-target 数据仍需要新的 timeline、entity role 或 outcome contract。

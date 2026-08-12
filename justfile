@@ -37,8 +37,8 @@ sam run_id episode_id="7152":
 run episode_id="7152":
     {{python}} scripts/run_target_receiver.py run --config {{config}} --episode {{episode_id}}
 
-process dataset_root="../dataset/move_pillbottle_pad_coverage20_original" output_dir="artifacts/runs" *process_args:
-    @dataset_root="$1"; output_dir="$2"; shift 2; if [ "${output_dir#-}" != "$output_dir" ]; then set -- "$output_dir" "$@"; output_dir="artifacts/runs"; fi; exec env PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" {{quote(python)}} scripts/process_dataset.py --config {{quote(config)}} --dataset-root "$dataset_root" --output-dir "$output_dir" "$@"
+process *process_args:
+    @dataset_root=""; output_dir=""; if [ "$#" -gt 0 ] && [ "${1#-}" = "$1" ]; then dataset_root="$1"; shift; fi; if [ "$#" -gt 0 ] && [ "${1#-}" = "$1" ]; then output_dir="$1"; shift; fi; if [ -n "$output_dir" ]; then set -- --output-dir "$output_dir" "$@"; fi; if [ -n "$dataset_root" ]; then set -- --dataset-root "$dataset_root" "$@"; fi; exec env PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" {{quote(python)}} scripts/process_dataset.py --config {{quote(config)}} "$@"
 
 check-gpu:
     nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv
