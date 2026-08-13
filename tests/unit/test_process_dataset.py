@@ -522,12 +522,12 @@ def test_default_bundled_urdf_path_is_repository_asset() -> None:
     assert process_module.DEFAULT_BUNDLED_URDF_PATH.is_file()
 
 
-def test_parse_args_defaults_to_sam_and_preserves_just_sentinel_paths() -> None:
+def test_parse_args_defaults_to_urdf_and_preserves_just_sentinel_paths() -> None:
     args = process_module._parse_args(
         ["--source-run-dir", "-", "--urdf-path", "-"]
     )
 
-    assert args.gripper_backend == "sam"
+    assert args.gripper_backend == "urdf"
     assert args.urdf_depth_tolerance_mm is None
     assert args.urdf_minimum_eligible_nonempty_fraction is None
     assert args.source_run_dir == "-"
@@ -595,6 +595,8 @@ def test_main_legacy_cli_dispatches_sam_without_urdf_path(
         "argv",
         [
             "process_dataset.py",
+            "--gripper-backend",
+            "sam",
             "--dataset-root",
             str(tmp_path / "dataset"),
             "--output-dir",
@@ -860,6 +862,8 @@ def test_main_json_mode_prints_one_machine_readable_summary(
         "argv",
         [
             "process_dataset.py",
+            "--gripper-backend",
+            "sam",
             "--dataset-root",
             str(tmp_path / "dataset"),
             "--ui",
@@ -897,6 +901,8 @@ def test_main_json_mode_prints_failed_summary_before_exit(
         "argv",
         [
             "process_dataset.py",
+            "--gripper-backend",
+            "sam",
             "--dataset-root",
             str(tmp_path / "dataset"),
             "--ui",
@@ -928,10 +934,21 @@ def test_main_json_mode_prints_failed_summary_before_exit(
             ),
             "explicit --run-id",
         ),
-        (("--source-run-dir", "source"), "URDF-only options"),
-        (("--urdf-depth-tolerance-mm", "9"), "URDF-only options"),
         (
-            ("--urdf-minimum-eligible-nonempty-fraction", "0.8"),
+            ("--gripper-backend", "sam", "--source-run-dir", "source"),
+            "URDF-only options",
+        ),
+        (
+            ("--gripper-backend", "sam", "--urdf-depth-tolerance-mm", "9"),
+            "URDF-only options",
+        ),
+        (
+            (
+                "--gripper-backend",
+                "sam",
+                "--urdf-minimum-eligible-nonempty-fraction",
+                "0.8",
+            ),
             "URDF-only options",
         ),
         (

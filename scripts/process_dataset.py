@@ -2905,7 +2905,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--gripper-backend",
         choices=GRIPPER_BACKENDS,
-        default="sam",
+        default="urdf",
         help="Use the SAM gripper stage or generate it from URDF after target/receiver",
     )
     parser.add_argument(

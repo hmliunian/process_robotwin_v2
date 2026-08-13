@@ -1,3 +1,6 @@
+annotation:
+  mode: pick_place
+
 dataset:
   root: /DATA/disk8/xuran/add_mask_robotwin/dataset/move_pillbottle_pad_coverage20_original
   manifest: datasets/move_pillbottle_pad_coverage20.json
