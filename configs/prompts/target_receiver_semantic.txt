@@ -1,9 +1,12 @@
-你是机器人操作视频的语义规划器。你的工作是联合确定 target 和 receiver，
+你是机器人操作视频的语义规划器。你的工作是确定本模式需要的对象角色，
 为每个角色选择一个可见 seed frame，并生成供 SAM3 使用的短英文 query 候选池。
 你不画框、不输出 bbox、不输出 mask，也不评价 SAM3 的 mask。
 
 任务描述：
 {task_text}
+
+标注模式：{annotation_mode}
+本次需要的对象角色：{required_object_roles}
 
 相机：{camera}
 
@@ -18,16 +21,14 @@
 {labeled_multimodal_frames}
 
 角色定义：
-- target：随后被夹爪抓取并移动的完整物体。
-- receiver：任务完成时应与 target 直接接触的完整物体或目标区域。receiver 不要求位于
-  target 下方或承托 target，核心判断依据是二者的直接接触关系。
+{role_instructions}
 
 receiver 的身份判断与 seed 选择是两个步骤：先用 place_context 确定任务完成时与 target
 直接接触的是哪个对象或区域，再回到 receiver 允许的 seed 候选中选择同一对象最清晰的一帧。
 seed 中二者不需要已经接触；只要该对象在任一允许候选中清晰可见，即使它在 place_context
 中被 target 或夹爪部分遮挡，也不得因此返回 no_clear_seed。
 
-请利用任务文本和多帧动作关系联合判断两个角色，不要只凭一张静态图猜测。
+请利用任务文本和多帧动作关系判断所有要求的角色，不要只凭一张静态图猜测。
 
 对每个角色：
 1. 只能从该角色允许的 seed 候选中选择一个完整、清晰、遮挡最少的 seed frame。必须逐一
@@ -64,28 +65,5 @@ seed 中二者不需要已经接触；只要该对象在任一允许候选中清
 11. 不要为了让 target 和 receiver 的文字不同而编造视觉属性；如果身份有歧义，在 reason
    中说明，但仍遵守 schema。
 
-只返回一个 JSON 对象，不要输出 Markdown 或额外说明：
-{
-  "target": {
-    "status": "ok" | "no_clear_seed",
-    "seed_frame_id": <原始 frame id 或 null>,
-    "category_query": "<1-4 lowercase English words 或 null>",
-    "color_category_query": "<1-4 lowercase English words 或 null>",
-    "shape_category_query": "<1-4 lowercase English words 或 null>",
-    "general_fallback_query": "<1-4 lowercase English words 或 null>",
-    "recommended_order": ["<candidate field>", "..."],
-    "exclude": ["<other visible object>", "..."],
-    "reason": "<简短语义理由，不发送给 SAM3>"
-  },
-  "receiver": {
-    "status": "ok" | "no_clear_seed",
-    "seed_frame_id": <原始 frame id 或 null>,
-    "category_query": "<1-4 lowercase English words 或 null>",
-    "color_category_query": "<1-4 lowercase English words 或 null>",
-    "shape_category_query": "<1-4 lowercase English words 或 null>",
-    "general_fallback_query": "<1-4 lowercase English words 或 null>",
-    "recommended_order": ["<candidate field>", "..."],
-    "exclude": ["<other visible object>", "..."],
-    "reason": "<简短语义理由，不发送给 SAM3>"
-  }
-}
+只返回一个严格符合下列结构的 JSON 对象，不要输出 Markdown 或额外说明；不得添加本次不需要的角色：
+{response_schema}

@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from ..adapters.robotwin_dataset import EpisodeState, RoboTwinDataset
+from ..domain import AnnotationMode, ObjectRole, annotation_spec
 from ..models import (
     EpisodeRef,
     FramePurpose,
@@ -12,7 +13,6 @@ from ..models import (
     LoopEvents,
     SemanticFrame,
 )
-
 
 OPEN_THRESHOLD = 0.9
 CLOSED_THRESHOLD = 0.15
@@ -181,21 +181,24 @@ def sample_semantic_frames(
     events: LoopEvents,
     *,
     frame_count: int,
+    annotation_mode: AnnotationMode = AnnotationMode.PICK_PLACE,
     seed_count: int = 4,
     seed_safety_margin: int = 4,
 ) -> tuple[SemanticFrame, ...]:
     """Select sparse, purpose-labelled frames without inspecting RGB pixels."""
 
+    spec = annotation_spec(annotation_mode)
+    required_roles = spec.required_role_names
     seed_end = max(0, events.t_close_start - seed_safety_margin)
     selected: dict[int, SemanticFrame] = {}
     for frame_id in _uniform_frames(0, seed_end, seed_count):
         selected[frame_id] = SemanticFrame(
             frame_id,
             FramePurpose.PRE_GRASP_SEED_CANDIDATE,
-            ("target", "receiver"),
+            required_roles,
         )
 
-    contexts: tuple[tuple[int, FramePurpose, tuple[str, ...]], ...] = (
+    contexts: list[tuple[int, FramePurpose, tuple[str, ...]]] = [
         (
             min(events.t_close_done + 1, events.t_open_start - 1),
             FramePurpose.POST_GRASP_CONTEXT,
@@ -211,7 +214,9 @@ def sample_semantic_frames(
             FramePurpose.PLACE_CONTEXT,
             ("receiver",),
         ),
-    )
+    ]
+    if not spec.requires(ObjectRole.RECEIVER):
+        contexts = [item for item in contexts if item[1] is not FramePurpose.PLACE_CONTEXT]
     for frame_id, purpose, eligible_roles in contexts:
         frame_id = min(max(frame_id, 0), frame_count - 1)
         if frame_id not in selected:
@@ -223,12 +228,21 @@ def sample_semantic_frames(
     return tuple(selected[frame_id] for frame_id in sorted(selected))
 
 
-def build_loop_context(dataset: RoboTwinDataset, ref: EpisodeRef) -> LoopContext:
+def build_loop_context(
+    dataset: RoboTwinDataset,
+    ref: EpisodeRef,
+    *,
+    annotation_mode: AnnotationMode = AnnotationMode.PICK_PLACE,
+) -> LoopContext:
     """Run Stage 1 for one episode."""
 
     state = dataset.load_state(ref)
     events = detect_episode_loop(state)
-    semantic_frames = sample_semantic_frames(events, frame_count=state.frame_count)
+    semantic_frames = sample_semantic_frames(
+        events,
+        frame_count=state.frame_count,
+        annotation_mode=annotation_mode,
+    )
     return LoopContext(
         episode=ref,
         task_text=state.task_text,
@@ -237,4 +251,5 @@ def build_loop_context(dataset: RoboTwinDataset, ref: EpisodeRef) -> LoopContext
         semantic_frames=semantic_frames,
         state_source=str(state.paths.parquet),
         video_source=str(state.paths.video),
+        annotation_mode=annotation_mode,
     )

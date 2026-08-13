@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass
 from enum import StrEnum
 from typing import Any, Literal
 
+from ..domain import AnnotationMode, AnnotationSpec, ObjectRole, annotation_spec
 
 RoleName = Literal["target", "receiver"]
 
@@ -152,6 +153,7 @@ class LoopContext:
     semantic_frames: tuple[SemanticFrame, ...]
     state_source: str
     video_source: str
+    annotation_mode: AnnotationMode = AnnotationMode.PICK_PLACE
 
     def __post_init__(self) -> None:
         if not self.task_text.strip():
@@ -169,8 +171,25 @@ class LoopContext:
             raise ValueError("semantic frame id is outside the episode")
         if not any(frame.seed_eligible for frame in self.semantic_frames):
             raise ValueError("at least one seed candidate is required")
+        required = set(self.annotation_spec.required_role_names)
+        supplied = {
+            role
+            for frame in self.semantic_frames
+            for role in frame.eligible_roles
+        }
+        if not supplied <= required:
+            raise ValueError(
+                "semantic frames contain roles not required by annotation mode: "
+                f"{sorted(supplied - required)}"
+            )
+
+    @property
+    def annotation_spec(self) -> AnnotationSpec:
+        return annotation_spec(self.annotation_mode)
 
     def seed_candidates(self, role: RoleName) -> tuple[int, ...]:
+        if not self.annotation_spec.requires(ObjectRole(role)):
+            return ()
         return tuple(
             frame.frame_id
             for frame in self.semantic_frames
@@ -180,6 +199,8 @@ class LoopContext:
     def to_json(self) -> dict[str, Any]:
         return {
             "format_version": "robotwin_loop_context_v1",
+            "annotation_mode": self.annotation_mode.value,
+            "required_object_roles": list(self.annotation_spec.required_role_names),
             "episode": self.episode.to_json(),
             "task_text": self.task_text,
             "frame_count": self.frame_count,
@@ -187,7 +208,11 @@ class LoopContext:
             "windows": {
                 "loop": self.events.loop_window.to_json(),
                 "target_0": self.events.target_window.to_json(),
-                "receiver_0": self.events.receiver_window.to_json(),
+                "receiver_0": (
+                    self.events.receiver_window.to_json()
+                    if self.annotation_spec.requires(ObjectRole.RECEIVER)
+                    else None
+                ),
             },
             "semantic_frames": [frame.to_json() for frame in self.semantic_frames],
             "sources": {

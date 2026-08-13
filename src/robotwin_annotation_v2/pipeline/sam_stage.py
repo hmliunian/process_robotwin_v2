@@ -11,6 +11,7 @@ from PIL import Image
 
 from ..adapters.artifact_store import ArtifactStore
 from ..config import MaskConfig
+from ..domain import ObjectRole
 from ..models import (
     FrameWindow,
     LoopContext,
@@ -120,8 +121,26 @@ class RoleMaskData:
 class SamStageResult:
     frame_count: int
     frame_shape: tuple[int, int]
-    target: RoleMaskData
-    receiver: RoleMaskData
+    role_masks: tuple[RoleMaskData, ...]
+
+    def __post_init__(self) -> None:
+        roles = tuple(data.role for data in self.role_masks)
+        if not roles or roles[0] != "target" or len(set(roles)) != len(roles):
+            raise ValueError("SamStageResult requires unique roles beginning with target")
+
+    def for_role(self, role: Literal["target", "receiver"]) -> RoleMaskData:
+        for data in self.role_masks:
+            if data.role == role:
+                return data
+        raise KeyError(f"SAM result has no mask for non-applicable role {role!r}")
+
+    @property
+    def target(self) -> RoleMaskData:
+        return self.for_role("target")
+
+    @property
+    def receiver(self) -> RoleMaskData:
+        return self.for_role("receiver")
 
     @property
     def masks(self) -> np.ndarray:
@@ -129,8 +148,9 @@ class SamStageResult:
             (len(INSTANCE_NAMES), self.frame_count, *self.frame_shape),
             dtype=bool,
         )
-        output[0] = self.target.visible_mask
-        output[1] = self.receiver.visible_mask
+        channel_index = {"target": 0, "receiver": 1}
+        for data in self.role_masks:
+            output[channel_index[data.role]] = data.visible_mask
         return output
 
 
@@ -477,37 +497,45 @@ def run_sam_stage(
 
     if semantic_plan.episode != context.episode:
         raise SamStageError("SemanticPlan and LoopContext refer to different episodes")
-    target = _run_role(
-        "target",
-        semantic=semantic_plan.target,
-        output_window=context.events.target_window,
-        padding=mask_config.target_envelope_padding_px,
-        mask_config=mask_config,
-        context=context,
-        backend=backend,
-        resource_path=resource_path,
-        frame_shape=frame_shape,
-        qc_report=None if mask_qc is None else mask_qc.target,
-        qc_seed_mask=None if mask_qc is None else mask_qc.selected_masks.get("target"),
-    )
-    receiver = _run_role(
-        "receiver",
-        semantic=semantic_plan.receiver,
-        output_window=context.events.receiver_window,
-        padding=mask_config.receiver_envelope_padding_px,
-        mask_config=mask_config,
-        context=context,
-        backend=backend,
-        resource_path=resource_path,
-        frame_shape=frame_shape,
-        qc_report=None if mask_qc is None else mask_qc.receiver,
-        qc_seed_mask=None if mask_qc is None else mask_qc.selected_masks.get("receiver"),
-    )
+    if semantic_plan.annotation_mode is not context.annotation_mode:
+        raise SamStageError("SemanticPlan and LoopContext use different annotation modes")
+    if mask_qc is not None and tuple(
+        report.role for report in mask_qc.role_reports
+    ) != tuple(plan.role for plan in semantic_plan.role_plans):
+        raise SamStageError("MaskQCResult roles do not match SemanticPlan")
+
+    role_masks: list[RoleMaskData] = []
+    padding_by_role = {
+        "target": mask_config.target_envelope_padding_px,
+        "receiver": mask_config.receiver_envelope_padding_px,
+    }
+    for semantic in semantic_plan.role_plans:
+        role = semantic.role
+        start, end = context.annotation_spec.role_window_bounds(
+            ObjectRole(role),
+            context.events,
+        )
+        role_masks.append(
+            _run_role(
+                role,
+                semantic=semantic,
+                output_window=FrameWindow(start, end),
+                padding=padding_by_role[role],
+                mask_config=mask_config,
+                context=context,
+                backend=backend,
+                resource_path=resource_path,
+                frame_shape=frame_shape,
+                qc_report=None if mask_qc is None else mask_qc.for_role(role),
+                qc_seed_mask=(
+                    None if mask_qc is None else mask_qc.selected_masks.get(role)
+                ),
+            )
+        )
     return SamStageResult(
         frame_count=context.frame_count,
         frame_shape=frame_shape,
-        target=target,
-        receiver=receiver,
+        role_masks=tuple(role_masks),
     )
 
 

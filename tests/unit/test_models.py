@@ -138,8 +138,7 @@ def test_semantic_plan_contains_joint_roles() -> None:
     )
     plan = SemanticPlan(
         episode=_episode(),
-        target=target,
-        receiver=receiver,
+        role_plans=(target, receiver),
         model="qwen3.5-27b",
         prompt_sha256=hashlib.sha256(b"prompt").hexdigest(),
         input_frame_ids=(0, 69, 128),

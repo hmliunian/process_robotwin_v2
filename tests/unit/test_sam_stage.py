@@ -6,10 +6,12 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pytest
 from PIL import Image
 
 from robotwin_annotation_v2.adapters import ArtifactStore
 from robotwin_annotation_v2.config import MaskConfig
+from robotwin_annotation_v2.domain import AnnotationMode
 from robotwin_annotation_v2.models import (
     EpisodeRef,
     FramePurpose,
@@ -82,12 +84,48 @@ def _role(role: str, query: str) -> RoleSemanticPlan:
 def _plan(*, target: RoleSemanticPlan | None = None) -> SemanticPlan:
     return SemanticPlan(
         episode=_context().episode,
-        target=target or _role("target", "orange bottle"),
-        receiver=_role("receiver", "blue pad"),
+        role_plans=(
+            target or _role("target", "orange bottle"),
+            _role("receiver", "blue pad"),
+        ),
         model="fake-qwen",
         prompt_sha256=hashlib.sha256(b"prompt").hexdigest(),
         input_frame_ids=(0, 9, 15),
         raw_response="{}",
+    )
+
+
+def _target_only_context() -> LoopContext:
+    base = _context()
+    return LoopContext(
+        episode=base.episode,
+        task_text=base.task_text,
+        frame_count=base.frame_count,
+        events=base.events,
+        semantic_frames=(
+            SemanticFrame(
+                0,
+                FramePurpose.PRE_GRASP_SEED_CANDIDATE,
+                ("target",),
+            ),
+            SemanticFrame(9, FramePurpose.POST_GRASP_CONTEXT, ("target",)),
+        ),
+        state_source=base.state_source,
+        video_source=base.video_source,
+        annotation_mode=AnnotationMode.TARGET_ONLY,
+    )
+
+
+def _target_only_plan() -> SemanticPlan:
+    context = _target_only_context()
+    return SemanticPlan(
+        episode=context.episode,
+        role_plans=(_role("target", "orange bottle"),),
+        model="fake-qwen",
+        prompt_sha256=hashlib.sha256(b"prompt").hexdigest(),
+        input_frame_ids=(0, 9),
+        raw_response="{}",
+        annotation_mode=AnnotationMode.TARGET_ONLY,
     )
 
 
@@ -271,6 +309,30 @@ def test_sam_stage_uses_only_primary_queries_and_role_windows() -> None:
     assert not result.masks[2:].any()
 
 
+def test_target_only_sam_tracks_target_and_leaves_receiver_channel_zero() -> None:
+    backend = FakeSamBackend()
+    context = _target_only_context()
+
+    result = run_sam_stage(
+        context,
+        _target_only_plan(),
+        backend,
+        Path("/tmp/fake-resource"),
+        frame_shape=FRAME_SHAPE,
+        mask_config=MaskConfig(0, 0),
+    )
+
+    assert tuple(data.role for data in result.role_masks) == ("target",)
+    assert [value for kind, value in backend.calls if kind == "seed"] == [
+        "orange bottle"
+    ]
+    assert result.target.output_window == context.events.target_window
+    assert not result.target.visible_mask[context.events.t_close_done + 1 :].any()
+    assert not result.masks[1].any()
+    with pytest.raises(KeyError, match="non-applicable"):
+        _ = result.receiver
+
+
 def test_no_clear_seed_skips_target_sam_calls() -> None:
     backend = FakeSamBackend()
     no_target = RoleSemanticPlan(
@@ -319,8 +381,10 @@ def test_sam_stage_uses_qc_selected_query_and_cached_seed_mask() -> None:
     target_seed = backend.seed_masks["bottle"].copy()
     receiver_seed = backend.seed_masks["blue pad"].copy()
     mask_qc = MaskQCResult(
-        target=_qc_report("target", MaskQCStatus.PASSED, query="bottle"),
-        receiver=_qc_report("receiver", MaskQCStatus.PASSED, query="blue pad"),
+        role_reports=(
+            _qc_report("target", MaskQCStatus.PASSED, query="bottle"),
+            _qc_report("receiver", MaskQCStatus.PASSED, query="blue pad"),
+        ),
         selected_masks={"target": target_seed, "receiver": receiver_seed},
         health={"status": "ok"},
     )
@@ -345,8 +409,10 @@ def test_sam_stage_uses_qc_selected_query_and_cached_seed_mask() -> None:
 def test_sam_stage_does_not_propagate_rejected_qc_candidate() -> None:
     backend = FakeSamBackend()
     mask_qc = MaskQCResult(
-        target=_qc_report("target", MaskQCStatus.REJECTED),
-        receiver=_qc_report("receiver", MaskQCStatus.PASSED, query="blue pad"),
+        role_reports=(
+            _qc_report("target", MaskQCStatus.REJECTED),
+            _qc_report("receiver", MaskQCStatus.PASSED, query="blue pad"),
+        ),
         selected_masks={"receiver": backend.seed_masks["blue pad"].copy()},
         health={"status": "ok"},
     )

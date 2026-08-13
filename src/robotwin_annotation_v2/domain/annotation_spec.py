@@ -62,6 +62,12 @@ class AnnotationSpec:
 
         return ObjectRole.TARGET, ObjectRole.RECEIVER
 
+    @property
+    def required_role_names(self) -> tuple[str, ...]:
+        """String form used at JSON and model boundaries."""
+
+        return tuple(role.value for role in self.required_object_roles)
+
     def requires(self, role: ObjectRole | str) -> bool:
         """Return whether ``role`` participates in semantic/QC/SAM stages."""
 

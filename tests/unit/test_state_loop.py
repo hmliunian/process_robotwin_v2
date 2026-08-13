@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from robotwin_annotation_v2.domain import AnnotationMode
 from robotwin_annotation_v2.models import FramePurpose, LoopEvents
 from robotwin_annotation_v2.pipeline.state_loop import (
     detect_arm_loops,
@@ -36,6 +37,19 @@ def test_semantic_frames_are_sparse_and_purpose_labelled() -> None:
     assert any(frame.purpose is FramePurpose.PLACE_CONTEXT for frame in frames)
     seed_frames = [frame for frame in frames if frame.seed_eligible]
     assert all(frame.eligible_roles == ("target", "receiver") for frame in seed_frames)
+
+
+def test_target_only_semantic_frames_never_request_receiver_context() -> None:
+    events = LoopEvents("right", 4, 56, 68, 123, 136)
+
+    frames = sample_semantic_frames(
+        events,
+        frame_count=138,
+        annotation_mode=AnnotationMode.TARGET_ONLY,
+    )
+
+    assert all(frame.eligible_roles == ("target",) for frame in frames)
+    assert all(frame.purpose is not FramePurpose.PLACE_CONTEXT for frame in frames)
 
 
 def test_arm_detector_keeps_multiple_loops_visible() -> None:

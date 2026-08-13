@@ -11,6 +11,7 @@ from PIL import Image
 
 from robotwin_annotation_v2.adapters import ArtifactStore, QwenCompletion
 from robotwin_annotation_v2.config import MaskConfig
+from robotwin_annotation_v2.domain import AnnotationMode
 from robotwin_annotation_v2.models import (
     EpisodeRef,
     FramePurpose,
@@ -30,7 +31,6 @@ from robotwin_annotation_v2.pipeline import (
     save_mask_qc_artifacts,
 )
 from robotwin_annotation_v2.pipeline.mask_qc import _context_items
-
 
 FRAME_SHAPE = (12, 16)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -96,12 +96,45 @@ def _role(role: str) -> RoleSemanticPlan:
 def _plan() -> SemanticPlan:
     return SemanticPlan(
         episode=_context().episode,
-        target=_role("target"),
-        receiver=_role("receiver"),
+        role_plans=(_role("target"), _role("receiver")),
         model="fake-qwen",
         prompt_sha256=hashlib.sha256(b"prompt").hexdigest(),
         input_frame_ids=(0, 7, 15),
         raw_response="{}",
+    )
+
+
+def _target_only_context() -> LoopContext:
+    base = _context()
+    return LoopContext(
+        episode=base.episode,
+        task_text=base.task_text,
+        frame_count=base.frame_count,
+        events=base.events,
+        semantic_frames=(
+            SemanticFrame(
+                0,
+                FramePurpose.PRE_GRASP_SEED_CANDIDATE,
+                ("target",),
+            ),
+            SemanticFrame(7, FramePurpose.POST_GRASP_CONTEXT, ("target",)),
+        ),
+        state_source=base.state_source,
+        video_source=base.video_source,
+        annotation_mode=AnnotationMode.TARGET_ONLY,
+    )
+
+
+def _target_only_plan() -> SemanticPlan:
+    context = _target_only_context()
+    return SemanticPlan(
+        episode=context.episode,
+        role_plans=(_role("target"),),
+        model="fake-qwen",
+        prompt_sha256=hashlib.sha256(b"prompt").hexdigest(),
+        input_frame_ids=(0, 7),
+        raw_response="{}",
+        annotation_mode=AnnotationMode.TARGET_ONLY,
     )
 
 
@@ -368,6 +401,30 @@ def test_mask_qc_retries_transient_qwen_request_without_regenerating_masks(
     assert result.receiver.status is MaskQCStatus.PASSED
     assert client.attempts == 3
     assert len(backend.calls) == 6
+
+
+def test_target_only_qc_runs_no_receiver_candidates(tmp_path: Path) -> None:
+    context = _target_only_context()
+    images = _images()
+    backend = FakeCandidateBackend()
+
+    result = run_mask_qc_stage(
+        context,
+        _target_only_plan(),
+        backend,
+        Path("/tmp/resource"),
+        seed_images={0: images[0]},
+        context_images={0: images[0], 7: images[7]},
+        frame_shape=FRAME_SHAPE,
+        mask_config=_config(_prompt(tmp_path)),
+        client=FakeQCClient([_response("B")]),
+    )
+
+    assert tuple(report.role for report in result.role_reports) == ("target",)
+    assert set(result.candidate_masks) == {"target"}
+    assert all("pad" not in query for query in backend.calls)
+    with pytest.raises(KeyError, match="non-applicable"):
+        _ = result.receiver
 
 
 def test_receiver_blue_region_prior_recovers_empty_text_candidates(

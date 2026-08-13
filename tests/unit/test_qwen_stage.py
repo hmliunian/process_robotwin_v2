@@ -10,6 +10,7 @@ from PIL import Image
 
 from robotwin_annotation_v2.adapters import QwenCompletion
 from robotwin_annotation_v2.config import QwenConfig
+from robotwin_annotation_v2.domain import AnnotationMode
 from robotwin_annotation_v2.models import (
     EpisodeRef,
     FramePurpose,
@@ -23,7 +24,6 @@ from robotwin_annotation_v2.pipeline import (
     parse_semantic_plan,
     run_qwen_stage,
 )
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -56,6 +56,26 @@ def _frames() -> dict[int, Image.Image]:
         )
         for frame_id in (0, 9, 15)
     }
+
+
+def _target_only_context() -> LoopContext:
+    return LoopContext(
+        episode=EpisodeRef("move_object", 1, "cam_high"),
+        task_text="Pick up the bottle.",
+        frame_count=20,
+        events=LoopEvents("right", 2, 6, 8, 14, 17),
+        semantic_frames=(
+            SemanticFrame(
+                0,
+                FramePurpose.PRE_GRASP_SEED_CANDIDATE,
+                ("target",),
+            ),
+            SemanticFrame(9, FramePurpose.POST_GRASP_CONTEXT, ("target",)),
+        ),
+        state_source="episode.parquet",
+        video_source="episode.mp4",
+        annotation_mode=AnnotationMode.TARGET_ONLY,
+    )
 
 
 def _response() -> str:
@@ -95,6 +115,10 @@ def _response() -> str:
         },
         ensure_ascii=False,
     )
+
+
+def _target_only_response() -> str:
+    return json.dumps({"target": json.loads(_response())["target"]}, ensure_ascii=False)
 
 
 class FakeQwenClient:
@@ -178,6 +202,30 @@ def test_parse_semantic_plan_uses_first_qwen_recommendation() -> None:
     assert plan.receiver.primary_query == "blue square pad"
     assert plan.input_frame_ids == (0, 9, 15)
     assert len(plan.prompt_sha256) == 64
+
+
+def test_target_only_qwen_contract_accepts_exactly_target() -> None:
+    context = _target_only_context()
+    plan = parse_semantic_plan(
+        _target_only_response(),
+        context=context,
+        model="fake-qwen",
+        rendered_prompt="rendered prompt",
+    )
+
+    assert plan.annotation_mode is AnnotationMode.TARGET_ONLY
+    assert tuple(item.role for item in plan.role_plans) == ("target",)
+    assert plan.target.primary_query == "orange bottle"
+    with pytest.raises(KeyError, match="not applicable"):
+        _ = plan.receiver
+
+    with pytest.raises(QwenStageError, match="exactly"):
+        parse_semantic_plan(
+            _response(),
+            context=context,
+            model="fake-qwen",
+            rendered_prompt="rendered prompt",
+        )
 
 
 def test_parse_semantic_plan_canonicalizes_exact_duplicate_candidates() -> None:

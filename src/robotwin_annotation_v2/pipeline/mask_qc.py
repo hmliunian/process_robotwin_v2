@@ -27,7 +27,6 @@ from ..models import (
 )
 from ..models.loop_context import RoleName
 
-
 _CANDIDATE_MARKER = "{candidate_panels}"
 _CONTEXT_MARKER = "{context_frames}"
 _PLACEHOLDER_PATTERN = re.compile(r"\{([a-z][a-z0-9_]*)\}")
@@ -42,9 +41,6 @@ _PANEL_COLORS = (
     (20, 160, 160),
     (220, 90, 150),
 )
-_ROLES: tuple[RoleName, RoleName] = ("target", "receiver")
-
-
 class MaskQCError(RuntimeError):
     """The candidate-mask QC request or response violated its contract."""
 
@@ -784,16 +780,22 @@ def run_mask_qc_stage(
             health = client.health()
         except Exception as exc:
             error = str(exc)
-            target = _error_report("target", MaskQCStatus.ERROR, f"mask QC health failed: {error}")
-            receiver = _error_report(
-                "receiver", MaskQCStatus.ERROR, f"mask QC health failed: {error}"
+            reports = tuple(
+                _error_report(
+                    semantic.role,
+                    MaskQCStatus.ERROR,
+                    f"mask QC health failed: {error}",
+                )
+                for semantic in semantic_plan.role_plans
             )
-            return MaskQCResult(target, receiver, {}, {"status": "error", "error": error})
+            return MaskQCResult(
+                role_reports=reports,
+                selected_masks={},
+                health={"status": "error", "error": error},
+            )
     executions: list[_RoleExecution] = []
-    for role, semantic in (
-        (_ROLES[0], semantic_plan.target),
-        (_ROLES[1], semantic_plan.receiver),
-    ):
+    for semantic in semantic_plan.role_plans:
+        role = semantic.role
         if semantic.seed_frame_id is None:
             seed_image = Image.new("RGB", (frame_shape[1], frame_shape[0]))
         else:
@@ -820,7 +822,8 @@ def run_mask_qc_stage(
     selected_masks: dict[RoleName, np.ndarray] = {}
     candidate_masks: dict[RoleName, dict[str, np.ndarray]] = {}
     candidate_panels: dict[RoleName, dict[str, Image.Image]] = {}
-    for role, execution in zip(_ROLES, executions, strict=True):
+    for semantic, execution in zip(semantic_plan.role_plans, executions, strict=True):
+        role = semantic.role
         candidate_masks[role] = {
             candidate.candidate_id: candidate.mask for candidate in execution.candidates
         }
@@ -842,8 +845,7 @@ def run_mask_qc_stage(
         )
         selected_masks[role] = selected.mask
     return MaskQCResult(
-        target=executions[0].report,
-        receiver=executions[1].report,
+        role_reports=tuple(execution.report for execution in executions),
         selected_masks=selected_masks,
         health=health,
         candidate_masks=candidate_masks,
