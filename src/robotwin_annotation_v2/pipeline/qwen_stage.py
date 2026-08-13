@@ -118,7 +118,6 @@ def build_qwen_request(
         "open_done": str(events.t_open_done),
         "annotation_mode": context.annotation_mode.value,
         "required_object_roles": ", ".join(context.annotation_spec.required_role_names),
-        "role_instructions": _role_instructions(context),
         "response_schema": _response_schema(context),
     }
     placeholders = set(_PLACEHOLDER_PATTERN.findall(prompt_template))
@@ -156,19 +155,6 @@ def build_qwen_request(
         rendered_prompt=rendered_prompt,
         messages=[{"role": "user", "content": content}],
         input_frame_ids=expected_ids,
-    )
-
-
-def _role_instructions(context: LoopContext) -> str:
-    definitions = {
-        "target": "target：随后被夹爪抓取并移动的完整物体。",
-        "receiver": (
-            "receiver：任务完成时应与 target 直接接触的完整物体或目标区域；"
-            "不要求位于\n  target 下方或承托 target，核心判断依据是二者的直接接触关系。"
-        ),
-    }
-    return "\n".join(
-        f"- {definitions[role]}" for role in context.annotation_spec.required_role_names
     )
 
 

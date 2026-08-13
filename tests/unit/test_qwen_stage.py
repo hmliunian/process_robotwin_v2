@@ -228,6 +228,21 @@ def test_target_only_qwen_contract_accepts_exactly_target() -> None:
         )
 
 
+def test_target_only_semantic_prompt_contains_only_target_contract() -> None:
+    template = (
+        PROJECT_ROOT / "configs/prompts/target_only_semantic.txt"
+    ).read_text(encoding="utf-8")
+    context = _target_only_context()
+    frames = {frame_id: _frames()[frame_id] for frame_id in (0, 9)}
+
+    request = build_qwen_request(context, frames, template)
+
+    assert "本模式只识别 target" in request.rendered_prompt
+    assert "不得添加其他角色" in request.rendered_prompt
+    assert '"target"' in request.rendered_prompt
+    assert "receiver" not in request.rendered_prompt
+
+
 def test_parse_semantic_plan_canonicalizes_exact_duplicate_candidates() -> None:
     payload = json.loads(_response())
     payload["target"]["shape_category_query"] = "orange bottle"

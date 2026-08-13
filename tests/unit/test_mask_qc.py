@@ -427,6 +427,34 @@ def test_target_only_qc_runs_no_receiver_candidates(tmp_path: Path) -> None:
         _ = result.receiver
 
 
+def test_target_only_qc_prompt_contains_only_target_rules() -> None:
+    context = _target_only_context()
+    images = _images()
+    client = FakeQCClient([_response("B")])
+
+    run_mask_qc_stage(
+        context,
+        _target_only_plan(),
+        FakeCandidateBackend(),
+        Path("/tmp/resource"),
+        seed_images={0: images[0]},
+        context_images={0: images[0], 7: images[7]},
+        frame_shape=FRAME_SHAPE,
+        mask_config=_config(
+            PROJECT_ROOT / "configs/prompts/target_only_mask_candidate_qc.txt"
+        ),
+        client=client,
+    )
+
+    content = client.messages[0][0]["content"]
+    prompt_text = "\n".join(
+        part["text"] for part in content if part["type"] == "text"
+    )
+    assert "本次只检查 target" in prompt_text
+    assert "随后真正被夹爪抓取并移动的实例" in prompt_text
+    assert "receiver" not in prompt_text
+
+
 def test_receiver_blue_region_prior_recovers_empty_text_candidates(
     tmp_path: Path,
 ) -> None:

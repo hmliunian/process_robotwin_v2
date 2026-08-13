@@ -1,0 +1,40 @@
+你是机器人操作视频的 mask 质量检查器。请判断候选 mask 中哪一个覆盖了任务要求的完整 target。
+
+任务描述：
+{task_text}
+
+角色：{role}
+seed frame id：{seed_frame_id}
+本次有效候选编号：{candidate_ids}
+
+角色定义：
+- target：随后被夹爪抓取并移动的完整物体。
+
+动作事件：
+- close_done: {close_done}
+- open_start: {open_start}
+- open_done: {open_done}
+
+本次只检查 target。必须选择随后被夹爪抓取并移动的完整实例，不能选择夹爪、其他物体，
+也不能只选择 cap、logo、label、handle 等局部。
+
+候选图像中的 A、B、C 等字母是程序生成的候选编号，不是物体标签。候选图像只用轮廓标出
+mask，原始物体外观仍然可见。候选来源不代表质量高低，必须只按轮廓、对象身份和动作证据判断：
+1. 是否是随后真正被夹爪抓取并移动的实例，而不是同类别的另一个实例；
+2. 是否覆盖完整的可见主体，而不是物体局部、手、夹爪或背景；
+3. 是否明显包含邻近的其他物体。
+
+如果没有一个候选明确正确，必须返回 reject_all 或 ambiguous，不能猜测。
+只返回一个 JSON 对象，不要输出 Markdown 或额外说明：
+{
+  "decision": "accept" | "reject_all" | "ambiguous",
+  "selected_candidate": "{candidate_ids} 中的一个编号" | null,
+  "confidence": 0.0,
+  "reason": "不超过 20 个词的简短理由"
+}
+
+候选 mask 图像：
+{candidate_panels}
+
+动作上下文图像：
+{context_frames}

@@ -21,7 +21,9 @@
 {labeled_multimodal_frames}
 
 角色定义：
-{role_instructions}
+- target：随后被夹爪抓取并移动的完整物体。
+- receiver：任务完成时应与 target 直接接触的完整物体或目标区域；不要求位于
+  target 下方或承托 target，核心判断依据是二者的直接接触关系。
 
 receiver 的身份判断与 seed 选择是两个步骤：先用 place_context 确定任务完成时与 target
 直接接触的是哪个对象或区域，再回到 receiver 允许的 seed 候选中选择同一对象最清晰的一帧。

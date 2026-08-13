@@ -21,7 +21,7 @@ from robotwin_annotation_v2.adapters import (
     sam3_video_resource,
 )
 from robotwin_annotation_v2.config import PipelineConfig, load_config
-from robotwin_annotation_v2.domain import ObjectRole
+from robotwin_annotation_v2.domain import AnnotationMode, ObjectRole, annotation_spec
 from robotwin_annotation_v2.models import (
     EpisodeRef,
     FrameWindow,
@@ -66,6 +66,7 @@ SAM_EXECUTION_ERRORS = (
 class SamEpisodeExecution:
     mask_run: MaskRun
     qc_path: Path | None
+    annotation_mode: AnnotationMode = AnnotationMode.PICK_PLACE
 
 
 @dataclass(frozen=True)
@@ -97,6 +98,23 @@ def _episode_ref(config: PipelineConfig, episode_index: int) -> EpisodeRef:
     return EpisodeRef(config.dataset.task, episode_index, config.dataset.camera)
 
 
+def _annotation_mode(config: PipelineConfig) -> AnnotationMode:
+    """Resolve mode while retaining compatibility with legacy test configs."""
+
+    annotation = getattr(config, "annotation", None)
+    return AnnotationMode(getattr(annotation, "mode", AnnotationMode.PICK_PLACE))
+
+
+def _build_context(
+    config: PipelineConfig,
+    dataset: RoboTwinDataset,
+    ref: EpisodeRef,
+) -> LoopContext:
+    """Build Stage-1 context with the task-declared annotation contract."""
+
+    return build_loop_context(dataset, ref, _annotation_mode(config))
+
+
 def run_preflight(config: PipelineConfig) -> None:
     dataset = _dataset(config)
     manifest_ids = tuple(int(value) for value in dataset.manifest["regression_episode_ids"])
@@ -109,7 +127,7 @@ def run_preflight(config: PipelineConfig) -> None:
 def run_loop(config: PipelineConfig, episode_index: int, run_id: str | None) -> None:
     dataset = _dataset(config)
     ref = _episode_ref(config, episode_index)
-    context = build_loop_context(dataset, ref)
+    context = _build_context(config, dataset, ref)
     store = ArtifactStore(config.output_root)
     selected_run_id = run_id or store.new_run_id()
     path = store.save_loop(selected_run_id, ref, context.to_json())
@@ -127,7 +145,7 @@ def run_loop(config: PipelineConfig, episode_index: int, run_id: str | None) -> 
 def run_qwen(config: PipelineConfig, episode_index: int, run_id: str | None) -> None:
     dataset = _dataset(config)
     ref = _episode_ref(config, episode_index)
-    context = build_loop_context(dataset, ref)
+    context = _build_context(config, dataset, ref)
     frames = dataset.read_frames(
         ref,
         (frame.frame_id for frame in context.semantic_frames),
@@ -176,13 +194,13 @@ def run_qwen(config: PipelineConfig, episode_index: int, run_id: str | None) -> 
             "loop_artifact": str(loop_path),
             "artifacts": {name: str(path) for name, path in paths.items()},
             "server": result.health,
-            "target": {
-                "seed_frame_id": plan.target.seed_frame_id,
-                "primary_query": plan.target.primary_query,
-            },
-            "receiver": {
-                "seed_frame_id": plan.receiver.seed_frame_id,
-                "primary_query": plan.receiver.primary_query,
+            "annotation_mode": context.annotation_mode.value,
+            "roles": {
+                role_plan.role: {
+                    "seed_frame_id": role_plan.seed_frame_id,
+                    "primary_query": role_plan.primary_query,
+                }
+                for role_plan in plan.role_plans
             },
         }
     )
@@ -276,20 +294,31 @@ def _load_completed_sam_stage(
         raise ValueError("saved run_manifest.json episode differs from current context")
     if manifest.get("frame_count") != context.frame_count:
         raise ValueError("saved run_manifest.json frame_count differs from current context")
-    role_records = {
+    role_records: dict[str, dict[str, Any]] = {
         item.get("role"): item
         for item in manifest.get("roles", [])
         if item.get("role") in {"target", "receiver"}
     }
     if set(role_records) != {"target", "receiver"}:
-        raise ValueError("gripper stage requires completed target and receiver roles")
+        raise ValueError("gripper stage requires both canonical object role records")
+    _validate_manifest_mode(manifest, config)
+    required_names = set(annotation_spec(_annotation_mode(config)).required_role_names)
+    for role, record in role_records.items():
+        if role in required_names:
+            if record.get("status") != "ok":
+                raise ValueError(f"gripper stage requires {role} status=ok")
+            if config.mask.qc_enabled and record.get("qc_status") != "passed":
+                raise ValueError(f"gripper stage requires {role} qc_status=passed")
+        elif (
+            record.get("status") != "not_applicable"
+            or record.get("qc_status") != "not_applicable"
+        ):
+            raise ValueError(
+                f"gripper stage requires non-applicable {role} to remain empty"
+            )
 
     def load_role(role: str) -> RoleMaskData:
         record = role_records[role]
-        if record.get("status") != "ok":
-            raise ValueError(f"gripper stage requires {role} status=ok")
-        if config.mask.qc_enabled and record.get("qc_status") != "passed":
-            raise ValueError(f"gripper stage requires {role} qc_status=passed")
         seed_mask_path = _safe_episode_relative(
             episode_dir,
             record.get("seed_mask_path"),
@@ -360,7 +389,7 @@ def _execute_gripper_episode(
 ) -> GripperEpisodeExecution:
     dataset = _dataset(config)
     ref = _episode_ref(config, episode_index)
-    context = build_loop_context(dataset, ref)
+    context = _build_context(config, dataset, ref)
     store = ArtifactStore(config.output_root)
     shape_values = tuple(int(value) for value in dataset.manifest["frame_shape_hw"])
     if len(shape_values) != 2:
@@ -434,7 +463,7 @@ def _execute_sam_episode(
 ) -> SamEpisodeExecution:
     dataset = _dataset(config)
     ref = _episode_ref(config, episode_index)
-    context = build_loop_context(dataset, ref)
+    context = _build_context(config, dataset, ref)
     store = ArtifactStore(config.output_root)
     plan = _load_saved_semantic_plan(store, run_id, context)
     shape_values = tuple(int(value) for value in dataset.manifest["frame_shape_hw"])
@@ -444,9 +473,9 @@ def _execute_sam_episode(
     semantic_frame_ids = {frame.frame_id for frame in context.semantic_frames}
     stage_images = dataset.read_frames(ref, semantic_frame_ids)
     seed_frame_ids = {
-        value
-        for value in (plan.target.seed_frame_id, plan.receiver.seed_frame_id)
-        if value is not None
+        role_plan.seed_frame_id
+        for role_plan in plan.role_plans
+        if role_plan.seed_frame_id is not None
     }
     seed_images = {frame_id: stage_images[frame_id] for frame_id in seed_frame_ids}
 
@@ -492,12 +521,20 @@ def _execute_sam_episode(
         seed_images=seed_images,
     )
     (store.episode_dir(run_id, ref) / "sam_failure.json").unlink(missing_ok=True)
-    return SamEpisodeExecution(mask_run, qc_path)
+    return SamEpisodeExecution(mask_run, qc_path, context.annotation_mode)
 
 
 def _emit_sam_result(run_id: str, execution: SamEpisodeExecution) -> bool:
     mask_run = execution.mask_run
-    complete = all(role.status is MaskStatus.OK for role in mask_run.roles)
+    required_names = set(
+        annotation_spec(execution.annotation_mode).required_role_names
+    )
+    object_roles = dict(zip(("target", "receiver"), mask_run.roles[:2], strict=True))
+    complete = set(object_roles) == {"target", "receiver"} and all(
+        role.status
+        is (MaskStatus.OK if name in required_names else MaskStatus.NOT_APPLICABLE)
+        for name, role in object_roles.items()
+    )
     _print(
         {
             "run_id": run_id,
@@ -592,6 +629,31 @@ def run_gripper(config: PipelineConfig, episode_index: int, run_id: str) -> None
         raise SystemExit(6)
 
 
+def _validate_manifest_mode(
+    manifest: dict[str, Any],
+    config: PipelineConfig,
+) -> None:
+    """Validate mode metadata, accepting only legacy pick/place omissions."""
+
+    mode = _annotation_mode(config)
+    raw_mode = manifest.get("annotation_mode")
+    if raw_mode is None:
+        if mode is not AnnotationMode.PICK_PLACE:
+            raise ValueError("target_only artifacts must declare annotation_mode")
+    elif raw_mode != mode.value:
+        raise ValueError("saved run_manifest.json annotation_mode differs from config")
+
+    expected_roles = list(annotation_spec(mode).required_role_names)
+    raw_roles = manifest.get("required_object_roles")
+    if raw_roles is None:
+        if mode is not AnnotationMode.PICK_PLACE:
+            raise ValueError("target_only artifacts must declare required_object_roles")
+    elif raw_roles != expected_roles:
+        raise ValueError(
+            "saved run_manifest.json required_object_roles differ from config"
+        )
+
+
 def _sam_episode_complete(
     config: PipelineConfig,
     store: ArtifactStore,
@@ -605,23 +667,43 @@ def _sam_episode_complete(
         return False
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        roles = {
+        _validate_manifest_mode(manifest, config)
+        required_names = set(
+            annotation_spec(_annotation_mode(config)).required_role_names
+        )
+        roles: dict[str, dict[str, Any]] = {
             item["role"]: item
             for item in manifest["roles"]
             if item.get("role") in {"target", "receiver"}
         }
         if set(roles) != {"target", "receiver"}:
             return False
-        if any(roles[role].get("status") != "ok" for role in roles):
-            return False
+        for role, record in roles.items():
+            expected = "ok" if role in required_names else "not_applicable"
+            if record.get("status") != expected:
+                return False
         if config.mask.qc_enabled:
             qc_path = episode_dir / "mask_qc.json"
             if not qc_path.is_file():
                 return False
             qc = json.loads(qc_path.read_text(encoding="utf-8"))
-            if any(qc["roles"][role].get("status") != "passed" for role in roles):
+            qc_roles = qc["roles"]
+            if set(qc_roles) != required_names:
                 return False
-            if any(roles[role].get("qc_status") != "passed" for role in roles):
+            if any(
+                qc_roles[role].get("status") != "passed"
+                for role in required_names
+            ):
+                return False
+            if any(
+                roles[role].get("qc_status") != "passed"
+                for role in required_names
+            ):
+                return False
+            if any(
+                roles[role].get("qc_status") != "not_applicable"
+                for role in set(roles) - required_names
+            ):
                 return False
     except (KeyError, TypeError, ValueError, json.JSONDecodeError, OSError):
         return False
@@ -641,6 +723,10 @@ def _gripper_episode_complete(
         return False
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        _validate_manifest_mode(manifest, config)
+        required_names = set(
+            annotation_spec(_annotation_mode(config)).required_role_names
+        )
         algorithm = manifest.get("algorithm")
         if not isinstance(algorithm, dict):
             return False
@@ -658,7 +744,11 @@ def _gripper_episode_complete(
         }
         if set(roles) != {"target", "receiver", role_name}:
             return False
-        if any(roles[role].get("status") != "ok" for role in roles):
+        for role in {"target", "receiver"}:
+            expected = "ok" if role in required_names else "not_applicable"
+            if roles[role].get("status") != expected:
+                return False
+        if roles[role_name].get("status") != "ok":
             return False
         if roles[role_name].get("qc_status") != "passed":
             return False
@@ -771,6 +861,10 @@ def run_sam_batch(
     summary = {
         "format_version": "robotwin_sam_batch_summary_v1",
         "run_id": run_id,
+        "annotation_mode": _annotation_mode(config).value,
+        "required_object_roles": list(
+            annotation_spec(_annotation_mode(config)).required_role_names
+        ),
         "requested_episode_ids": list(episode_ids),
         "resident_sam3": True,
         "records": records,
@@ -870,6 +964,10 @@ def run_gripper_batch(
     summary = {
         "format_version": "robotwin_gripper_batch_summary_v1",
         "run_id": run_id,
+        "annotation_mode": _annotation_mode(config).value,
+        "required_object_roles": list(
+            annotation_spec(_annotation_mode(config)).required_role_names
+        ),
         "requested_episode_ids": list(episode_ids),
         "resident_sam3": True,
         "records": records,
