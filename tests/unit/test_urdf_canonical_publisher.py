@@ -95,11 +95,12 @@ def _source_role(role: str, window: tuple[int, int]) -> dict[str, Any]:
     }
 
 
-def _write_source_episode(source: Path) -> np.ndarray:
+def _write_source_episode(source: Path, *, target_only: bool = False) -> np.ndarray:
     source.mkdir(parents=True)
     masks = np.zeros((4, FRAME_COUNT, 2, 3), dtype=bool)
     masks[0, :, 0, 0] = True
-    masks[1, :, 0, 1] = True
+    if not target_only:
+        masks[1, :, 0, 1] = True
     # Both old visual-gripper channels are deliberately populated. Publishing
     # must never leak either of them into the canonical URDF result.
     masks[2, :, 1, 0] = True
@@ -113,11 +114,26 @@ def _write_source_episode(source: Path) -> np.ndarray:
             ("target_0", "receiver_0", "gripper_left", "gripper_right")
         ),
         roles=np.asarray(("target", "receiver", "gripper", "gripper")),
-        annotation_status=np.asarray(("valid", "valid", "valid", "valid")),
-        qc_status=np.asarray(("passed", "passed", "passed", "passed")),
+        annotation_status=np.asarray(
+            (
+                "valid",
+                "not_applicable" if target_only else "valid",
+                "valid",
+                "valid",
+            )
+        ),
+        qc_status=np.asarray(
+            (
+                "passed",
+                "not_applicable" if target_only else "passed",
+                "passed",
+                "passed",
+            )
+        ),
     )
 
-    for role in ("target_0", "receiver_0"):
+    object_directories = ("target_0",) if target_only else ("target_0", "receiver_0")
+    for role in object_directories:
         role_dir = source / role
         role_dir.mkdir()
         (role_dir / "seed.rgb.png").write_bytes(f"{role}-rgb".encode())
@@ -155,6 +171,14 @@ def _write_source_episode(source: Path) -> np.ndarray:
         source / "loop.json",
         {
             "format_version": "robotwin_loop_context_v1",
+            **(
+                {
+                    "annotation_mode": "target_only",
+                    "required_object_roles": ["target"],
+                }
+                if target_only
+                else {}
+            ),
             "episode": {
                 "task": TASK,
                 "episode_index": EPISODE_INDEX,
@@ -174,7 +198,7 @@ def _write_source_episode(source: Path) -> np.ndarray:
             "windows": {
                 "loop": [0, 3],
                 "target_0": [0, 1],
-                "receiver_0": [1, 3],
+                "receiver_0": None if target_only else [1, 3],
             },
             "semantic_frames": [],
             "sources": {
@@ -199,6 +223,14 @@ def _write_source_episode(source: Path) -> np.ndarray:
         source / "run_manifest.json",
         {
             "format_version": "robotwin_mask_run_v2",
+            **(
+                {
+                    "annotation_mode": "target_only",
+                    "required_object_roles": ["target"],
+                }
+                if target_only
+                else {}
+            ),
             "run_id": SOURCE_RUN_ID,
             "episode": {
                 "task": TASK,
@@ -209,7 +241,27 @@ def _write_source_episode(source: Path) -> np.ndarray:
             "frame_count": FRAME_COUNT,
             "roles": [
                 _source_role("target", (0, 1)),
-                _source_role("receiver", (1, 3)),
+                (
+                    {
+                        "role": "receiver",
+                        "status": "not_applicable",
+                        "seed_frame_id": None,
+                        "primary_query": None,
+                        "output_window": None,
+                        "seed_rgb_path": None,
+                        "seed_mask_path": None,
+                        "canonical_envelope_path": None,
+                        "native_track_path": None,
+                        "temporal_qc_path": None,
+                        "nonempty_frames": 0,
+                        "failure": None,
+                        "qc_status": "not_applicable",
+                        "qc_selected_candidate": None,
+                        "qc_reason": None,
+                    }
+                    if target_only
+                    else _source_role("receiver", (1, 3))
+                ),
                 {
                     "role": "gripper_right",
                     "status": "ok",
@@ -236,6 +288,14 @@ def _write_source_episode(source: Path) -> np.ndarray:
         source / "frame_provenance.json",
         {
             "format_version": "robotwin_frame_provenance_v2",
+            **(
+                {
+                    "annotation_mode": "target_only",
+                    "required_object_roles": ["target"],
+                }
+                if target_only
+                else {}
+            ),
             "composition": "source SAM tracks",
             "channels": {
                 "target_0": {
@@ -245,10 +305,21 @@ def _write_source_episode(source: Path) -> np.ndarray:
                     "source_marker": "keep-target",
                 },
                 "receiver_0": {
-                    "status": "ok",
-                    "qc_status": "passed",
-                    "output_window": [1, 3],
-                    "source_marker": "keep-receiver",
+                    **(
+                        {
+                            "status": "not_applicable",
+                            "qc_status": "not_applicable",
+                            "reason": "receiver is not required",
+                            "nonempty_frame_ids": [],
+                        }
+                        if target_only
+                        else {
+                            "status": "ok",
+                            "qc_status": "passed",
+                            "output_window": [1, 3],
+                            "source_marker": "keep-receiver",
+                        }
+                    ),
                 },
                 "gripper_left": {
                     "status": "ok",
@@ -430,6 +501,32 @@ def _fixture(tmp_path: Path) -> PublishFixture:
         / CAMERA
     )
     source_masks = _write_source_episode(source)
+    backend = tmp_path / "backend-run" / f"episode_{EPISODE_INDEX:06d}"
+    track, record = _write_backend_episode(
+        backend,
+        source / "masks.npz",
+        source_masks,
+    )
+    destination = (
+        tmp_path
+        / "public-runs"
+        / RUN_ID
+        / TASK
+        / f"episode_{EPISODE_INDEX:06d}"
+        / CAMERA
+    )
+    return PublishFixture(source, backend, destination, record, source_masks, track)
+
+
+def _target_only_fixture(tmp_path: Path) -> PublishFixture:
+    source = (
+        tmp_path
+        / "frozen-source-run"
+        / TASK
+        / f"episode_{EPISODE_INDEX:06d}"
+        / CAMERA
+    )
+    source_masks = _write_source_episode(source, target_only=True)
     backend = tmp_path / "backend-run" / f"episode_{EPISODE_INDEX:06d}"
     track, record = _write_backend_episode(
         backend,
@@ -693,6 +790,54 @@ def test_publish_writes_canonical_mask_schema_and_only_replaces_gripper(
             "not_run",
             "passed",
         ]
+
+
+def test_target_only_urdf_publish_preserves_not_applicable_receiver(
+    tmp_path: Path,
+) -> None:
+    fixture = _target_only_fixture(tmp_path)
+
+    fixture.publish()
+
+    with np.load(fixture.destination_dir / "masks.npz", allow_pickle=False) as archive:
+        assert not archive["masks"][1].any()
+        assert archive["annotation_status"].tolist()[:2] == [
+            "valid",
+            "not_applicable",
+        ]
+        assert archive["qc_status"].tolist()[:2] == [
+            "passed",
+            "not_applicable",
+        ]
+    manifest = json.loads(
+        (fixture.destination_dir / "run_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["annotation_mode"] == "target_only"
+    assert manifest["required_object_roles"] == ["target"]
+    receiver = next(item for item in manifest["roles"] if item["role"] == "receiver")
+    assert receiver["status"] == "not_applicable"
+    assert not (fixture.destination_dir / "receiver_0").exists()
+    provenance = json.loads(
+        (fixture.destination_dir / "frame_provenance.json").read_text(encoding="utf-8")
+    )
+    assert provenance["channels"]["receiver_0"]["status"] == "not_applicable"
+
+
+def test_target_only_source_rejects_nonzero_receiver_pixels(tmp_path: Path) -> None:
+    fixture = _target_only_fixture(tmp_path)
+    path = fixture.source_episode_dir / "masks.npz"
+    with np.load(path, allow_pickle=False) as archive:
+        payload = {key: np.asarray(archive[key]).copy() for key in archive.files}
+    payload["masks"][1, 0, 0, 0] = True
+    np.savez_compressed(path, **payload)
+
+    with pytest.raises(UrdfGripperPublishError, match="receiver must be zero"):
+        validate_derivation_source_episode(
+            fixture.source_episode_dir,
+            task=TASK,
+            camera=CAMERA,
+            episode_index=EPISODE_INDEX,
+        )
 
 
 def test_publish_preserves_source_material_and_removes_old_sam_gripper_metadata(

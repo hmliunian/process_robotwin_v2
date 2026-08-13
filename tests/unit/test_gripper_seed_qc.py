@@ -9,6 +9,15 @@ import numpy as np
 from PIL import Image
 
 from robotwin_annotation_v2.adapters import QwenCompletion
+from robotwin_annotation_v2.domain import ObjectRole
+from robotwin_annotation_v2.models import (
+    EpisodeRef,
+    FramePurpose,
+    LoopContext,
+    LoopEvents,
+    SemanticFrame,
+)
+from robotwin_annotation_v2.models.mask_qc import MaskQCStatus
 from robotwin_annotation_v2.pipeline import (
     GripperSeedCandidate,
     ProjectedGripperRoi,
@@ -21,15 +30,6 @@ from robotwin_annotation_v2.pipeline import (
     render_gripper_candidate_panel,
     run_gripper_seed_qc,
 )
-from robotwin_annotation_v2.models import (
-    EpisodeRef,
-    FramePurpose,
-    LoopContext,
-    LoopEvents,
-    SemanticFrame,
-)
-from robotwin_annotation_v2.models.mask_qc import MaskQCStatus
-
 
 SHAPE = (12, 16)
 
@@ -337,3 +337,53 @@ def test_load_qc_native_tracks_includes_approved_seed_masks(tmp_path: Path) -> N
     assert tracks.target_seed_mask.all()
     assert tracks.receiver_seed_frame == 0
     assert tracks.provenance["run_id"] == "qc-run"
+
+
+def test_load_qc_native_tracks_target_only_does_not_require_receiver(
+    tmp_path: Path,
+) -> None:
+    ref = EpisodeRef("task", 7)
+    episode_dir = tmp_path / "task" / "episode_000007" / "cam_high"
+    target_dir = episode_dir / "target_0"
+    target_dir.mkdir(parents=True)
+    np.savez_compressed(
+        target_dir / "native_track.npz",
+        masks=np.ones((3, *SHAPE), dtype=bool),
+    )
+    Image.fromarray(np.ones(SHAPE, dtype=np.uint8) * 255).save(
+        target_dir / "seed.mask.png"
+    )
+    manifest = {
+        "run_id": "target-only-run",
+        "episode": ref.to_json(),
+        "frame_count": 3,
+        "roles": [
+            {
+                "role": "target",
+                "status": "ok",
+                "qc_status": "passed",
+                "seed_frame_id": 0,
+                "seed_mask_path": "target_0/seed.mask.png",
+                "native_track_path": "target_0/native_track.npz",
+            },
+            {
+                "role": "receiver",
+                "status": "not_applicable",
+                "qc_status": "not_applicable",
+            },
+        ],
+    }
+    (episode_dir / "run_manifest.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+
+    tracks = load_qc_native_object_tracks(
+        tmp_path,
+        ref,
+        expected_shape=(3, *SHAPE),
+        required_roles=(ObjectRole.TARGET,),
+    )
+
+    assert tracks.target.all()
+    assert not tracks.receiver.any()
+    assert tracks.receiver_seed_frame is None

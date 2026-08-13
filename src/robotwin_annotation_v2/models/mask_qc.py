@@ -17,6 +17,7 @@ class MaskQCStatus(StrEnum):
     REJECTED = "rejected"
     AMBIGUOUS = "ambiguous"
     ERROR = "error"
+    NOT_APPLICABLE = "not_applicable"
 
 
 @dataclass(frozen=True)

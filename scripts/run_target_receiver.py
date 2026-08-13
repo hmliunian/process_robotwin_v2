@@ -21,12 +21,13 @@ from robotwin_annotation_v2.adapters import (
     sam3_video_resource,
 )
 from robotwin_annotation_v2.config import PipelineConfig, load_config
+from robotwin_annotation_v2.domain import ObjectRole
 from robotwin_annotation_v2.models import (
     EpisodeRef,
     FrameWindow,
     LoopContext,
-    MaskRun,
     MaskQCStatus,
+    MaskRun,
     MaskStatus,
     SemanticPlan,
 )
@@ -43,13 +44,12 @@ from robotwin_annotation_v2.pipeline import (
     evaluate_temporal_mask,
     parse_semantic_plan,
     run_gripper_stage,
-    run_qwen_stage,
     run_mask_qc_stage,
+    run_qwen_stage,
     run_sam_stage,
     save_mask_qc_artifacts,
     save_sam_artifacts,
 )
-
 
 SAM_EXECUTION_ERRORS = (
     GripperStageError,
@@ -345,8 +345,10 @@ def _load_completed_sam_stage(
     return SamStageResult(
         frame_count=context.frame_count,
         frame_shape=frame_shape,
-        target=load_role("target"),
-        receiver=load_role("receiver"),
+        role_masks=tuple(
+            load_role(role.value)
+            for role in context.annotation_spec.required_object_roles
+        ),
     )
 
 
@@ -372,9 +374,7 @@ def _execute_gripper_episode(
         frame_shape,
     )
     seed_frame_ids = {
-        value
-        for value in (sam_result.target.seed_frame_id, sam_result.receiver.seed_frame_id)
-        if value is not None
+        data.seed_frame_id for data in sam_result.role_masks if data.seed_frame_id is not None
     }
     seed_images = dataset.read_frames(ref, seed_frame_ids)
     qc_client = OpenAICompatibleQwenClient(
@@ -393,8 +393,9 @@ def _execute_gripper_episode(
             resource_path=resource_path,
             frame_shape=frame_shape,
             gripper_roi_config=config.gripper_roi,
-            target_native_track=sam_result.target.native_track,
-            receiver_native_track=sam_result.receiver.native_track,
+            object_tracks={
+                ObjectRole(data.role): data.native_track for data in sam_result.role_masks
+            },
             qc_client=qc_client,
             qc_prompt_template=prompt_path,
             qc_max_tokens=220,

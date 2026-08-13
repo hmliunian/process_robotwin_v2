@@ -14,6 +14,7 @@ class MaskStatus(StrEnum):
     OK = "ok"
     FAILED = "failed"
     QUARANTINED = "quarantined"
+    NOT_APPLICABLE = "not_applicable"
 
 
 @dataclass(frozen=True)
@@ -22,7 +23,7 @@ class RoleMaskResult:
     status: MaskStatus
     seed_frame_id: int | None
     primary_query: str | None
-    output_window: FrameWindow
+    output_window: FrameWindow | None
     seed_rgb_path: str | None
     seed_mask_path: str | None
     canonical_envelope_path: str | None
@@ -37,13 +38,34 @@ class RoleMaskResult:
     def __post_init__(self) -> None:
         if self.nonempty_frames < 0:
             raise ValueError("nonempty_frames must be non-negative")
-        if self.status is MaskStatus.OK and self.failure is not None:
+        if self.status in {MaskStatus.OK, MaskStatus.NOT_APPLICABLE} and self.failure is not None:
             raise ValueError("successful role result cannot contain failure")
-        if self.status is not MaskStatus.OK and not self.failure:
+        if self.status in {MaskStatus.FAILED, MaskStatus.QUARANTINED} and not self.failure:
             raise ValueError("failed or quarantined role result must contain failure")
+        if self.status is MaskStatus.NOT_APPLICABLE and any(
+            value is not None
+            for value in (
+                self.seed_frame_id,
+                self.primary_query,
+                self.output_window,
+                self.seed_rgb_path,
+                self.seed_mask_path,
+                self.canonical_envelope_path,
+                self.native_track_path,
+                self.temporal_qc_path,
+            )
+        ):
+            raise ValueError("not_applicable role cannot contain annotation artifacts")
+        if self.status is MaskStatus.NOT_APPLICABLE and self.nonempty_frames != 0:
+            raise ValueError("not_applicable role must be empty")
+        if self.status is not MaskStatus.NOT_APPLICABLE and self.output_window is None:
+            raise ValueError("applicable role requires an output window")
         if self.qc_status is not MaskQCStatus.PASSED and self.qc_selected_candidate is not None:
             raise ValueError("only passed QC may select a candidate")
-        if self.qc_status is not MaskQCStatus.NOT_RUN and not self.qc_reason:
+        if self.qc_status not in {
+            MaskQCStatus.NOT_RUN,
+            MaskQCStatus.NOT_APPLICABLE,
+        } and not self.qc_reason:
             raise ValueError("executed QC must include a reason")
 
     def to_json(self) -> dict[str, Any]:
@@ -52,7 +74,9 @@ class RoleMaskResult:
             "status": self.status.value,
             "seed_frame_id": self.seed_frame_id,
             "primary_query": self.primary_query,
-            "output_window": self.output_window.to_json(),
+            "output_window": (
+                None if self.output_window is None else self.output_window.to_json()
+            ),
             "seed_rgb_path": self.seed_rgb_path,
             "seed_mask_path": self.seed_mask_path,
             "canonical_envelope_path": self.canonical_envelope_path,

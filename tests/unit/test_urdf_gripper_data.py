@@ -78,6 +78,39 @@ def _write_loop_context(path: Path, events: ActiveGripperLoop) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
+def test_target_only_loop_requires_null_receiver_window(tmp_path: Path) -> None:
+    events = ActiveGripperLoop("right", 3, 5, 9, 10, 14)
+    path = tmp_path / "loop.json"
+    payload = {
+        "format_version": "robotwin_loop_context_v1",
+        "annotation_mode": "target_only",
+        "required_object_roles": ["target"],
+        "episode": {
+            "task": "move_pillbottle_pad",
+            "episode_index": 7152,
+            "episode_id": "007152",
+            "camera": "cam_high",
+        },
+        "frame_count": 15,
+        "events": events.to_json(),
+        "windows": {
+            "loop": list(events.inclusive_window),
+            "target_0": [events.t_move_start, events.t_close_done],
+            "receiver_0": None,
+        },
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    context = load_authoritative_loop_context(
+        path,
+        expected_task="move_pillbottle_pad",
+        expected_episode_index=7152,
+        expected_camera="cam_high",
+    )
+
+    assert context.annotation_mode.value == "target_only"
+
+
 def test_resolve_episode_paths_uses_zero_padding_and_depth_sidecar_tree(
     tmp_path: Path,
 ) -> None:

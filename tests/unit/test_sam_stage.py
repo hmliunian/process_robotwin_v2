@@ -487,6 +487,53 @@ def test_save_sam_artifacts_marks_grippers_not_annotated(tmp_path: Path) -> None
     assert provenance["gripper_backend"] == "sam"
 
 
+def test_target_only_artifacts_publish_receiver_as_not_applicable(
+    tmp_path: Path,
+) -> None:
+    context = _target_only_context()
+    plan = _target_only_plan()
+    result = run_sam_stage(
+        context,
+        plan,
+        FakeSamBackend(),
+        Path("/tmp/fake-resource"),
+        frame_shape=FRAME_SHAPE,
+        mask_config=MaskConfig(0, 0),
+    )
+    seed_image = Image.fromarray(np.zeros((*FRAME_SHAPE, 3), dtype=np.uint8))
+
+    mask_run = save_sam_artifacts(
+        ArtifactStore(tmp_path),
+        "target-only-test",
+        context,
+        plan,
+        result,
+        seed_images={0: seed_image},
+    )
+
+    episode_dir = Path(mask_run.artifact_dir)
+    with np.load(episode_dir / "masks.npz", allow_pickle=False) as archive:
+        assert not archive["masks"][1].any()
+        assert archive["annotation_status"].tolist()[:2] == [
+            "valid",
+            "not_applicable",
+        ]
+        assert archive["qc_status"].tolist()[:2] == [
+            "not_run",
+            "not_applicable",
+        ]
+    manifest = json.loads((episode_dir / "run_manifest.json").read_text())
+    assert manifest["annotation_mode"] == "target_only"
+    assert manifest["required_object_roles"] == ["target"]
+    receiver = next(item for item in manifest["roles"] if item["role"] == "receiver")
+    assert receiver["status"] == "not_applicable"
+    assert receiver["output_window"] is None
+    assert receiver["native_track_path"] is None
+    assert not (episode_dir / "receiver_0").exists()
+    provenance = json.loads((episode_dir / "frame_provenance.json").read_text())
+    assert provenance["channels"]["receiver_0"]["status"] == "not_applicable"
+
+
 def test_save_sam_artifacts_writes_active_gripper_channel(tmp_path: Path) -> None:
     context = _context()
     plan = _plan()

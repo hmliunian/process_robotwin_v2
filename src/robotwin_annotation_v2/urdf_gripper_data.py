@@ -14,6 +14,8 @@ from typing import Any, Literal, Mapping
 
 import numpy as np
 
+from .domain import AnnotationMode, annotation_spec
+
 ArmName = Literal["left", "right"]
 
 OPEN_THRESHOLD = 0.9
@@ -134,6 +136,7 @@ class AuthoritativeLoopContext:
     camera: str
     frame_count: int
     events: ActiveGripperLoop
+    annotation_mode: AnnotationMode
 
 
 @dataclass(frozen=True)
@@ -309,17 +312,35 @@ def load_authoritative_loop_context(
         )
 
     windows = _required_mapping(payload, "windows", description="source loop")
+    raw_mode = payload.get("annotation_mode", AnnotationMode.PICK_PLACE.value)
+    try:
+        annotation_mode = AnnotationMode(raw_mode)
+    except (TypeError, ValueError) as exc:
+        raise UrdfGripperDataError(
+            f"unsupported source loop annotation_mode: {raw_mode!r}"
+        ) from exc
+    spec = annotation_spec(annotation_mode)
+    raw_roles = payload.get("required_object_roles")
+    if raw_roles is not None and raw_roles != list(spec.required_role_names):
+        raise UrdfGripperDataError(
+            "source loop required_object_roles differ from annotation_mode"
+        )
     _validate_recorded_window(windows, "loop", events.inclusive_window)
     _validate_recorded_window(
         windows,
         "target_0",
         (events.t_move_start, events.t_close_done),
     )
-    _validate_recorded_window(
-        windows,
-        "receiver_0",
-        (events.t_close_done, events.t_open_done),
-    )
+    if annotation_mode is AnnotationMode.PICK_PLACE:
+        _validate_recorded_window(
+            windows,
+            "receiver_0",
+            (events.t_close_done, events.t_open_done),
+        )
+    elif windows.get("receiver_0") is not None:
+        raise UrdfGripperDataError(
+            "target_only source loop receiver_0 window must be null"
+        )
     return AuthoritativeLoopContext(
         path=source,
         task=expected_task,
@@ -327,6 +348,7 @@ def load_authoritative_loop_context(
         camera=expected_camera,
         frame_count=frame_count,
         events=events,
+        annotation_mode=annotation_mode,
     )
 
 
