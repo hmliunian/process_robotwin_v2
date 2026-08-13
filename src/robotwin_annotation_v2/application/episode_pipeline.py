@@ -139,7 +139,11 @@ def _build_context(
 ) -> LoopContext:
     """Build Stage-1 context with the task-declared annotation contract."""
 
-    return build_loop_context(dataset, ref, _annotation_mode(config))
+    return build_loop_context(
+        dataset,
+        ref,
+        annotation_mode=_annotation_mode(config),
+    )
 
 
 def run_preflight(config: PipelineConfig) -> None:

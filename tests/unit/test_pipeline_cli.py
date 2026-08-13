@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from robotwin_annotation_v2.application import episode_pipeline
 from robotwin_annotation_v2.adapters import ArtifactStore, Sam3Error
 from robotwin_annotation_v2.domain import AnnotationMode
 from robotwin_annotation_v2.models import EpisodeRef, MaskStatus
@@ -73,6 +74,41 @@ def test_run_entrypoint_calls_qwen_sam_then_gripper_with_same_run_id() -> None:
         ("sam", 7152, "test-run"),
         ("gripper", 7152, "test-run"),
     ]
+
+
+def test_episode_context_passes_annotation_mode_as_keyword() -> None:
+    received: dict[str, Any] = {}
+
+    def fake_build_context(
+        dataset: Any,
+        ref: Any,
+        *,
+        annotation_mode: AnnotationMode,
+    ) -> str:
+        received.update(
+            dataset=dataset,
+            ref=ref,
+            annotation_mode=annotation_mode,
+        )
+        return "context"
+
+    original = episode_pipeline.build_loop_context
+    episode_pipeline.build_loop_context = fake_build_context
+    config = SimpleNamespace(
+        annotation=SimpleNamespace(mode=AnnotationMode.PICK_PLACE)
+    )
+
+    try:
+        result = episode_pipeline._build_context(config, "dataset", "episode-ref")
+    finally:
+        episode_pipeline.build_loop_context = original
+
+    assert result == "context"
+    assert received == {
+        "dataset": "dataset",
+        "ref": "episode-ref",
+        "annotation_mode": AnnotationMode.PICK_PLACE,
+    }
 
 
 def test_sam_batch_reuses_one_backend_for_multiple_episodes(tmp_path: Path) -> None:
