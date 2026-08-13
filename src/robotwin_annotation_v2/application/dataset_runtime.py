@@ -426,7 +426,7 @@ class _ProcessEventSender(ProcessUI):
         self._send("detail", text)
 
 
-def _target_receiver_source_process_entry(
+def _object_source_process_entry(
     connection: Any,
     pipeline_config: PipelineConfig,
     *,
@@ -460,7 +460,7 @@ def _target_receiver_source_process_entry(
             episode_ids=episode_ids,
             force=False,
             skip_render=True,
-            target_receiver_only=True,
+            object_source_only=True,
             report_lifecycle=False,
             incremental_source=incremental,
             episode_terminal_callback=(
@@ -613,7 +613,7 @@ def _run_streaming_source_urdf_workers(
     urdf_receive, urdf_send = context.Pipe(duplex=False)
     ready_queue = context.Queue(maxsize=buffer_size)
     source_process = context.Process(
-        target=_target_receiver_source_process_entry,
+        target=_object_source_process_entry,
         kwargs={
             "connection": source_send,
             "pipeline_config": pipeline_config,
@@ -822,7 +822,7 @@ def _run_streaming_source_urdf_workers(
     return source_summary, backend_result, backend_error
 
 
-def _run_target_receiver_source_process(
+def _run_object_source_process(
     pipeline_config: PipelineConfig,
     *,
     dataset_root: Path,
@@ -838,7 +838,7 @@ def _run_target_receiver_source_process(
     context = mp.get_context("spawn")
     receive_connection, send_connection = context.Pipe(duplex=False)
     process = context.Process(
-        target=_target_receiver_source_process_entry,
+        target=_object_source_process_entry,
         kwargs={
             "connection": send_connection,
             "pipeline_config": pipeline_config,
@@ -849,7 +849,7 @@ def _run_target_receiver_source_process(
             "run_id": run_id,
             "episode_ids": episode_ids,
         },
-        name="robotwin-target-receiver-source",
+        name="robotwin-object-source",
     )
     summary: dict[str, Any] | None = None
     child_error: tuple[str, str, str] | None = None
@@ -896,16 +896,16 @@ def _run_target_receiver_source_process(
     if child_error is not None:
         error_type, error, child_traceback = child_error
         raise RuntimeError(
-            "live target/receiver subprocess failed: "
+            "live object-source subprocess failed: "
             f"{error_type}: {error}\n{child_traceback}"
         )
     if process.exitcode != 0:
         raise RuntimeError(
-            "live target/receiver subprocess exited without a result: "
+            "live object-source subprocess exited without a result: "
             f"exitcode={process.exitcode}"
         )
     if summary is None:
-        raise RuntimeError("live target/receiver subprocess returned no summary")
+        raise RuntimeError("live object-source subprocess returned no summary")
     return summary
 
 
@@ -1038,7 +1038,9 @@ def _validate_run_id(run_id: str) -> str:
 def _summary_gripper_backend(summary: Mapping[str, Any]) -> str | None:
     top_level = summary.get("gripper_backend")
     backend_record = summary.get("backend")
-    nested = backend_record.get("type") if isinstance(backend_record, Mapping) else None
+    nested = None
+    if isinstance(backend_record, Mapping):
+        nested = backend_record.get("gripper", backend_record.get("type"))
     if top_level is not None and nested is not None and top_level != nested:
         raise ValueError("existing process summary has conflicting backend ownership")
     value = top_level if top_level is not None else nested
@@ -1104,7 +1106,7 @@ def select_urdf_source_episodes(
     requested_episode_ids: tuple[int, ...] | None = None,
     expected_frame_counts: Mapping[int, int] | None = None,
 ) -> UrdfSourceSelection:
-    """Select only completed source episodes with valid target/receiver masks."""
+    """Select completed source episodes with every mode-required object mask."""
 
     source_root = source_run_dir.expanduser().resolve()
     summary = _read_json_object(
@@ -1182,7 +1184,7 @@ def select_urdf_source_episodes(
         )
         raise ValueError(f"requested URDF source episodes are not publishable: {rendered}")
     if not accepted:
-        raise ValueError("source run contains no publishable target/receiver episodes")
+        raise ValueError("source run contains no publishable object-mask episodes")
     return UrdfSourceSelection(
         episode_ids=tuple(accepted),
         excluded=tuple(excluded),
@@ -1610,6 +1612,12 @@ def process_urdf_source_run(
     if not isinstance(source_dynamic_manifest, Mapping):
         raise ValueError("source process summary has no dynamic_manifest object")
     dynamic_manifest = dict(source_dynamic_manifest)
+    source_annotation_mode = str(
+        selection.source_summary.get("annotation_mode", "pick_place")
+    )
+    source_required_roles = selection.source_summary.get("required_object_roles")
+    if source_required_roles is None:
+        source_required_roles = ["target", "receiver"]
     records: list[dict[str, Any]] = list(public_discovery.skipped)
     recorded_episode_ids = {
         int(record["episode"])
@@ -2106,6 +2114,8 @@ def process_urdf_source_run(
     }
     summary = {
         "format_version": "robotwin_process_dataset_summary_v1",
+        "annotation_mode": source_annotation_mode,
+        "required_object_roles": list(source_required_roles),
         "gripper_backend": "urdf",
         "run_id": selected_run_id,
         "dataset_root": str(config.dataset_root),
@@ -2120,7 +2130,7 @@ def process_urdf_source_run(
         "dynamic_manifest": dynamic_manifest,
         "qwen_health": (
             selection.source_summary.get("qwen_health")
-            if source_mode == "live_target_receiver_stage"
+            if source_mode in {"live_object_source_stage", "live_target_receiver_stage"}
             else None
         ),
         "records": records,
@@ -2177,6 +2187,8 @@ def process_dataset(
     episode_ids: tuple[int, ...] | None = None,
     force: bool = False,
     skip_render: bool = False,
+    object_source_only: bool | None = None,
+    # Deprecated compatibility alias.  New callers must use object_source_only.
     target_receiver_only: bool = False,
     report_lifecycle: bool = True,
     incremental_source: bool = False,
@@ -2184,8 +2196,25 @@ def process_dataset(
     backend_factory: Callable[..., Any] | None = None,
     reporter: ProcessUI | None = None,
 ) -> dict[str, Any]:
-    if incremental_source and not target_receiver_only:
-        raise ValueError("incremental source receipts require target_receiver_only mode")
+    """Run Qwen and object SAM, optionally followed by the SAM gripper stage.
+
+    ``object_source_only`` describes stage scope, not annotation semantics.  The
+    semantic mode always comes from ``config.annotation.mode``.  The deprecated
+    ``target_receiver_only`` keyword remains accepted for old callers while new
+    code uses the role-neutral name.
+    """
+
+    if object_source_only is not None and target_receiver_only:
+        raise ValueError(
+            "object_source_only and deprecated target_receiver_only cannot both be set"
+        )
+    source_only = (
+        target_receiver_only
+        if object_source_only is None
+        else bool(object_source_only)
+    )
+    if incremental_source and not source_only:
+        raise ValueError("incremental source receipts require object_source_only mode")
     if run_id is not None:
         _validate_run_id(run_id)
     if reporter is not None:
@@ -2247,6 +2276,8 @@ def process_dataset(
             camera=camera,
             dynamic_manifest=manifest,
             requested_episode_ids=selected_ids,
+            annotation_mode=config.annotation.mode.value,
+            required_object_roles=config.annotation.spec.required_role_names,
         )
 
     def episode_terminal(episode_id: int, status: str) -> None:
@@ -2280,7 +2311,7 @@ def process_dataset(
     pending: list[int] = []
     completion_check = (
         runtime.sam_episode_complete
-        if target_receiver_only
+        if source_only
         else runtime.gripper_episode_complete
     )
     for position, episode_id in enumerate(selected_ids, start=1):
@@ -2348,7 +2379,7 @@ def process_dataset(
                         runtime.run_qwen(dynamic, episode_id, selected_run_id)
                     if reporter is not None:
                         reporter.stage_finished(episode_id, current_stage)
-                    current_stage = "target_receiver_sam"
+                    current_stage = "object_sam"
                     if reporter is not None:
                         reporter.stage_started(episode_id, current_stage)
                     sam_execution = runtime.execute_sam_episode(
@@ -2380,7 +2411,7 @@ def process_dataset(
                         continue
                     if reporter is not None:
                         reporter.stage_finished(episode_id, current_stage)
-                    if target_receiver_only:
+                    if source_only:
                         records.append(
                             {
                                 "episode": episode_id,
@@ -2514,7 +2545,7 @@ def process_dataset(
         if record.get("status") in {"completed", "skipped_complete"}
     )
     if (
-        not target_receiver_only
+        not source_only
         and not skip_render
         and fatal_error is None
         and renderable_ids
@@ -2541,8 +2572,8 @@ def process_dataset(
                 )
     elif reporter is not None:
         reason = (
-            "target/receiver source stage"
-            if target_receiver_only
+            "object source stage"
+            if source_only
             else "disabled by --skip-render"
             if skip_render
             else "blocked by fatal CUDA error"
@@ -2553,7 +2584,9 @@ def process_dataset(
 
     summary = {
         "format_version": "robotwin_process_dataset_summary_v1",
-        "gripper_backend": "sam",
+        "annotation_mode": config.annotation.mode.value,
+        "required_object_roles": list(config.annotation.spec.required_role_names),
+        "gripper_backend": None if source_only else "sam",
         "run_id": selected_run_id,
         "dataset_root": str(dataset_root.expanduser().resolve()),
         "task": task,
@@ -2565,9 +2598,12 @@ def process_dataset(
         "records": records,
         "render": render_report,
         "fatal_error": None if fatal_error is None else str(fatal_error),
-        "backend": {"type": "sam"},
+        "backend": {
+            "object_masks": "sam",
+            "gripper": None if source_only else "sam",
+        },
         "stage_mode": (
-            "target_receiver_only" if target_receiver_only else "full_sam"
+            "object_source_only" if source_only else "full_sam"
         ),
     }
     failure_statuses = {
@@ -2613,7 +2649,7 @@ def process_live_urdf_pipeline(
     backend_factory: Callable[..., Any] | None = None,
     reporter: ProcessUI | None = None,
 ) -> dict[str, Any]:
-    """Run a fresh target/receiver source stage followed by the URDF gripper stage."""
+    """Run the mode-required object source followed by the URDF gripper stage."""
 
     resolved_dataset_root = dataset_root.expanduser().resolve()
     resolved_output_root = output_root.expanduser().resolve()
@@ -2636,12 +2672,12 @@ def process_live_urdf_pipeline(
         run_id=selected_run_id,
         resume=False,
     )
-    source_run_id = _validate_run_id(f"{selected_run_id}-target-receiver")
+    source_run_id = _validate_run_id(f"{selected_run_id}-object-source")
     source_output_root = resolved_output_root / "_sources"
     source_run_dir = source_output_root / source_run_id
     if source_run_dir.exists():
         raise FileExistsError(
-            f"live target/receiver source run already exists: {source_run_dir}"
+            f"live object-source run already exists: {source_run_dir}"
         )
 
     depth_discovery = discover_episodes(
@@ -2706,7 +2742,7 @@ def process_live_urdf_pipeline(
                 len(source_episode_ids),
             )
         reporter.note(
-            f"target/receiver source will be frozen at {source_run_dir}"
+            f"object-mask source will be frozen at {source_run_dir}"
         )
 
     selected_egl_device: int | None = None
@@ -2792,7 +2828,7 @@ def process_live_urdf_pipeline(
                 detail=prepared_backend_error,
             )
     elif backend_factory is None:
-        source_summary = _run_target_receiver_source_process(
+        source_summary = _run_object_source_process(
             pipeline_config,
             dataset_root=resolved_dataset_root,
             task=task,
@@ -2818,7 +2854,7 @@ def process_live_urdf_pipeline(
             episode_ids=source_episode_ids,
             force=False,
             skip_render=True,
-            target_receiver_only=True,
+            object_source_only=True,
             report_lifecycle=False,
             backend_factory=backend_factory,
             reporter=reporter,
@@ -2850,7 +2886,7 @@ def process_live_urdf_pipeline(
         requested_ids is not None or not allow_partial_source
     ):
         raise RuntimeError(
-            "live target/receiver source stage did not pass; its frozen diagnostics "
+            "live object-source stage did not pass; its frozen diagnostics "
             f"are at {source_run_dir}"
         )
 
@@ -2874,7 +2910,7 @@ def process_live_urdf_pipeline(
         ),
         fit_config_json=fit_config_json,
         allow_partial_source=allow_partial_source,
-        source_mode="live_target_receiver_stage",
+        source_mode="live_object_source_stage",
         source_release=source_release,
         prepared_backend_result=prepared_backend_result,
         prepared_backend_error=prepared_backend_error,

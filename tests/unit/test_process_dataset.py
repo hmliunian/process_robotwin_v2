@@ -445,8 +445,8 @@ def test_process_dataset_reports_sam_stages_without_embedded_json(
     assert reporter.stages == [
         ("started", 7, "qwen", None),
         ("finished", 7, "qwen", "completed"),
-        ("started", 7, "target_receiver_sam", None),
-        ("finished", 7, "target_receiver_sam", "completed"),
+        ("started", 7, "object_sam", None),
+        ("finished", 7, "object_sam", "completed"),
         ("started", 7, "gripper_sam", None),
         ("finished", 7, "gripper_sam", "completed"),
     ]
@@ -510,6 +510,11 @@ def test_process_dataset_target_receiver_only_skips_gripper_and_uses_sam_resume(
     ]
     assert summary["passed"] is True
     assert summary["records"] == [{"episode": 7, "status": "completed"}]
+    assert summary["annotation_mode"] == "pick_place"
+    assert summary["required_object_roles"] == ["target", "receiver"]
+    assert summary["gripper_backend"] is None
+    assert summary["backend"] == {"object_masks": "sam", "gripper": None}
+    assert summary["stage_mode"] == "object_source_only"
 
 
 def test_default_bundled_urdf_path_is_repository_asset() -> None:
@@ -769,12 +774,12 @@ def test_live_urdf_pipeline_runs_target_receiver_source_before_derived_urdf(
     )
 
     expected_source_root = (output_root / "_sources").resolve()
-    expected_source_run = expected_source_root / "live-urdf-test-target-receiver"
+    expected_source_run = expected_source_root / "live-urdf-test-object-source"
     assert events == ["target_receiver", "release", "urdf"]
     assert source_calls["config"] is config
     assert source_calls["output_root"] == expected_source_root
-    assert source_calls["run_id"] == "live-urdf-test-target-receiver"
-    assert source_calls["target_receiver_only"] is True
+    assert source_calls["run_id"] == "live-urdf-test-object-source"
+    assert source_calls["object_source_only"] is True
     assert source_calls["skip_render"] is True
     assert urdf_calls["pipeline_config"] is config
     assert urdf_calls["source_run_dir"] == expected_source_run
@@ -1810,6 +1815,8 @@ def test_process_urdf_source_run_renders_successes_after_partial_backend_failure
     persisted = json.loads(Path(summary["artifact"]).read_text(encoding="utf-8"))
     assert set(persisted) == {
         "format_version",
+        "annotation_mode",
+        "required_object_roles",
         "gripper_backend",
         "run_id",
         "dataset_root",

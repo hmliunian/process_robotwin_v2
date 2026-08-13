@@ -625,7 +625,9 @@ def test_incremental_source_can_publish_before_process_summary_exists(
     assert validated.lineage["format_version"] == (
         "robotwin_derivation_source_lineage_v2"
     )
-    assert validated.summary["format_version"] == "robotwin_source_run_contract_v1"
+    assert validated.summary["format_version"] == "robotwin_source_run_contract_v2"
+    assert validated.summary["annotation_mode"] == "pick_place"
+    assert validated.summary["required_object_roles"] == ["target", "receiver"]
     assert validated.lineage["source_run"]["source_run_contract"]["path"] == (
         "source_run_contract.json"
     )

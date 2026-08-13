@@ -29,7 +29,8 @@ DERIVATION_SOURCE_LINEAGE_FORMAT_VERSION = "robotwin_derivation_source_lineage_v
 DERIVATION_SOURCE_LINEAGE_V2_FORMAT_VERSION = (
     "robotwin_derivation_source_lineage_v2"
 )
-SOURCE_RUN_CONTRACT_FORMAT_VERSION = "robotwin_source_run_contract_v1"
+SOURCE_RUN_CONTRACT_FORMAT_VERSION = "robotwin_source_run_contract_v2"
+LEGACY_SOURCE_RUN_CONTRACT_FORMAT_VERSION = "robotwin_source_run_contract_v1"
 SOURCE_EPISODE_COMPLETION_RECEIPT_FORMAT_VERSION = (
     "robotwin_source_episode_completion_receipt_v1"
 )
@@ -683,7 +684,7 @@ def _validate_source_run_contract(
     episode_index: int,
     expected_dataset_root: Path | None,
 ) -> Path:
-    expected_keys = {
+    common_keys = {
         "format_version",
         "run_id",
         "dataset_root",
@@ -693,12 +694,37 @@ def _validate_source_run_contract(
         "requested_episode_ids",
         "contract_sha256",
     }
+    format_version = contract.get("format_version")
+    expected_keys = (
+        common_keys
+        if format_version == LEGACY_SOURCE_RUN_CONTRACT_FORMAT_VERSION
+        else common_keys | {"annotation_mode", "required_object_roles"}
+    )
     if set(contract) != expected_keys:
         raise UrdfGripperPublishError(
             "source run contract keys differ from the immutable schema"
         )
-    if contract.get("format_version") != SOURCE_RUN_CONTRACT_FORMAT_VERSION:
+    if format_version not in {
+        LEGACY_SOURCE_RUN_CONTRACT_FORMAT_VERSION,
+        SOURCE_RUN_CONTRACT_FORMAT_VERSION,
+    }:
         raise UrdfGripperPublishError("source run contract format is unsupported")
+    if format_version == LEGACY_SOURCE_RUN_CONTRACT_FORMAT_VERSION:
+        source_mode = AnnotationMode.PICK_PLACE
+        source_roles = annotation_spec(source_mode).required_role_names
+    else:
+        raw_mode = contract.get("annotation_mode")
+        try:
+            source_mode = AnnotationMode(raw_mode)
+        except (TypeError, ValueError) as exc:
+            raise UrdfGripperPublishError(
+                f"source run contract has unsupported annotation_mode: {raw_mode!r}"
+            ) from exc
+        source_roles = annotation_spec(source_mode).required_role_names
+        if contract.get("required_object_roles") != list(source_roles):
+            raise UrdfGripperPublishError(
+                "source run contract required_object_roles differ from annotation_mode"
+            )
     _validate_self_hash(
         contract,
         hash_key="contract_sha256",
@@ -771,6 +797,8 @@ def write_source_run_contract(
     camera: str,
     dynamic_manifest: Mapping[str, Any],
     requested_episode_ids: Sequence[int],
+    annotation_mode: AnnotationMode | str = AnnotationMode.PICK_PLACE,
+    required_object_roles: Sequence[ObjectRole | str] | None = None,
 ) -> dict[str, Any]:
     """Atomically create the immutable metadata anchor for a streaming source run."""
 
@@ -799,8 +827,26 @@ def write_source_run_contract(
         )
     if not requested:
         raise UrdfGripperPublishError("requested_episode_ids must not be empty")
+    try:
+        resolved_mode = AnnotationMode(annotation_mode)
+    except (TypeError, ValueError) as exc:
+        raise UrdfGripperPublishError(
+            f"unsupported source annotation_mode: {annotation_mode!r}"
+        ) from exc
+    expected_roles = annotation_spec(resolved_mode).required_role_names
+    resolved_roles = (
+        expected_roles
+        if required_object_roles is None
+        else tuple(ObjectRole(role).value for role in required_object_roles)
+    )
+    if resolved_roles != expected_roles:
+        raise UrdfGripperPublishError(
+            "required_object_roles differ from source annotation_mode"
+        )
     contract: dict[str, Any] = {
         "format_version": SOURCE_RUN_CONTRACT_FORMAT_VERSION,
+        "annotation_mode": resolved_mode.value,
+        "required_object_roles": list(resolved_roles),
         "run_id": run_id,
         "dataset_root": str(dataset_root.expanduser().resolve()),
         "task": task,
