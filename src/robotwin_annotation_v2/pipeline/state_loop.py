@@ -12,6 +12,7 @@ from ..models import (
     LoopContext,
     LoopEvents,
     SemanticFrame,
+    TargetOnlyEvents,
 )
 
 OPEN_THRESHOLD = 0.9
@@ -37,23 +38,16 @@ def _first_run(condition: np.ndarray, *, start: int, length: int) -> int | None:
     return None
 
 
-def detect_loop_events(
+def _close_transition(
     gripper_values: np.ndarray,
-    eef_values: np.ndarray,
     *,
-    arm: str,
-    stable_frames: int = 3,
-    motion_floor: float = 0.002,
-    rotation_scale: float = 0.05,
-) -> LoopEvents:
-    """Detect five ordered events for one arm from gripper and EEF state."""
+    stable_frames: int,
+) -> tuple[np.ndarray, int, int]:
+    """Return filtered gripper state and one stable close boundary."""
 
     gripper = np.asarray(gripper_values, dtype=np.float64)
-    eef = np.asarray(eef_values, dtype=np.float64)
     if gripper.ndim != 1 or gripper.size < stable_frames * 2:
         raise StateLoopError("gripper_values must be a sufficiently long 1-D array")
-    if eef.shape != (gripper.size, 6):
-        raise StateLoopError(f"eef_values must have shape {(gripper.size, 6)}")
     if stable_frames < 1:
         raise ValueError("stable_frames must be positive")
 
@@ -71,7 +65,54 @@ def detect_loop_events(
     )
     if close_run is None:
         raise StateLoopError("no stable closed transition detected")
-    close_done = close_run + stable_frames - 1
+    return filtered, close_start, close_run + stable_frames - 1
+
+
+def _motion_start(
+    eef_values: np.ndarray,
+    *,
+    close_start: int,
+    stable_frames: int,
+    motion_floor: float,
+    rotation_scale: float,
+) -> int:
+    """Detect the first stable active-arm motion before gripper closure."""
+
+    eef = np.asarray(eef_values, dtype=np.float64)
+    if eef.ndim != 2 or eef.shape[1:] != (6,):
+        raise StateLoopError("eef_values must have shape [T,6]")
+    delta = np.diff(eef, axis=0)
+    delta[:, 3:] = (delta[:, 3:] + np.pi) % (2 * np.pi) - np.pi
+    score = np.linalg.norm(delta[:, :3], axis=1)
+    score += rotation_scale * np.linalg.norm(delta[:, 3:], axis=1)
+    baseline = score[: max(1, min(close_start, 3))]
+    median = float(np.median(baseline))
+    deviation = float(np.median(np.abs(baseline - median)))
+    threshold = max(median + 4.0 * deviation, motion_floor)
+    motion = np.concatenate(([False], score > threshold))
+    start = _first_run(motion, start=1, length=stable_frames)
+    return close_start if start is None or start >= close_start else start
+
+
+def detect_loop_events(
+    gripper_values: np.ndarray,
+    eef_values: np.ndarray,
+    *,
+    arm: str,
+    stable_frames: int = 3,
+    motion_floor: float = 0.002,
+    rotation_scale: float = 0.05,
+) -> LoopEvents:
+    """Detect five ordered events for one arm from gripper and EEF state."""
+
+    gripper = np.asarray(gripper_values, dtype=np.float64)
+    eef = np.asarray(eef_values, dtype=np.float64)
+    if eef.shape != (gripper.size, 6):
+        raise StateLoopError(f"eef_values must have shape {(gripper.size, 6)}")
+    filtered, close_start, close_done = _close_transition(
+        gripper,
+        stable_frames=stable_frames,
+    )
 
     open_candidates = np.flatnonzero(
         (filtered[1:] > filtered[:-1])
@@ -89,18 +130,13 @@ def detect_loop_events(
         raise StateLoopError("no stable reopen transition detected")
     open_done = open_run + stable_frames - 1
 
-    delta = np.diff(eef, axis=0)
-    delta[:, 3:] = (delta[:, 3:] + np.pi) % (2 * np.pi) - np.pi
-    score = np.linalg.norm(delta[:, :3], axis=1)
-    score += rotation_scale * np.linalg.norm(delta[:, 3:], axis=1)
-    baseline = score[: max(1, min(close_start, 3))]
-    median = float(np.median(baseline))
-    deviation = float(np.median(np.abs(baseline - median)))
-    threshold = max(median + 4.0 * deviation, motion_floor)
-    motion = np.concatenate(([False], score > threshold))
-    move_start = _first_run(motion, start=1, length=stable_frames)
-    if move_start is None or move_start >= close_start:
-        move_start = close_start
+    move_start = _motion_start(
+        eef,
+        close_start=close_start,
+        stable_frames=stable_frames,
+        motion_floor=motion_floor,
+        rotation_scale=rotation_scale,
+    )
 
     try:
         return LoopEvents(
@@ -110,6 +146,55 @@ def detect_loop_events(
             t_close_done=close_done,
             t_open_start=open_start,
             t_open_done=open_done,
+        )
+    except ValueError as exc:
+        raise StateLoopError(str(exc)) from exc
+
+
+def detect_target_only_events(
+    gripper_values: np.ndarray,
+    eef_values: np.ndarray,
+    *,
+    arm: str,
+    stable_frames: int = 3,
+    motion_floor: float = 0.002,
+    rotation_scale: float = 0.05,
+) -> TargetOnlyEvents:
+    """Detect one approach/close/hold operation without release events."""
+
+    gripper = np.asarray(gripper_values, dtype=np.float64)
+    eef = np.asarray(eef_values, dtype=np.float64)
+    if eef.shape != (gripper.size, 6):
+        raise StateLoopError(f"eef_values must have shape {(gripper.size, 6)}")
+    filtered, close_start, close_end = _close_transition(
+        gripper,
+        stable_frames=stable_frames,
+    )
+    if not bool((filtered[:stable_frames] >= OPEN_THRESHOLD).all()):
+        raise StateLoopError("target-only gripper must begin stably open")
+    reopen_run = _first_run(
+        filtered >= OPEN_THRESHOLD,
+        start=close_end + 1,
+        length=stable_frames,
+    )
+    if reopen_run is not None:
+        raise StateLoopError("target-only gripper unexpectedly reopens")
+    if not bool((filtered[-stable_frames:] <= CLOSED_THRESHOLD).all()):
+        raise StateLoopError("target-only gripper must remain closed at episode end")
+
+    remove_start = _motion_start(
+        eef,
+        close_start=close_start,
+        stable_frames=stable_frames,
+        motion_floor=motion_floor,
+        rotation_scale=rotation_scale,
+    )
+    try:
+        return TargetOnlyEvents(
+            active_arm=arm,  # type: ignore[arg-type]
+            t_remove_start=remove_start,
+            t_close_start=close_start,
+            t_close_end=close_end,
         )
     except ValueError as exc:
         raise StateLoopError(str(exc)) from exc
@@ -165,6 +250,30 @@ def detect_episode_loop(state: EpisodeState) -> LoopEvents:
     if len(candidates) != 1:
         raise StateLoopError(
             f"expected exactly one active-arm loop, got {len(candidates)}; per_arm={counts}"
+        )
+    return candidates[0]
+
+
+def detect_episode_target_only(state: EpisodeState) -> TargetOnlyEvents:
+    """Require exactly one arm to close once and remain closed."""
+
+    candidates: list[TargetOnlyEvents] = []
+    errors: dict[str, str] = {}
+    for arm_index, arm in enumerate(("left", "right")):
+        try:
+            event = detect_target_only_events(
+                state.gripper_states[:, arm_index],
+                state.eef_states[:, arm_index],
+                arm=arm,
+            )
+        except StateLoopError as exc:
+            errors[arm] = str(exc)
+        else:
+            candidates.append(event)
+    if len(candidates) != 1:
+        raise StateLoopError(
+            "expected exactly one target-only close-and-hold arm, "
+            f"got {len(candidates)}; per_arm={errors}"
         )
     return candidates[0]
 

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Literal
 
-from .loop_context import FrameWindow
+from .timeline import FrameWindow
 from .mask_qc import MaskQCStatus
 
 

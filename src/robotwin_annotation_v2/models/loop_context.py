@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Literal
 
 from ..domain import AnnotationMode, AnnotationSpec, ObjectRole, annotation_spec
+from .timeline import LoopEvents
 
 RoleName = Literal["target", "receiver"]
 
@@ -46,72 +47,6 @@ class EpisodeRef:
             "episode_id": self.episode_id,
             "camera": self.camera,
         }
-
-
-@dataclass(frozen=True)
-class FrameWindow:
-    """Inclusive frame window ``[start, end]``."""
-
-    start: int
-    end: int
-
-    def __post_init__(self) -> None:
-        if self.start < 0 or self.end < self.start:
-            raise ValueError(f"invalid frame window [{self.start}, {self.end}]")
-
-    def __contains__(self, frame_id: int) -> bool:
-        return self.start <= frame_id <= self.end
-
-    def __len__(self) -> int:
-        return self.end - self.start + 1
-
-    def to_json(self) -> list[int]:
-        return [self.start, self.end]
-
-
-@dataclass(frozen=True)
-class LoopEvents:
-    """Five ordered state-derived event boundaries for one arm loop."""
-
-    active_arm: Literal["left", "right"]
-    t_move_start: int
-    t_close_start: int
-    t_close_done: int
-    t_open_start: int
-    t_open_done: int
-
-    def __post_init__(self) -> None:
-        values = (
-            self.t_move_start,
-            self.t_close_start,
-            self.t_close_done,
-            self.t_open_start,
-            self.t_open_done,
-        )
-        if min(values) < 0:
-            raise ValueError("loop event frames must be non-negative")
-        if not (
-            self.t_move_start <= self.t_close_start
-            < self.t_close_done
-            < self.t_open_start
-            < self.t_open_done
-        ):
-            raise ValueError(f"loop events are not ordered: {values}")
-
-    @property
-    def loop_window(self) -> FrameWindow:
-        return FrameWindow(self.t_move_start, self.t_open_done)
-
-    @property
-    def target_window(self) -> FrameWindow:
-        return FrameWindow(self.t_move_start, self.t_close_done)
-
-    @property
-    def receiver_window(self) -> FrameWindow:
-        return FrameWindow(self.t_close_done, self.t_open_done)
-
-    def to_json(self) -> dict[str, Any]:
-        return asdict(self)
 
 
 @dataclass(frozen=True)

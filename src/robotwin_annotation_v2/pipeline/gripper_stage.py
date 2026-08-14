@@ -24,8 +24,9 @@ from PIL import Image, ImageDraw
 from ..adapters.qwen_client import QwenCompletion, image_data_url
 from ..config import GripperRoiConfig
 from ..domain import ObjectRole
-from ..models.loop_context import EpisodeRef, FrameWindow, LoopContext, LoopEvents
+from ..models.loop_context import EpisodeRef, LoopContext
 from ..models.mask_qc import MaskQCStatus
+from ..models.timeline import FrameWindow, LoopEvents
 from .mask_qc import MaskQCError, parse_mask_qc_response
 
 

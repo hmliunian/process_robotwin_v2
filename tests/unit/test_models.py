@@ -16,6 +16,8 @@ from robotwin_annotation_v2.models import (
     SemanticPlan,
     SemanticPlanError,
     SemanticStatus,
+    TargetOnlyEvents,
+    derive_episode_windows,
     normalize_query,
 )
 
@@ -58,6 +60,28 @@ def test_loop_context_contract() -> None:
 def test_loop_events_reject_invalid_order() -> None:
     with pytest.raises(ValueError, match="not ordered"):
         LoopEvents("right", 4, 56, 68, 60, 136)
+
+
+def test_target_only_events_derive_short_target_and_full_gripper_windows() -> None:
+    events = TargetOnlyEvents("left", 4, 53, 65)
+
+    windows = derive_episode_windows(events, frame_count=139)
+
+    assert windows.target == FrameWindow(4, 65)
+    assert windows.receiver is None
+    assert windows.operation == FrameWindow(4, 138)
+    assert windows.gripper == FrameWindow(4, 138)
+    assert windows.to_json() == {
+        "operation": [4, 138],
+        "target_0": [4, 65],
+        "receiver_0": None,
+        "gripper": [4, 138],
+    }
+
+
+def test_target_only_events_reject_close_before_remove_start() -> None:
+    with pytest.raises(ValueError, match="not ordered"):
+        TargetOnlyEvents("right", 60, 55, 68)
 
 
 @pytest.mark.parametrize(
