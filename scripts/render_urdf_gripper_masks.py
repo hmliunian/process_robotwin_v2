@@ -1717,6 +1717,182 @@ def _episode_record_map(manifest: Mapping[str, Any]) -> dict[int, dict[str, Any]
     return result
 
 
+def _validate_resume_episode_universe(
+    manifest: Mapping[str, Any],
+    expected_episode_ids: Sequence[int],
+) -> dict[int, dict[str, Any]]:
+    """Require resume to preserve the original episode set and order exactly."""
+
+    expected = tuple(int(value) for value in expected_episode_ids)
+    episode_count = manifest.get("episode_count")
+    if (
+        isinstance(episode_count, bool)
+        or not isinstance(episode_count, int)
+        or episode_count != len(expected)
+    ):
+        raise UrdfMaskRunError(
+            "resume manifest episode_count differs from the declared episode universe"
+        )
+    raw_records = manifest.get("episodes")
+    if not isinstance(raw_records, list):
+        raise UrdfMaskRunError("run manifest episodes must be a list")
+    for raw in raw_records:
+        if not isinstance(raw, dict) or "episode_index" not in raw:
+            raise UrdfMaskRunError("run manifest contains an invalid episode record")
+        episode_index = raw["episode_index"]
+        if isinstance(episode_index, bool) or not isinstance(episode_index, int):
+            raise UrdfMaskRunError(
+                "resume manifest episode_index values must be integers"
+            )
+    records = _episode_record_map(manifest)
+    actual = tuple(records)
+    if actual != expected:
+        raise UrdfMaskRunError(
+            "resume manifest episode order differs from the declared episode universe: "
+            f"{actual} != {expected}"
+        )
+    return records
+
+
+def _episode_plan_contracts(
+    contract: Mapping[str, Any],
+    *,
+    expected_episode_ids: Sequence[int],
+    expected_by_episode: Mapping[int, Mapping[str, Any]] | None = None,
+) -> dict[int, dict[str, Any]]:
+    """Validate an ordered partial list of immutable per-episode plans."""
+
+    raw_plans = contract.get("episode_plans")
+    if not isinstance(raw_plans, list):
+        raise UrdfMaskRunError("resume run contract episode_plans must be a list")
+    expected = tuple(int(value) for value in expected_episode_ids)
+    positions = {value: position for position, value in enumerate(expected)}
+    result: dict[int, dict[str, Any]] = {}
+    previous_position = -1
+    for raw in raw_plans:
+        if not isinstance(raw, dict) or "episode_index" not in raw:
+            raise UrdfMaskRunError("resume run contract has an invalid episode plan")
+        raw_episode_index = raw["episode_index"]
+        if isinstance(raw_episode_index, bool) or not isinstance(
+            raw_episode_index, int
+        ):
+            raise UrdfMaskRunError("resume run contract has an invalid episode plan")
+        episode_index = int(raw_episode_index)
+        if episode_index not in positions:
+            raise UrdfMaskRunError(
+                f"resume run contract contains undeclared episode {episode_index}"
+            )
+        if episode_index in result:
+            raise UrdfMaskRunError(
+                f"resume run contract repeats episode {episode_index}"
+            )
+        position = positions[episode_index]
+        if position <= previous_position:
+            raise UrdfMaskRunError(
+                "resume run contract episode plans do not preserve episode order"
+            )
+        if (
+            expected_by_episode is not None
+            and raw != expected_by_episode[episode_index]
+        ):
+            raise UrdfMaskRunError(
+                f"resume episode {episode_index} differs from the immutable run contract"
+            )
+        result[episode_index] = raw
+        previous_position = position
+    return result
+
+
+def _validate_missing_episode_plans(
+    *,
+    records: Mapping[int, Mapping[str, Any]],
+    plan_episode_ids: Mapping[int, Any],
+    expected_episode_ids: Sequence[int],
+    run_dir: Path,
+) -> None:
+    """Allow absent plans only for untouched pending episode placeholders."""
+
+    for episode_index in expected_episode_ids:
+        if episode_index in plan_episode_ids:
+            continue
+        status = records[episode_index].get("status")
+        if status != "pending":
+            raise UrdfMaskRunError(
+                f"resume run contract has no plan for episode {episode_index}, "
+                f"but its manifest status is {status!r}"
+            )
+        output_dir = run_dir / f"episode_{episode_index:06d}"
+        if output_dir.exists() or output_dir.is_symlink():
+            raise UrdfMaskRunError(
+                f"resume run contract has no plan for episode {episode_index}, "
+                f"but its published output already exists: {output_dir}"
+            )
+
+
+def _reconcile_resume_contract(
+    manifest: dict[str, Any],
+    *,
+    config: RunConfig,
+    expected_contract: Mapping[str, Any],
+) -> None:
+    """Safely complete a streaming run's partial immutable plan contract.
+
+    Streaming execution creates every episode record up front, but records an
+    episode plan only after that episode's object source becomes ready.  A
+    crash can therefore leave a valid full episode universe with an ordered
+    subset of plans.  Frozen resume may append only those missing plans; all
+    stable run fields and every previously recorded plan remain immutable.
+    In particular, a different implementation identity is a historical-run
+    migration and remains intentionally unsupported.
+    """
+
+    previous_contract = manifest.get("run_contract")
+    if not isinstance(previous_contract, dict):
+        raise UrdfMaskRunError("resume manifest has no run contract")
+    expected_json = _jsonable(expected_contract)
+    if not isinstance(expected_json, dict):
+        raise TypeError("expected run contract must serialize to an object")
+    previous_stable = {
+        key: value
+        for key, value in previous_contract.items()
+        if key != "episode_plans"
+    }
+    expected_stable = {
+        key: value for key, value in expected_json.items() if key != "episode_plans"
+    }
+    if previous_stable != expected_stable:
+        raise UrdfMaskRunError(
+            "resume configuration/assets differ from the immutable run contract"
+        )
+
+    expected_raw_plans = expected_json.get("episode_plans")
+    if not isinstance(expected_raw_plans, list):
+        raise TypeError("expected run contract episode_plans must be a list")
+    expected_by_episode = _episode_plan_contracts(
+        expected_json,
+        expected_episode_ids=config.episode_ids,
+    )
+    if tuple(expected_by_episode) != config.episode_ids:
+        raise UrdfMaskRunError(
+            "expected run contract does not declare the configured episode universe"
+        )
+    records = _validate_resume_episode_universe(manifest, config.episode_ids)
+    previous_plans = _episode_plan_contracts(
+        previous_contract,
+        expected_episode_ids=config.episode_ids,
+        expected_by_episode=expected_by_episode,
+    )
+    _validate_missing_episode_plans(
+        records=records,
+        plan_episode_ids=previous_plans,
+        expected_episode_ids=config.episode_ids,
+        run_dir=config.run_dir,
+    )
+    reconciled = copy.deepcopy(previous_contract)
+    reconciled["episode_plans"] = copy.deepcopy(expected_raw_plans)
+    manifest["run_contract"] = reconciled
+
+
 def _ordered_episode_records(
     plans: Sequence[EpisodePlan],
     records: Mapping[int, dict[str, Any]],
@@ -1813,14 +1989,16 @@ def _resume_manifest(
         )
     if manifest.get("run_id") != config.run_id:
         raise UrdfMaskRunError("resume manifest run id does not match the output directory")
-    if manifest.get("run_contract") != _jsonable(contract):
-        raise UrdfMaskRunError(
-            "resume configuration/assets differ from the immutable run contract"
-        )
     if not isinstance(manifest.get("failures"), list):
         raise UrdfMaskRunError("resume manifest failures must be a list")
+    _reconcile_resume_contract(
+        manifest,
+        config=config,
+        expected_contract=contract,
+    )
     manifest["status"] = "running"
     manifest["resumed_at"] = datetime.now(timezone.utc).isoformat()
+    _checkpoint_manifest(path, manifest)
     return manifest
 
 
@@ -1832,6 +2010,44 @@ def _failure_record(plan: EpisodePlan, exc: Exception) -> dict[str, Any]:
         "error_type": type(exc).__name__,
         "error": str(exc),
     }
+
+
+def _validate_incremental_resume_episodes(
+    *,
+    config: RunConfig,
+    records: Mapping[int, Mapping[str, Any]],
+    stored_plans: Mapping[int, Mapping[str, Any]],
+) -> dict[int, EpisodePlan]:
+    """Rebuild stored plans and validate every completed artifact before resume."""
+
+    rebuilt: dict[int, EpisodePlan] = {}
+    for episode_index, stored_plan in stored_plans.items():
+        plan = build_episode_plan(config, episode_index)
+        if plan.to_json() != stored_plan:
+            raise UrdfMaskRunError(
+                f"resume episode {episode_index} differs from the immutable run contract"
+            )
+        status = records[episode_index].get("status")
+        if status == "complete":
+            output_dir = config.run_dir / f"episode_{episode_index:06d}"
+            try:
+                completed = validate_completed_episode(output_dir, plan, config)
+                _anchor_completed_manifest_record(
+                    records[episode_index],
+                    completed,
+                    skip_overlay=config.skip_overlay,
+                )
+            except Exception as exc:
+                raise UrdfMaskRunError(
+                    "manifest-complete episode failed immutable resume validation; "
+                    f"refusing incremental resume: {output_dir}: {exc}"
+                ) from exc
+        elif status not in {"pending", "failed"}:
+            raise UrdfMaskRunError(
+                f"manifest episode status is invalid: {status!r}"
+            )
+        rebuilt[episode_index] = plan
+    return rebuilt
 
 
 class IncrementalUrdfEpisodeWorker:
@@ -1871,6 +2087,8 @@ class IncrementalUrdfEpisodeWorker:
                 raise UrdfMaskRunError("cannot resume unsupported manifest format")
             if manifest.get("run_id") != config.run_id:
                 raise UrdfMaskRunError("resume manifest run id does not match")
+            if not isinstance(manifest.get("failures"), list):
+                raise UrdfMaskRunError("resume manifest failures must be a list")
             previous_contract = manifest.get("run_contract")
             if not isinstance(previous_contract, dict):
                 raise UrdfMaskRunError("resume manifest has no run contract")
@@ -1886,23 +2104,31 @@ class IncrementalUrdfEpisodeWorker:
                 raise UrdfMaskRunError(
                     "resume configuration/assets differ from the immutable run contract"
                 )
-            raw_plans = previous_contract.get("episode_plans")
-            if not isinstance(raw_plans, list):
-                raise UrdfMaskRunError("resume run contract episode_plans must be a list")
-            for raw in raw_plans:
-                if not isinstance(raw, dict) or "episode_index" not in raw:
-                    raise UrdfMaskRunError("resume run contract has an invalid episode plan")
-                episode_index = int(raw["episode_index"])
-                if episode_index in self._plan_contracts:
-                    raise UrdfMaskRunError(
-                        f"resume run contract repeats episode {episode_index}"
-                    )
-                self._plan_contracts[episode_index] = raw
-            frame_shapes = {
-                tuple(int(value) for value in raw.get("frame_shape_hw", ()))
-                for raw in self._plan_contracts.values()
-            }
-            if any(len(shape) != 2 for shape in frame_shapes) or len(frame_shapes) > 1:
+            records = _validate_resume_episode_universe(
+                manifest,
+                config.episode_ids,
+            )
+            self._plan_contracts.update(
+                _episode_plan_contracts(
+                    previous_contract,
+                    expected_episode_ids=config.episode_ids,
+                )
+            )
+            _validate_missing_episode_plans(
+                records=records,
+                plan_episode_ids=self._plan_contracts,
+                expected_episode_ids=config.episode_ids,
+                run_dir=config.run_dir,
+            )
+            self._plans.update(
+                _validate_incremental_resume_episodes(
+                    config=config,
+                    records=records,
+                    stored_plans=self._plan_contracts,
+                )
+            )
+            frame_shapes = {plan.frame_shape for plan in self._plans.values()}
+            if len(frame_shapes) > 1:
                 raise UrdfMaskRunError(
                     "resume run contract does not declare one common frame shape"
                 )
@@ -1919,17 +2145,10 @@ class IncrementalUrdfEpisodeWorker:
                 {"episode_index": value, "status": "pending"}
                 for value in config.episode_ids
             ]
-        self._record_map = _episode_record_map(self._manifest)
-        unexpected = set(self._record_map) - set(config.episode_ids)
-        if unexpected:
-            raise UrdfMaskRunError(
-                f"run manifest contains undeclared episodes: {sorted(unexpected)}"
-            )
-        for episode_index in config.episode_ids:
-            self._record_map.setdefault(
-                episode_index,
-                {"episode_index": episode_index, "status": "pending"},
-            )
+        self._record_map = _validate_resume_episode_universe(
+            self._manifest,
+            config.episode_ids,
+        )
         self._checkpoint()
 
     def _ordered_records(self) -> list[dict[str, Any]]:
