@@ -24,6 +24,42 @@
 相机为 `cam_high`，mask 没有像素级 simulator GT。因此“20/20 完成”“QC passed”“连续性
 提高”只说明运行合同和视觉审查通过，不能解释为精确率/召回率真值。
 
+### 1.1 可读 Pipeline 重构后的 Pick & Place 验收
+
+2026-08-13 在重构提交 `a819bd8` 上执行完整一键流程：
+
+```text
+run id: pick-place-coverage20-readable-v1
+dataset: move_pillbottle_pad_coverage20_original
+annotation mode: pick_place
+required roles: target, receiver
+gripper backend: urdf
+```
+
+结果：
+
+| 项目 | 结果 |
+| --- | ---: |
+| Qwen → Object SAM/QC → URDF → canonical publication | 20/20 completed |
+| canonical validation | 20/20 passed |
+| exact-run overlay video | 20/20 generated |
+| excluded / fatal error | 0 / none |
+| pipeline summary | `passed=true` |
+| 总耗时 | 1:40:21 |
+
+产物保存在：
+
+```text
+artifacts/runs/pick-place-coverage20-readable-v1/process_summary.json
+artifacts/runs/pick-place-coverage20-readable-v1/rendered_videos/
+artifacts/runs/_sources/pick-place-coverage20-readable-v1-object-source/
+```
+
+该 run 验证了重构后的默认 Pick & Place 路径仍执行完整业务链路，而不是只验证轻量 smoke：
+target 和 receiver 均经过 Qwen、SAM3 candidate identity QC 与 native propagation；gripper
+由 URDF/depth 生成；随后统一发布和验证 canonical 四通道 mask。20 个视频在 2026-08-14
+完成人工检查并确认 Pick & Place 结果可接受。
+
 ## 2. target/receiver：语义、seed 和跟踪
 
 ### 2.1 query 设计结论
