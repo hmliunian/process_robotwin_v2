@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 import numpy as np
 
 from ..adapters.robotwin_dataset import EpisodeState, RoboTwinDataset
-from ..domain import AnnotationMode, ObjectRole, annotation_spec
+from ..domain import AnnotationMode, annotation_spec
 from ..models import (
     EpisodeRef,
     FramePurpose,
     LoopContext,
     LoopEvents,
+    PickPlaceEvents,
     SemanticFrame,
     TargetOnlyEvents,
+    TimelineEvents,
+    derive_episode_windows,
 )
 
 OPEN_THRESHOLD = 0.9
@@ -20,7 +25,7 @@ CLOSED_THRESHOLD = 0.15
 
 
 class StateLoopError(RuntimeError):
-    """State signals do not describe exactly one valid pick-and-place loop."""
+    """State signals do not satisfy the configured timeline contract."""
 
 
 def _median_filter(values: np.ndarray) -> np.ndarray:
@@ -46,15 +51,15 @@ def _close_transition(
     """Return filtered gripper state and one stable close boundary."""
 
     gripper = np.asarray(gripper_values, dtype=np.float64)
-    if gripper.ndim != 1 or gripper.size < stable_frames * 2:
-        raise StateLoopError("gripper_values must be a sufficiently long 1-D array")
     if stable_frames < 1:
         raise ValueError("stable_frames must be positive")
+    if gripper.ndim != 1 or gripper.size < stable_frames * 2:
+        raise StateLoopError("gripper_values must be a sufficiently long 1-D array")
 
     filtered = _median_filter(gripper)
-    close_candidates = np.flatnonzero(
-        (filtered[1:] < OPEN_THRESHOLD) & (filtered[1:] < filtered[:-1])
-    ) + 1
+    close_candidates = (
+        np.flatnonzero((filtered[1:] < OPEN_THRESHOLD) & (filtered[1:] < filtered[:-1])) + 1
+    )
     if close_candidates.size == 0:
         raise StateLoopError("no close transition detected")
     close_start = int(close_candidates[0])
@@ -114,10 +119,10 @@ def detect_loop_events(
         stable_frames=stable_frames,
     )
 
-    open_candidates = np.flatnonzero(
-        (filtered[1:] > filtered[:-1])
-        & (np.arange(1, len(filtered)) > close_done)
-    ) + 1
+    open_candidates = (
+        np.flatnonzero((filtered[1:] > filtered[:-1]) & (np.arange(1, len(filtered)) > close_done))
+        + 1
+    )
     if open_candidates.size == 0:
         raise StateLoopError("no open transition detected")
     open_start = int(open_candidates[0])
@@ -287,16 +292,34 @@ def _uniform_frames(start: int, end: int, count: int) -> tuple[int, ...]:
 
 
 def sample_semantic_frames(
-    events: LoopEvents,
+    events: TimelineEvents,
     *,
     frame_count: int,
     annotation_mode: AnnotationMode = AnnotationMode.PICK_PLACE,
     seed_count: int = 4,
     seed_safety_margin: int = 4,
 ) -> tuple[SemanticFrame, ...]:
-    """Select sparse, purpose-labelled frames without inspecting RGB pixels."""
+    """Select mode-specific semantic evidence without inspecting RGB pixels.
 
-    spec = annotation_spec(annotation_mode)
+    Both modes share pre-grasp seed candidates.  Pick/place adds transport and
+    placement context; close-and-hold adds only target identity evidence after
+    closure.  Context frames never extend an object's output mask window.
+    """
+
+    mode = AnnotationMode(annotation_mode)
+    if frame_count < 1:
+        raise ValueError("frame_count must be positive")
+    if seed_count < 1:
+        raise ValueError("seed_count must be positive")
+    if seed_safety_margin < 0:
+        raise ValueError("seed_safety_margin must be non-negative")
+    if mode is AnnotationMode.PICK_PLACE and not isinstance(events, PickPlaceEvents):
+        raise ValueError("pick_place semantic sampling requires PickPlaceEvents")
+    if mode is AnnotationMode.TARGET_ONLY and not isinstance(events, TargetOnlyEvents):
+        raise ValueError("target_only semantic sampling requires TargetOnlyEvents")
+    derive_episode_windows(events, frame_count=frame_count)
+
+    spec = annotation_spec(mode)
     required_roles = spec.required_role_names
     seed_end = max(0, events.t_close_start - seed_safety_margin)
     selected: dict[int, SemanticFrame] = {}
@@ -307,32 +330,48 @@ def sample_semantic_frames(
             required_roles,
         )
 
-    contexts: list[tuple[int, FramePurpose, tuple[str, ...]]] = [
-        (
-            min(events.t_close_done + 1, events.t_open_start - 1),
-            FramePurpose.POST_GRASP_CONTEXT,
-            ("target",),
-        ),
-        (
-            (events.t_close_done + events.t_open_start) // 2,
-            FramePurpose.POST_GRASP_CONTEXT,
-            ("target",),
-        ),
-        (
-            min(events.t_open_start + 1, events.t_open_done),
-            FramePurpose.PLACE_CONTEXT,
-            ("receiver",),
-        ),
-    ]
-    if not spec.requires(ObjectRole.RECEIVER):
-        contexts = [item for item in contexts if item[1] is not FramePurpose.PLACE_CONTEXT]
+    contexts: tuple[tuple[int, FramePurpose, tuple[Literal["target", "receiver"], ...]], ...]
+    if isinstance(events, PickPlaceEvents):
+        contexts = (
+            (
+                min(events.t_close_done + 1, events.t_open_start - 1),
+                FramePurpose.POST_GRASP_CONTEXT,
+                ("target",),
+            ),
+            (
+                (events.t_close_done + events.t_open_start) // 2,
+                FramePurpose.POST_GRASP_CONTEXT,
+                ("target",),
+            ),
+            (
+                min(events.t_open_start + 1, events.t_open_done),
+                FramePurpose.PLACE_CONTEXT,
+                ("receiver",),
+            ),
+        )
+    else:
+        last_frame = frame_count - 1
+        first_closed_context = min(events.t_close_end + 1, last_frame)
+        held_context = (first_closed_context + last_frame) // 2
+        contexts = (
+            (
+                first_closed_context,
+                FramePurpose.POST_GRASP_CONTEXT,
+                ("target",),
+            ),
+            (
+                held_context,
+                FramePurpose.POST_GRASP_CONTEXT,
+                ("target",),
+            ),
+        )
     for frame_id, purpose, eligible_roles in contexts:
         frame_id = min(max(frame_id, 0), frame_count - 1)
         if frame_id not in selected:
             selected[frame_id] = SemanticFrame(
                 frame_id,
                 purpose,
-                eligible_roles,  # type: ignore[arg-type]
+                eligible_roles,
             )
     return tuple(selected[frame_id] for frame_id in sorted(selected))
 
@@ -343,14 +382,18 @@ def build_loop_context(
     *,
     annotation_mode: AnnotationMode = AnnotationMode.PICK_PLACE,
 ) -> LoopContext:
-    """Run Stage 1 for one episode."""
+    """Run the one mode-dispatch boundary for Stage 1."""
 
     state = dataset.load_state(ref)
-    events = detect_episode_loop(state)
+    mode = AnnotationMode(annotation_mode)
+    if mode is AnnotationMode.PICK_PLACE:
+        events: TimelineEvents = detect_episode_loop(state)
+    else:
+        events = detect_episode_target_only(state)
     semantic_frames = sample_semantic_frames(
         events,
         frame_count=state.frame_count,
-        annotation_mode=annotation_mode,
+        annotation_mode=mode,
     )
     return LoopContext(
         episode=ref,
@@ -360,5 +403,5 @@ def build_loop_context(
         semantic_frames=semantic_frames,
         state_source=str(state.paths.parquet),
         video_source=str(state.paths.video),
-        annotation_mode=annotation_mode,
+        annotation_mode=mode,
     )

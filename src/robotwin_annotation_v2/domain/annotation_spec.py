@@ -1,17 +1,15 @@
-"""Data-driven contracts for the supported annotation modes.
+"""Data-driven semantic-role contracts for supported annotation modes.
 
-The pipeline has one mechanical pick/place loop.  Modes only declare which
-semantic object roles are applicable; they do not select a second algorithm.
-Keeping this decision in one immutable value prevents ``target_only`` checks
-from spreading through every stage.
+Timeline state machines and their frame windows live in ``models.timeline``;
+this module only declares which object roles apply and the default gripper
+backend.  Keeping those decisions separate prevents a semantic role switch
+from becoming a second, duplicated timeline implementation.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
 
 
 class AnnotationMode(StrEnum):
@@ -72,30 +70,6 @@ class AnnotationSpec:
         """Return whether ``role`` participates in semantic/QC/SAM stages."""
 
         return ObjectRole(role) in self.required_object_roles
-
-    def role_window_bounds(
-        self,
-        role: ObjectRole | str,
-        events: Mapping[str, Any] | Any,
-    ) -> tuple[int, int]:
-        """Resolve an applicable role's inclusive output window.
-
-        ``events`` may be a ``LoopEvents`` object or its JSON mapping.  The
-        domain package intentionally avoids importing pipeline model classes.
-        """
-
-        resolved_role = ObjectRole(role)
-        if not self.requires(resolved_role):
-            raise ValueError(f"{resolved_role.value} is not applicable in {self.mode.value} mode")
-
-        def event(name: str) -> int:
-            value = events[name] if isinstance(events, Mapping) else getattr(events, name)
-            return int(value)
-
-        if resolved_role is ObjectRole.TARGET:
-            return event("t_move_start"), event("t_close_done")
-        return event("t_close_done"), event("t_open_done")
-
 
 ANNOTATION_SPECS: dict[AnnotationMode, AnnotationSpec] = {
     AnnotationMode.PICK_PLACE: AnnotationSpec(

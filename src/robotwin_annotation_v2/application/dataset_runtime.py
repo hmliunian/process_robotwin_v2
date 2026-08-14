@@ -29,6 +29,11 @@ import pandas as pd
 from robotwin_annotation_v2.adapters.artifact_store import ArtifactStore
 from robotwin_annotation_v2.adapters.robotwin_dataset import RoboTwinDataset
 from robotwin_annotation_v2.config import PipelineConfig, load_config
+from robotwin_annotation_v2.domain import (
+    AnnotationMode,
+    ObjectRole,
+    annotation_spec,
+)
 from robotwin_annotation_v2.models import EpisodeRef
 from robotwin_annotation_v2.terminal_ui import UI_MODES, ProcessUI, create_process_ui
 from robotwin_annotation_v2.urdf_gripper_publisher import (
@@ -159,6 +164,8 @@ class UrdfSourceSelection:
     excluded: tuple[dict[str, Any], ...]
     source_summary: Mapping[str, Any]
     source_lineages: Mapping[int, Mapping[str, Any]]
+    annotation_mode: AnnotationMode
+    required_object_roles: tuple[ObjectRole, ...]
 
 
 @dataclass(frozen=True)
@@ -1128,6 +1135,24 @@ def select_urdf_source_episodes(
         raise ValueError(
             "source process summary dataset_root does not match --dataset-root"
         )
+    raw_mode = summary.get("annotation_mode", AnnotationMode.PICK_PLACE.value)
+    try:
+        source_annotation_mode = AnnotationMode(raw_mode)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"source process summary has unsupported annotation_mode: {raw_mode!r}"
+        ) from exc
+    source_spec = annotation_spec(source_annotation_mode)
+    raw_required_roles = summary.get("required_object_roles")
+    if raw_required_roles is None:
+        if source_annotation_mode is not AnnotationMode.PICK_PLACE:
+            raise ValueError(
+                "target_only source process summary must declare required_object_roles"
+            )
+    elif raw_required_roles != list(source_spec.required_role_names):
+        raise ValueError(
+            "source process summary required_object_roles differ from annotation_mode"
+        )
 
     discovered = set(discovered_episode_ids)
     selected = (
@@ -1175,6 +1200,22 @@ def select_urdf_source_episodes(
                 }
             )
             continue
+        if (
+            validated.annotation_mode is not source_annotation_mode
+            or validated.required_object_roles != source_spec.required_object_roles
+        ):
+            excluded.append(
+                {
+                    "episode": episode_id,
+                    "status": "source_excluded",
+                    "reason": "source_contract_error:AnnotationModeMismatch",
+                    "error": (
+                        "source episode annotation contract differs from the "
+                        "source process summary"
+                    ),
+                }
+            )
+            continue
         accepted.append(episode_id)
         source_lineages[episode_id] = validated.lineage
 
@@ -1190,6 +1231,8 @@ def select_urdf_source_episodes(
         excluded=tuple(excluded),
         source_summary=summary,
         source_lineages=source_lineages,
+        annotation_mode=source_annotation_mode,
+        required_object_roles=source_spec.required_object_roles,
     )
 
 
@@ -1366,7 +1409,10 @@ def _render_processed(
         "camera": config.dataset.camera,
         "filename_mode": "episode",
         "episode_count": len(records),
-        "rendered_roles": ["target", "receiver", "gripper"],
+        "rendered_roles": [
+            *config.annotation.spec.required_role_names,
+            "gripper",
+        ],
         "alpha": render.DEFAULT_FILL_ALPHA,
         "colors_rgb": {key: list(value) for key, value in render.ROLE_COLORS.items()},
         "episodes": records,
@@ -1509,6 +1555,14 @@ def process_urdf_source_run(
         requested_episode_ids=episode_ids,
         expected_frame_counts=expected_frame_counts,
     )
+    if (
+        pipeline_config is not None
+        and pipeline_config.annotation.mode is not selection.annotation_mode
+    ):
+        raise ValueError(
+            "pipeline config annotation mode differs from the frozen source run: "
+            f"{pipeline_config.annotation.mode.value} != {selection.annotation_mode.value}"
+        )
     all_excluded = sorted(
         [*relevant_dataset_excluded, *selection.excluded],
         key=lambda record: int(record["episode"]),
@@ -1612,12 +1666,10 @@ def process_urdf_source_run(
     if not isinstance(source_dynamic_manifest, Mapping):
         raise ValueError("source process summary has no dynamic_manifest object")
     dynamic_manifest = dict(source_dynamic_manifest)
-    source_annotation_mode = str(
-        selection.source_summary.get("annotation_mode", "pick_place")
-    )
-    source_required_roles = selection.source_summary.get("required_object_roles")
-    if source_required_roles is None:
-        source_required_roles = ["target", "receiver"]
+    source_annotation_mode = selection.annotation_mode.value
+    source_required_roles = [
+        role.value for role in selection.required_object_roles
+    ]
     records: list[dict[str, Any]] = list(public_discovery.skipped)
     recorded_episode_ids = {
         int(record["episode"])
@@ -2213,6 +2265,10 @@ def process_dataset(
         if object_source_only is None
         else bool(object_source_only)
     )
+    if config.annotation.mode is AnnotationMode.TARGET_ONLY and not source_only:
+        raise ValueError(
+            "target_only does not support --gripper-backend sam; use the default URDF backend"
+        )
     if incremental_source and not source_only:
         raise ValueError("incremental source receipts require object_source_only mode")
     if run_id is not None:

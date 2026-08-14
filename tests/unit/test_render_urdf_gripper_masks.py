@@ -710,6 +710,61 @@ def test_render_driver_uses_per_joint_temporal_priors_and_component_acceptance()
     assert not product.gripper_track[1, 1, 1]
 
 
+def test_close_hold_render_consumes_normalized_window_through_final_frame() -> None:
+    rendered_frames: list[int] = []
+    mask = np.zeros((2, 3), dtype=bool)
+    mask[1, 2] = True
+    render_depth = np.where(mask, 100.0, 0.0)
+
+    class FakeRenderer:
+        def fit_finger_q(self, joints: np.ndarray, *_args: Any, **_kwargs: Any) -> Any:
+            rendered_frames.append(int(joints[0]))
+            acceptance = {
+                "fr_link6": True,
+                "fr_link7": True,
+                "fr_link8": True,
+            }
+            return SimpleNamespace(
+                accepted=True,
+                selected_q_by_joint={"fr_joint7": 0.02, "fr_joint8": 0.02},
+                component_acceptance=acceptance,
+                selected_render=SimpleNamespace(
+                    active_gripper_mask=mask.copy(),
+                    active_gripper_depth_mm=render_depth.copy(),
+                ),
+                visible_mask=mask.copy(),
+                diagnostics={"mode": "close_hold"},
+            )
+
+    joints = np.zeros((5, 14), dtype=np.float64)
+    joints[:, 0] = np.arange(5)
+    episode = SimpleNamespace(
+        frame_count=5,
+        active_arm="right",
+        active_window=(1, 4),
+        joint_absolute=joints,
+    )
+    calibration = SimpleNamespace(
+        intrinsic_cv=np.repeat(np.eye(3)[None, ...], 5, axis=0),
+        cam2world_gl=np.repeat(np.eye(4)[None, ...], 5, axis=0),
+    )
+
+    product = render_episode_product(
+        FakeRenderer(),
+        {},
+        episode,
+        calibration,
+        np.full((5, 2, 3), 100, dtype=np.uint16),
+        frame_shape=(2, 3),
+        tolerance_mm=8.0,
+    )
+
+    assert rendered_frames == [1, 2, 3, 4]
+    assert not product.gripper_track[0].any()
+    assert product.gripper_track[4].any()
+    assert [item["frame_id"] for item in product.frame_diagnostics] == [1, 2, 3, 4]
+
+
 def test_derived_runner_passes_source_loop_to_plan_and_actual_render_load(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -717,14 +772,15 @@ def test_derived_runner_passes_source_loop_to_plan_and_actual_render_load(
     config = _integration_config(tmp_path, run_id="authoritative-loop")
     _mock_integration_pipeline(monkeypatch, tmp_path)
     episode = _derived_episode(tmp_path)
-    observed: list[ActiveGripperLoop | None] = []
+    observed: list[tuple[Any, tuple[int, int] | None]] = []
 
     def load_episode(
         *_args: Any,
-        authoritative_loop: ActiveGripperLoop | None = None,
+        authoritative_events: Any = None,
+        authoritative_gripper_window: tuple[int, int] | None = None,
         **_kwargs: Any,
     ) -> Any:
-        observed.append(authoritative_loop)
+        observed.append((authoritative_events, authoritative_gripper_window))
         return episode
 
     monkeypatch.setattr(render_module, "load_urdf_gripper_episode", load_episode)
@@ -732,7 +788,10 @@ def test_derived_runner_passes_source_loop_to_plan_and_actual_render_load(
     result = run_experiment(config, renderer=object(), fit_config={})
 
     assert result["status"] == "complete"
-    assert observed == [_derived_loop(), _derived_loop()]
+    assert observed == [
+        (_derived_loop(), _derived_loop().inclusive_window),
+        (_derived_loop(), _derived_loop().inclusive_window),
+    ]
     assert result["run_contract"]["episode_plans"][0]["events"] == (
         _derived_loop().to_json()
     )

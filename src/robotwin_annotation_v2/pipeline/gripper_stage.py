@@ -23,7 +23,7 @@ from PIL import Image, ImageDraw
 
 from ..adapters.qwen_client import QwenCompletion, image_data_url
 from ..config import GripperRoiConfig
-from ..domain import ObjectRole
+from ..domain import AnnotationMode, ObjectRole
 from ..models.loop_context import EpisodeRef, LoopContext
 from ..models.mask_qc import MaskQCStatus
 from ..models.timeline import FrameWindow, LoopEvents
@@ -1558,6 +1558,10 @@ def run_gripper_stage(
 ) -> GripperStageResult:
     """Run pose-ROI candidate selection and one native gripper propagation."""
 
+    if context.annotation_mode is AnnotationMode.TARGET_ONLY:
+        raise GripperStageError(
+            "target_only does not support the SAM gripper backend; use URDF"
+        )
     gate = seed_quality_gate or GripperSeedQualityGateConfig()
     expected_shape = (context.frame_count, *frame_shape)
     expected_roles = context.annotation_spec.required_object_roles

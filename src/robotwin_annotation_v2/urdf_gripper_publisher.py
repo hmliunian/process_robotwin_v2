@@ -86,6 +86,9 @@ class DerivationSourceEpisode:
     lineage: Mapping[str, Any]
     annotation_mode: AnnotationMode
     required_object_roles: tuple[ObjectRole, ...]
+    role_windows: Mapping[str, tuple[int, int]]
+    active_arm: str
+    gripper_window: tuple[int, int]
 
     @property
     def frame_count(self) -> int:
@@ -1013,7 +1016,12 @@ def _validate_source_loop(
     camera: str,
     episode_index: int,
     frame_count: int,
-) -> tuple[dict[str, Any], dict[str, tuple[int, int]]]:
+) -> tuple[
+    dict[str, Any],
+    dict[str, tuple[int, int]],
+    str,
+    tuple[int, int],
+]:
     from robotwin_annotation_v2.urdf_gripper_data import (
         UrdfGripperDataError,
         load_authoritative_loop_context,
@@ -1054,10 +1062,15 @@ def _validate_source_loop(
             raise UrdfGripperPublishError(
                 f"source loop {key} path differs from the source dataset"
             )
-    return loop, {
-        "target": (context.events.t_move_start, context.events.t_close_done),
-        "receiver": (context.events.t_close_done, context.events.t_open_done),
+    role_windows = {
+        "target": (context.windows.target.start, context.windows.target.end),
     }
+    if context.windows.receiver is not None:
+        role_windows["receiver"] = (
+            context.windows.receiver.start,
+            context.windows.receiver.end,
+        )
+    return loop, role_windows, context.active_arm, context.gripper_window
 
 
 def _validate_source_provenance(
@@ -1275,7 +1288,7 @@ def _validate_derivation_source_episode(
             "source masks frame_count differs from the expected dataset frame count"
         )
 
-    loop, role_windows = _validate_source_loop(
+    loop, role_windows, active_arm, gripper_window = _validate_source_loop(
         episode_dir / "loop.json",
         dataset_root=dataset_root,
         task=task,
@@ -1435,6 +1448,9 @@ def _validate_derivation_source_episode(
         lineage=lineage,
         annotation_mode=annotation_mode,
         required_object_roles=required_roles,
+        role_windows=dict(role_windows),
+        active_arm=active_arm,
+        gripper_window=gripper_window,
     )
 
 
@@ -1998,17 +2014,19 @@ def _prepare_contract(
     source_events = validated_source.loop.get("events")
     if not isinstance(source_events, Mapping):
         raise UrdfGripperPublishError("source loop has no event map")
-    if active_arm != source_events.get("active_arm"):
+    if active_arm != validated_source.active_arm:
         raise UrdfGripperPublishError(
             "backend active arm differs from the authoritative source loop"
         )
-    expected_active_window = (
-        source_events.get("t_move_start"),
-        source_events.get("t_open_done"),
-    )
-    if active_window != expected_active_window:
+    if active_window != validated_source.gripper_window:
         raise UrdfGripperPublishError(
             "backend active window differs from the authoritative source loop"
+        )
+    if _json_clone(backend_episode_record.get("events")) != _json_clone(
+        source_events
+    ):
+        raise UrdfGripperPublishError(
+            "backend events differ from the authoritative source loop"
         )
     product_path, product_identity = _artifact_from_record(
         backend_episode_dir, backend_episode_record, "gripper_masks"

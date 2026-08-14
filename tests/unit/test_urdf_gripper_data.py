@@ -12,6 +12,7 @@ import pytest
 
 import robotwin_annotation_v2.urdf_gripper_data as data_module
 from robotwin_annotation_v2.adapters.robotwin_dataset import EpisodePaths, EpisodeState
+from robotwin_annotation_v2.models.timeline import TargetOnlyEvents
 from robotwin_annotation_v2.pipeline.state_loop import detect_episode_loop
 from robotwin_annotation_v2.urdf_gripper_data import (
     ActiveGripperLoop,
@@ -78,12 +79,15 @@ def _write_loop_context(path: Path, events: ActiveGripperLoop) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def test_target_only_loop_requires_null_receiver_window(tmp_path: Path) -> None:
-    events = ActiveGripperLoop("right", 3, 5, 9, 10, 14)
+def test_target_only_v2_normalizes_close_hold_without_open_events(
+    tmp_path: Path,
+) -> None:
+    events = TargetOnlyEvents("right", 3, 5, 9)
     path = tmp_path / "loop.json"
     payload = {
-        "format_version": "robotwin_loop_context_v1",
+        "format_version": "robotwin_loop_context_v2",
         "annotation_mode": "target_only",
+        "timeline_kind": "close_hold",
         "required_object_roles": ["target"],
         "episode": {
             "task": "move_pillbottle_pad",
@@ -94,9 +98,10 @@ def test_target_only_loop_requires_null_receiver_window(tmp_path: Path) -> None:
         "frame_count": 15,
         "events": events.to_json(),
         "windows": {
-            "loop": list(events.inclusive_window),
-            "target_0": [events.t_move_start, events.t_close_done],
+            "operation": [3, 14],
+            "target_0": [3, 9],
             "receiver_0": None,
+            "gripper": [3, 14],
         },
     }
     path.write_text(json.dumps(payload), encoding="utf-8")
@@ -109,6 +114,51 @@ def test_target_only_loop_requires_null_receiver_window(tmp_path: Path) -> None:
     )
 
     assert context.annotation_mode.value == "target_only"
+    assert context.events == events
+    assert context.active_arm == "right"
+    assert context.gripper_window == (3, 14)
+    assert "t_open_start" not in context.events.to_json()
+    assert "t_open_done" not in context.events.to_json()
+
+
+def test_target_only_v2_rejects_gripper_window_that_stops_at_close_end(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "loop.json"
+    payload = {
+        "format_version": "robotwin_loop_context_v2",
+        "annotation_mode": "target_only",
+        "timeline_kind": "close_hold",
+        "required_object_roles": ["target"],
+        "episode": {
+            "task": "move_pillbottle_pad",
+            "episode_index": 7152,
+            "episode_id": "007152",
+            "camera": "cam_high",
+        },
+        "frame_count": 15,
+        "events": {
+            "active_arm": "right",
+            "t_remove_start": 3,
+            "t_close_start": 5,
+            "t_close_end": 9,
+        },
+        "windows": {
+            "operation": [3, 14],
+            "target_0": [3, 9],
+            "receiver_0": None,
+            "gripper": [3, 9],
+        },
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(UrdfGripperDataError, match="window gripper"):
+        load_authoritative_loop_context(
+            path,
+            expected_task="move_pillbottle_pad",
+            expected_episode_index=7152,
+            expected_camera="cam_high",
+        )
 
 
 def test_resolve_episode_paths_uses_zero_padding_and_depth_sidecar_tree(
@@ -207,6 +257,7 @@ def test_load_authoritative_loop_context_preserves_all_source_boundaries(
     assert context.events == expected
     assert context.frame_count == 15
     assert context.path == path.resolve()
+    assert context.gripper_window == expected.inclusive_window
 
 
 def test_load_episode_uses_authoritative_loop_without_recomputing_stage1(
@@ -241,6 +292,39 @@ def test_load_episode_uses_authoritative_loop_without_recomputing_stage1(
     assert episode.loop == authoritative
     assert episode.active_arm == "left"
     assert episode.active_window == (1, 12)
+
+
+def test_load_episode_uses_target_only_normalized_window_through_final_frame(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = resolve_episode_paths(tmp_path, 7152)
+    for path in (paths.sidecar, paths.rgb_video, paths.depth_video):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    _write_parquet(paths.parquet)
+    events = TargetOnlyEvents(
+        active_arm="right",
+        t_remove_start=3,
+        t_close_start=5,
+        t_close_end=9,
+    )
+    monkeypatch.setattr(
+        data_module,
+        "infer_active_loop",
+        lambda *_args: pytest.fail("target_only must not run the five-event fallback"),
+    )
+
+    episode = load_urdf_gripper_episode(
+        tmp_path,
+        7152,
+        authoritative_events=events,
+        authoritative_gripper_window=(3, 14),
+    )
+
+    assert episode.events == events
+    assert episode.active_arm == "right"
+    assert episode.active_window == (3, 14)
 
 
 def test_load_urdf_gripper_episode_validates_media_and_exposes_window(

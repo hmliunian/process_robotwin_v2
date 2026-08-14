@@ -27,6 +27,7 @@ from robotwin_annotation_v2.models import (
     SemanticFrame,
     SemanticPlan,
     SemanticStatus,
+    TargetOnlyEvents,
 )
 from robotwin_annotation_v2.pipeline import (
     GripperSeedQCResult,
@@ -101,7 +102,7 @@ def _target_only_context() -> LoopContext:
         episode=base.episode,
         task_text=base.task_text,
         frame_count=base.frame_count,
-        events=base.events,
+        events=TargetOnlyEvents("right", 2, 6, 8),
         semantic_frames=(
             SemanticFrame(
                 0,
@@ -132,6 +133,7 @@ def _target_only_plan() -> SemanticPlan:
 class FakeSamBackend:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
+        self.tracking_windows: list[tuple[int, int]] = []
         target = np.zeros(FRAME_SHAPE, dtype=bool)
         target[1:3, 1:3] = True
         receiver = np.zeros(FRAME_SHAPE, dtype=bool)
@@ -161,6 +163,7 @@ class FakeSamBackend:
         **_kwargs: Any,
     ) -> np.ndarray:
         self.calls.append(("track", ""))
+        self.tracking_windows.append(tracking_window)
         output = np.zeros((frame_count, *seed_mask.shape), dtype=bool)
         output[tracking_window[0] : tracking_window[1] + 1] = seed_mask
         return output
@@ -326,11 +329,42 @@ def test_target_only_sam_tracks_target_and_leaves_receiver_channel_zero() -> Non
     assert [value for kind, value in backend.calls if kind == "seed"] == [
         "orange bottle"
     ]
-    assert result.target.output_window == context.events.target_window
-    assert not result.target.visible_mask[context.events.t_close_done + 1 :].any()
+    assert result.target.output_window == context.windows.target
+    assert backend.tracking_windows == [(0, 8)]
+    assert not result.target.visible_mask[9:].any()
     assert not result.masks[1].any()
     with pytest.raises(KeyError, match="non-applicable"):
         _ = result.receiver
+
+
+def test_target_only_sam_propagates_the_qwen_qc_selected_candidate() -> None:
+    backend = FakeSamBackend()
+    selected_seed = backend.seed_masks["bottle"].copy()
+    mask_qc = MaskQCResult(
+        role_reports=(
+            _qc_report("target", MaskQCStatus.PASSED, query="bottle"),
+        ),
+        selected_masks={"target": selected_seed},
+        health={"status": "ok"},
+    )
+
+    result = run_sam_stage(
+        _target_only_context(),
+        _target_only_plan(),
+        backend,
+        Path("/tmp/fake-resource"),
+        frame_shape=FRAME_SHAPE,
+        mask_config=MaskConfig(0, 0),
+        mask_qc=mask_qc,
+    )
+
+    assert result.target.qc_status is MaskQCStatus.PASSED
+    assert result.target.primary_query == "bottle"
+    assert not any(kind == "seed" for kind, _value in backend.calls)
+    assert backend.tracking_windows == [(0, 8)]
+    assert result.target.visible_mask[2:9].any()
+    assert not result.target.visible_mask[9:].any()
+    assert not result.masks[1].any()
 
 
 def test_no_clear_seed_skips_target_sam_calls() -> None:

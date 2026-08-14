@@ -26,6 +26,7 @@ from ..models import (
     SemanticStatus,
 )
 from ..models.loop_context import RoleName
+from .prompt_context import timeline_prompt_fields
 
 _CANDIDATE_MARKER = "{candidate_panels}"
 _CONTEXT_MARKER = "{context_frames}"
@@ -298,21 +299,36 @@ def _context_items(
     limit: int = 2,
 ) -> tuple[tuple[int, Image.Image], ...]:
     eligible = [
-        frame.frame_id
+        frame
         for frame in context.semantic_frames
         if frame.frame_id != seed_frame_id
         and role in frame.eligible_roles
         and frame.frame_id in context_images
     ]
-    if len(eligible) > limit:
+
+    def sample(frame_ids: list[int], count: int) -> list[int]:
+        if len(frame_ids) <= count:
+            return frame_ids
         indices = tuple(
             dict.fromkeys(
-                int(round(value))
-                for value in np.linspace(0, len(eligible) - 1, num=limit)
+                round(value)
+                for value in np.linspace(0, len(frame_ids) - 1, num=count)
             )
         )
-        eligible = [eligible[index] for index in indices]
-    return tuple((frame_id, context_images[frame_id]) for frame_id in eligible)
+        return [frame_ids[index] for index in indices]
+
+    # Close/hold/place evidence identifies the manipulated instance more
+    # reliably than another static pre-grasp view.  Only use spare slots for
+    # additional seed candidates when fewer action-context frames exist.
+    evidence = [frame.frame_id for frame in eligible if not frame.seed_eligible]
+    selected = sample(evidence, limit)
+    if len(selected) < limit:
+        supporting_seeds = [
+            frame.frame_id for frame in eligible if frame.seed_eligible
+        ]
+        selected.extend(sample(supporting_seeds, limit - len(selected)))
+    selected = sorted(set(selected))
+    return tuple((frame_id, context_images[frame_id]) for frame_id in selected)
 
 
 def _decode_response(raw_response: str) -> dict[str, Any]:
@@ -399,9 +415,7 @@ def _render_request(
         "role": role,
         "seed_frame_id": str(seed_frame_id),
         "candidate_ids": candidate_ids,
-        "close_done": str(context.events.t_close_done),
-        "open_start": str(context.events.t_open_start),
-        "open_done": str(context.events.t_open_done),
+        **timeline_prompt_fields(context),
     }
     placeholders = set(_PLACEHOLDER_PATTERN.findall(template))
     unknown = sorted(
@@ -774,6 +788,8 @@ def run_mask_qc_stage(
 
     if semantic_plan.episode != context.episode:
         raise MaskQCError("SemanticPlan and LoopContext refer to different episodes")
+    if semantic_plan.annotation_mode is not context.annotation_mode:
+        raise MaskQCError("SemanticPlan and LoopContext use different annotation modes")
     health: dict[str, Any] = {}
     if check_health:
         try:

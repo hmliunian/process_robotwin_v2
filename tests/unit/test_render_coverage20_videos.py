@@ -205,6 +205,29 @@ def test_fully_qc_verified_run_is_preferred_over_newer_unverified_run() -> None:
     assert verified.score > unverified.score
 
 
+def test_target_only_candidate_is_fully_verified_without_receiver() -> None:
+    verified = MaskCandidate(
+        path=Path("verified.npz"),
+        run_id="verified",
+        role_status={"target": "valid", "receiver": "not_applicable"},
+        role_qc_status={"target": "passed", "receiver": "not_applicable"},
+        valid_role_count=1,
+        qc_passed_role_count=1,
+        modified_ns=1,
+    )
+    unverified = MaskCandidate(
+        path=Path("unverified.npz"),
+        run_id="unverified",
+        role_status={"target": "valid", "receiver": "not_applicable"},
+        role_qc_status={"target": "not_run", "receiver": "not_applicable"},
+        valid_role_count=1,
+        qc_passed_role_count=0,
+        modified_ns=999,
+    )
+
+    assert verified.score > unverified.score
+
+
 def test_build_sheets_includes_gripper_pages(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -334,3 +357,64 @@ def test_build_sheets_accepts_explicit_review_roles(
 
     assert requested == [{1, 2, 4, 5, 8}]
     assert len(outputs) == 6
+
+
+def test_build_sheets_skips_not_applicable_receiver(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    render_dir = tmp_path / "render"
+    render_dir.mkdir()
+    render_manifest = render_dir / "manifest.json"
+    render_manifest.write_text(
+        json.dumps(
+            {
+                "episodes": [
+                    {
+                        "episode_index": 1,
+                        "source_masks": str(tmp_path / "missing/masks.npz"),
+                        "output_video": str(tmp_path / "overlay.mp4"),
+                        "review_roles": [
+                            {
+                                "role": "target",
+                                "status": "ok",
+                                "output_window": [4, 65],
+                            },
+                            {
+                                "role": "receiver",
+                                "status": "not_applicable",
+                                "output_window": None,
+                            },
+                            {
+                                "role": "gripper_left",
+                                "status": "ok",
+                                "output_window": [4, 138],
+                            },
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_decode(
+        _video_path: Path,
+        frame_ids: set[int],
+    ) -> dict[int, Image.Image]:
+        assert frame_ids == {19, 37, 65, 138}
+        return {
+            frame_id: Image.fromarray(np.zeros((8, 10, 3), dtype=np.uint8))
+            for frame_id in frame_ids
+        }
+
+    monkeypatch.setattr(render_module, "_decode_selected", fake_decode)
+
+    outputs = build_sheets(render_manifest, render_dir / "review_sheets")
+
+    assert {path.name for path in outputs} == {
+        "target_early.jpg",
+        "target_late.jpg",
+        "gripper_early.jpg",
+        "gripper_late.jpg",
+    }

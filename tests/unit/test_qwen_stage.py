@@ -17,6 +17,7 @@ from robotwin_annotation_v2.models import (
     LoopContext,
     LoopEvents,
     SemanticFrame,
+    TargetOnlyEvents,
 )
 from robotwin_annotation_v2.pipeline import (
     QwenStageError,
@@ -63,7 +64,7 @@ def _target_only_context() -> LoopContext:
         episode=EpisodeRef("move_object", 1, "cam_high"),
         task_text="Pick up the bottle.",
         frame_count=20,
-        events=LoopEvents("right", 2, 6, 8, 14, 17),
+        events=TargetOnlyEvents("right", 2, 6, 8),
         semantic_frames=(
             SemanticFrame(
                 0,
@@ -241,6 +242,25 @@ def test_target_only_semantic_prompt_contains_only_target_contract() -> None:
     assert "不得添加其他角色" in request.rendered_prompt
     assert '"target"' in request.rendered_prompt
     assert "receiver" not in request.rendered_prompt
+    assert "active_arm: right" in request.rendered_prompt
+    assert "remove_start: 2" in request.rendered_prompt
+    assert "close_start: 6" in request.rendered_prompt
+    assert "close_end: 8" in request.rendered_prompt
+    assert "episode_end: 19" in request.rendered_prompt
+    assert "open_start" not in request.rendered_prompt
+    assert "open_done" not in request.rendered_prompt
+
+
+def test_target_only_rejects_a_pick_place_prompt_before_model_request() -> None:
+    template = (
+        "open={open_start}\nframes:\n{labeled_multimodal_frames}\n"
+        "schema={response_schema}"
+    )
+    context = _target_only_context()
+    frames = {frame_id: _frames()[frame_id] for frame_id in (0, 9)}
+
+    with pytest.raises(QwenStageError, match="unknown prompt template.*open_start"):
+        build_qwen_request(context, frames, template)
 
 
 def test_parse_semantic_plan_canonicalizes_exact_duplicate_candidates() -> None:

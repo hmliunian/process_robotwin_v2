@@ -517,6 +517,113 @@ def test_process_dataset_target_receiver_only_skips_gripper_and_uses_sam_resume(
     assert summary["stage_mode"] == "object_source_only"
 
 
+def test_target_only_rejects_sam_gripper_before_loading_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_runtime_load() -> Any:
+        pytest.fail("unsupported target-only SAM gripper must fail before model loading")
+
+    monkeypatch.setattr(process_module, "_load_sam_runtime", unexpected_runtime_load)
+    config = process_module.load_config(
+        Path("configs/pilot_adjust_bottle_target_only.yaml")
+    )
+
+    with pytest.raises(ValueError, match="target_only.*URDF"):
+        process_module.process_dataset(
+            config,
+            dataset_root=tmp_path / "unused",
+            task="adjust_bottle",
+            camera="cam_high",
+            output_root=tmp_path / "output",
+            episode_ids=(0,),
+            skip_render=True,
+        )
+
+
+def test_target_only_review_manifest_lists_only_applicable_roles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target_config = process_module.load_config(
+        Path("configs/pilot_adjust_bottle_target_only.yaml")
+    )
+    config = SimpleNamespace(
+        config_path=target_config.config_path,
+        output_root=tmp_path / "runs",
+        annotation=target_config.annotation,
+        dataset=SimpleNamespace(
+            root=tmp_path / "dataset",
+            task="adjust_bottle",
+            camera="cam_high",
+            manifest=None,
+            manifest_data={},
+        ),
+    )
+    source_video = tmp_path / "episode_000000.mp4"
+    source_video.touch()
+
+    class FakeDataset:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        def paths(self, _ref: Any) -> Any:
+            return SimpleNamespace(video=source_video)
+
+        def task_text(self, _episode_id: int) -> str:
+            return "adjust bottle"
+
+    masks_path = tmp_path / "masks.npz"
+    masks_path.touch()
+    artifact = SimpleNamespace(
+        format_version="robotwin_visible_masks_v2",
+        instance_names=(
+            "target_0",
+            "receiver_0",
+            "gripper_left",
+            "gripper_right",
+        ),
+        annotation_status=("valid", "not_applicable", "valid", "not_annotated"),
+        qc_status=("passed", "not_applicable", "passed", "not_run"),
+    )
+
+    def render_video(
+        _video_path: Path,
+        _artifact: Any,
+        output_path: Path,
+        **_kwargs: Any,
+    ) -> dict[str, Any]:
+        output_path.write_bytes(b"video")
+        return {"frame_count": 1}
+
+    fake_render = SimpleNamespace(
+        DEFAULT_FILL_ALPHA=0.36,
+        DEFAULT_OUTLINE_RADIUS=1,
+        DEFAULT_HALO_RADIUS=2,
+        ROLE_COLORS={"target": (1, 2, 3), "gripper": (4, 5, 6)},
+        select_best_masks=lambda *_args, **_kwargs: {
+            0: SimpleNamespace(path=masks_path, run_id="target-only")
+        },
+        _load_masks=lambda _path: artifact,
+        _output_video_name=lambda **_kwargs: "episode_000000.mp4",
+        render_video=render_video,
+        _sha256=lambda _path: "sha256",
+        build_sheets=lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setitem(sys.modules, "render_coverage20_videos", fake_render)
+    monkeypatch.setattr(process_module, "RoboTwinDataset", FakeDataset)
+
+    report = process_module._render_processed(
+        config,
+        run_id="target-only",
+        episode_ids=(0,),
+        output_dir=tmp_path / "output",
+    )
+
+    manifest = json.loads(Path(report["manifest"]).read_text(encoding="utf-8"))
+    assert manifest["rendered_roles"] == ["target", "gripper"]
+
+
 def test_default_bundled_urdf_path_is_repository_asset() -> None:
     expected = (
         Path(__file__).resolve().parents[2]

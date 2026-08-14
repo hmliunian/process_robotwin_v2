@@ -167,26 +167,28 @@ def _write_source_episode(source: Path, *, target_only: bool = False) -> np.ndar
     for path in (state_path, video_path):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.touch()
-    _write_json(
-        source / "loop.json",
+    loop_contract = (
         {
-            "format_version": "robotwin_loop_context_v1",
-            **(
-                {
-                    "annotation_mode": "target_only",
-                    "required_object_roles": ["target"],
-                }
-                if target_only
-                else {}
-            ),
-            "episode": {
-                "task": TASK,
-                "episode_index": EPISODE_INDEX,
-                "episode_id": f"{EPISODE_INDEX:06d}",
-                "camera": CAMERA,
+            "format_version": "robotwin_loop_context_v2",
+            "annotation_mode": "target_only",
+            "timeline_kind": "close_hold",
+            "required_object_roles": ["target"],
+            "events": {
+                "active_arm": "right",
+                "t_remove_start": 0,
+                "t_close_start": 0,
+                "t_close_end": 1,
             },
-            "task_text": "place the empty cup",
-            "frame_count": FRAME_COUNT,
+            "windows": {
+                "operation": [0, 3],
+                "target_0": [0, 1],
+                "receiver_0": None,
+                "gripper": [0, 3],
+            },
+        }
+        if target_only
+        else {
+            "format_version": "robotwin_loop_context_v1",
             "events": {
                 "active_arm": "right",
                 "t_move_start": 0,
@@ -198,8 +200,22 @@ def _write_source_episode(source: Path, *, target_only: bool = False) -> np.ndar
             "windows": {
                 "loop": [0, 3],
                 "target_0": [0, 1],
-                "receiver_0": None if target_only else [1, 3],
+                "receiver_0": [1, 3],
             },
+        }
+    )
+    _write_json(
+        source / "loop.json",
+        {
+            **loop_contract,
+            "episode": {
+                "task": TASK,
+                "episode_index": EPISODE_INDEX,
+                "episode_id": f"{EPISODE_INDEX:06d}",
+                "camera": CAMERA,
+            },
+            "task_text": "place the empty cup",
+            "frame_count": FRAME_COUNT,
             "semantic_frames": [],
             "sources": {
                 "state": str(state_path.resolve()),
@@ -338,6 +354,14 @@ def _write_source_episode(source: Path, *, target_only: bool = False) -> np.ndar
         source_run / "process_summary.json",
         {
             "format_version": "robotwin_process_dataset_summary_v1",
+            **(
+                {
+                    "annotation_mode": "target_only",
+                    "required_object_roles": ["target"],
+                }
+                if target_only
+                else {}
+            ),
             "run_id": SOURCE_RUN_ID,
             "dataset_root": str(dataset_root.resolve()),
             "task": TASK,
@@ -798,6 +822,9 @@ def test_target_only_urdf_publish_preserves_not_applicable_receiver(
     tmp_path: Path,
 ) -> None:
     fixture = _target_only_fixture(tmp_path)
+    source_loop = json.loads(
+        (fixture.source_episode_dir / "loop.json").read_text(encoding="utf-8")
+    )
 
     fixture.publish()
 
@@ -816,6 +843,16 @@ def test_target_only_urdf_publish_preserves_not_applicable_receiver(
     )
     assert manifest["annotation_mode"] == "target_only"
     assert manifest["required_object_roles"] == ["target"]
+    assert source_loop["events"] == {
+        "active_arm": "right",
+        "t_remove_start": 0,
+        "t_close_start": 0,
+        "t_close_end": 1,
+    }
+    gripper = next(
+        item for item in manifest["roles"] if item["role"] == "gripper_right"
+    )
+    assert gripper["output_window"] == [0, FRAME_COUNT - 1]
     receiver = next(item for item in manifest["roles"] if item["role"] == "receiver")
     assert receiver["status"] == "not_applicable"
     assert not (fixture.destination_dir / "receiver_0").exists()
@@ -823,6 +860,19 @@ def test_target_only_urdf_publish_preserves_not_applicable_receiver(
         (fixture.destination_dir / "frame_provenance.json").read_text(encoding="utf-8")
     )
     assert provenance["channels"]["receiver_0"]["status"] == "not_applicable"
+
+
+def test_target_only_publish_rejects_backend_window_ending_at_close_end(
+    tmp_path: Path,
+) -> None:
+    fixture = _target_only_fixture(tmp_path)
+    fixture.backend_episode_record["active_window"] = [0, 1]
+
+    with pytest.raises(
+        UrdfGripperPublishError,
+        match="active window differs from the authoritative source loop",
+    ):
+        fixture.publish()
 
 
 def test_target_only_source_rejects_nonzero_receiver_pixels(tmp_path: Path) -> None:

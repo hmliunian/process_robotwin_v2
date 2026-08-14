@@ -45,6 +45,8 @@ class PickPlaceEvents:
     t_open_done: int
 
     def __post_init__(self) -> None:
+        if self.active_arm not in {"left", "right"}:
+            raise ValueError(f"invalid active arm: {self.active_arm}")
         values = (
             self.t_move_start,
             self.t_close_start,
@@ -55,7 +57,8 @@ class PickPlaceEvents:
         if min(values) < 0:
             raise ValueError("loop event frames must be non-negative")
         if not (
-            self.t_move_start <= self.t_close_start
+            self.t_move_start
+            <= self.t_close_start
             < self.t_close_done
             < self.t_open_start
             < self.t_open_done
@@ -97,6 +100,8 @@ class TargetOnlyEvents:
     t_close_end: int
 
     def __post_init__(self) -> None:
+        if self.active_arm not in {"left", "right"}:
+            raise ValueError(f"invalid active arm: {self.active_arm}")
         values = (self.t_remove_start, self.t_close_start, self.t_close_end)
         if min(values) < 0:
             raise ValueError("target-only event frames must be non-negative")
@@ -150,6 +155,8 @@ def derive_episode_windows(events: TimelineEvents, *, frame_count: int) -> Episo
             receiver=None,
             gripper=operation,
         )
+    if not isinstance(events, PickPlaceEvents):
+        raise TypeError(f"unsupported timeline events: {type(events).__name__}")
     if events.t_open_done >= frame_count:
         raise ValueError("pick/place loop extends beyond the episode")
     return EpisodeWindows(

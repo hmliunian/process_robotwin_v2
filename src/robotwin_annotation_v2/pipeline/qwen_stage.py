@@ -21,6 +21,7 @@ from ..models import (
     SemanticPlanError,
     SemanticStatus,
 )
+from .prompt_context import timeline_prompt_fields
 
 _FRAME_MARKER = "{labeled_multimodal_frames}"
 _PLACEHOLDER_PATTERN = re.compile(r"\{([a-z][a-z0-9_]*)\}")
@@ -107,18 +108,13 @@ def build_qwen_request(
             f"prompt template must contain {_FRAME_MARKER!r} exactly once"
         )
 
-    events = context.events
     replacements = {
         "task_text": context.task_text,
         "camera": context.episode.camera,
-        "move_start": str(events.t_move_start),
-        "close_start": str(events.t_close_start),
-        "close_done": str(events.t_close_done),
-        "open_start": str(events.t_open_start),
-        "open_done": str(events.t_open_done),
         "annotation_mode": context.annotation_mode.value,
         "required_object_roles": ", ".join(context.annotation_spec.required_role_names),
         "response_schema": _response_schema(context),
+        **timeline_prompt_fields(context),
     }
     placeholders = set(_PLACEHOLDER_PATTERN.findall(prompt_template))
     unknown = sorted(placeholders - set(replacements) - {"labeled_multimodal_frames"})

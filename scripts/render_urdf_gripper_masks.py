@@ -23,7 +23,7 @@ from typing import Any, Mapping, Sequence, cast
 import numpy as np
 
 from robotwin_annotation_v2.urdf_gripper_data import (
-    ActiveGripperLoop,
+    ActiveGripperEvents,
     CameraCalibrationSeries,
     UrdfGripperEpisodeData,
     load_authoritative_loop_context,
@@ -103,7 +103,9 @@ class EpisodePlan:
     episode_index: int
     frame_count: int
     frame_shape: tuple[int, int]
-    loop: ActiveGripperLoop
+    events: ActiveGripperEvents
+    active_arm: str
+    active_window: tuple[int, int]
     source_masks: Path
     source_loop: Path
     parquet: Path
@@ -114,19 +116,22 @@ class EpisodePlan:
     source_lineage: Mapping[str, Any]
 
     def __post_init__(self) -> None:
-        if self.loop.end >= self.frame_count:
+        if self.active_arm not in {"left", "right"}:
+            raise ValueError(f"invalid active arm: {self.active_arm!r}")
+        if self.events.active_arm != self.active_arm:
+            raise ValueError("episode events and active_arm disagree")
+        start, end = self.active_window
+        if start < 0 or end < start or end >= self.frame_count:
             raise ValueError(
-                f"active window {self.loop.inclusive_window} exceeds frame count "
+                f"active window {self.active_window} exceeds frame count "
                 f"{self.frame_count}"
             )
 
     @property
-    def active_arm(self) -> str:
-        return self.loop.active_arm
+    def loop(self) -> ActiveGripperEvents:
+        """Compatibility alias; execution consumes ``active_window`` directly."""
 
-    @property
-    def active_window(self) -> tuple[int, int]:
-        return self.loop.inclusive_window
+        return self.events
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -135,7 +140,7 @@ class EpisodePlan:
             "frame_shape_hw": list(self.frame_shape),
             "active_arm": self.active_arm,
             "active_window": list(self.active_window),
-            "events": self.loop.to_json(),
+            "events": self.events.to_json(),
             "source_masks": str(self.source_masks),
             "source_loop": str(self.source_loop),
             "parquet": str(self.parquet),
@@ -1523,7 +1528,8 @@ def _build_episode_plan(config: RunConfig, episode_index: int) -> EpisodePlan:
         config.dataset_root,
         episode_index,
         camera=config.camera,
-        authoritative_loop=source_loop.events,
+        authoritative_events=source_loop.events,
+        authoritative_gripper_window=source_loop.gripper_window,
     )
     if source_loop.frame_count != episode.frame_count:
         raise UrdfMaskRunError(
@@ -1563,7 +1569,9 @@ def _build_episode_plan(config: RunConfig, episode_index: int) -> EpisodePlan:
         episode_index=episode_index,
         frame_count=episode.frame_count,
         frame_shape=source.frame_shape,
-        loop=source_loop.events,
+        events=source_loop.events,
+        active_arm=source_loop.active_arm,
+        active_window=source_loop.gripper_window,
         source_masks=source.path,
         source_loop=source_loop.path,
         parquet=episode.paths.parquet,
@@ -2003,7 +2011,8 @@ class IncrementalUrdfEpisodeWorker:
                 self.config.dataset_root,
                 plan.episode_index,
                 camera=self.config.camera,
-                authoritative_loop=plan.loop,
+                authoritative_events=plan.events,
+                authoritative_gripper_window=plan.active_window,
             )
             source = load_four_channel_masks(
                 plan.source_masks,
@@ -2262,7 +2271,8 @@ def run_experiment(
                     config.dataset_root,
                     plan.episode_index,
                     camera=config.camera,
-                    authoritative_loop=plan.loop,
+                    authoritative_events=plan.events,
+                    authoritative_gripper_window=plan.active_window,
                 )
                 source = load_four_channel_masks(
                     plan.source_masks,

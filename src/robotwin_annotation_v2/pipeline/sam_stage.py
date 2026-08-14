@@ -11,7 +11,6 @@ from PIL import Image
 
 from ..adapters.artifact_store import ArtifactStore
 from ..config import MaskConfig
-from ..domain import ObjectRole
 from ..models import (
     FrameWindow,
     LoopContext,
@@ -511,15 +510,20 @@ def run_sam_stage(
     }
     for semantic in semantic_plan.role_plans:
         role = semantic.role
-        start, end = context.annotation_spec.role_window_bounds(
-            ObjectRole(role),
-            context.events,
+        output_window = (
+            context.windows.target
+            if role == "target"
+            else context.windows.receiver
         )
+        if output_window is None:
+            raise SamStageError(
+                f"{role} has no output window in {context.annotation_mode.value} mode"
+            )
         role_masks.append(
             _run_role(
                 role,
                 semantic=semantic,
-                output_window=FrameWindow(start, end),
+                output_window=output_window,
                 padding=padding_by_role[role],
                 mask_config=mask_config,
                 context=context,

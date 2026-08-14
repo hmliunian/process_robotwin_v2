@@ -10,12 +10,12 @@
 
 相机：{camera}
 
-事件上下文：
-- move_start: {move_start}
+状态事件（由机器人状态检测；如果任务描述中的手臂措辞与这里冲突，以状态为准）：
+- active_arm: {active_arm}
+- remove_start: {remove_start}
 - close_start: {close_start}
-- close_done: {close_done}
-- open_start: {open_start}
-- open_done: {open_done}
+- close_end: {close_end}
+- episode_end: {episode_end}
 
 下面是带原始 frame id 和用途标签的图像。每个 frame label 紧跟对应图像：
 {labeled_multimodal_frames}
@@ -23,8 +23,9 @@
 角色定义：
 - target：随后被夹爪抓取并移动的完整物体。
 
-本模式只识别 target，不推断也不输出其他放置对象。请利用任务文本和多帧动作关系确认
-真正被夹爪抓取并移动的实例，不要只凭一张静态图猜测。
+本模式只识别 target，不推断也不输出其他放置对象。请跟随 active_arm 对应的夹爪，利用
+任务文本和多帧动作关系确认真正被抓取并持续持有的实例，不要只凭一张静态图猜测。
+close_end 之后的图像只用于确认对象身份，不会延长 target 的 mask 时间窗口。
 
 对 target：
 1. 只能从 target 允许的 seed 候选中选择一个完整、清晰、遮挡最少的 seed frame。必须逐一

@@ -17,9 +17,11 @@ from robotwin_annotation_v2.models import (
     LoopContext,
     LoopEvents,
     SemanticFrame,
+    TargetOnlyEvents,
 )
 from robotwin_annotation_v2.pipeline import (
     GripperSeedQualityGateConfig,
+    GripperStageError,
     run_gripper_stage,
 )
 
@@ -174,7 +176,7 @@ def _target_only_context(state_path: Path) -> LoopContext:
         episode=EpisodeRef("task", 7),
         task_text="move the bottle",
         frame_count=FRAME_COUNT,
-        events=LoopEvents("right", 1, 10, 12, 20, 22),
+        events=TargetOnlyEvents("right", 1, 10, 12),
         semantic_frames=(
             SemanticFrame(
                 0,
@@ -241,7 +243,7 @@ def test_run_gripper_stage_reuses_object_tracks_and_propagates_only_gripper(
     assert result.provenance["known_object_tracks"] == "saved_sam_native_track"
 
 
-def test_target_only_gripper_accepts_exactly_target_track(tmp_path: Path) -> None:
+def test_target_only_gripper_rejects_sam_backend_before_inference(tmp_path: Path) -> None:
     state_path = tmp_path / "state.parquet"
     resource_path = tmp_path / "frames"
     prompt_path = tmp_path / "prompt.txt"
@@ -255,24 +257,29 @@ def test_target_only_gripper_accepts_exactly_target_track(tmp_path: Path) -> Non
     )
     target = np.zeros((FRAME_COUNT, *FRAME_SHAPE), dtype=bool)
 
-    result = run_gripper_stage(
-        _target_only_context(state_path),
-        backend=FakeGripperBackend(),
-        resource_path=resource_path,
-        frame_shape=FRAME_SHAPE,
-        gripper_roi_config=GripperRoiConfig(
-            prompt_axial_back_m=0.120,
-            prompt_axial_front_m=0.060,
-            hard_axial_back_m=0.120,
-            hard_axial_front_m=0.045,
-            fixed_half_width_m=0.085,
-        ),
-        object_tracks={ObjectRole.TARGET: target},
-        qc_client=FakeQwenClient(),
-        qc_prompt_template=prompt_path,
-        qc_max_tokens=100,
-        seed_quality_gate=GripperSeedQualityGateConfig(minimum_pixels=4),
-    )
+    backend = FakeGripperBackend()
+    with np.testing.assert_raises_regex(
+        GripperStageError,
+        "target_only does not support the SAM gripper backend",
+    ):
+        run_gripper_stage(
+            _target_only_context(state_path),
+            backend=backend,
+            resource_path=resource_path,
+            frame_shape=FRAME_SHAPE,
+            gripper_roi_config=GripperRoiConfig(
+                prompt_axial_back_m=0.120,
+                prompt_axial_front_m=0.060,
+                hard_axial_back_m=0.120,
+                hard_axial_front_m=0.045,
+                fixed_half_width_m=0.085,
+            ),
+            object_tracks={ObjectRole.TARGET: target},
+            qc_client=FakeQwenClient(),
+            qc_prompt_template=prompt_path,
+            qc_max_tokens=100,
+            seed_quality_gate=GripperSeedQualityGateConfig(minimum_pixels=4),
+        )
 
-    assert result.status == "ok"
-    assert result.provenance["receiver_track"]["nonempty_frames"] == 0
+    assert backend.text_box_calls == []
+    assert backend.propagate_calls == []
