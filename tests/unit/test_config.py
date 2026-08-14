@@ -83,6 +83,8 @@ def test_target_only_pilot_config_pins_close_and_hold_dataset() -> None:
     assert len(config.dataset.regression_episode_ids) == 20
     assert config.dataset.regression_episode_ids == tuple(manifest["regression_episode_ids"])
     assert config.qwen.prompt_template.name == "target_only_semantic.txt"
+    assert config.qwen.timeout_seconds == 600
+    assert config.qwen.max_tokens == 400
     assert config.mask.qc_prompt_template is not None
     assert config.mask.qc_prompt_template.name == "target_only_mask_candidate_qc.txt"
 

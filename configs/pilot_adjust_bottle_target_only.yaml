@@ -14,8 +14,11 @@ qwen:
   endpoint: http://127.0.0.1:18086/v1/chat/completions
   model: qwen3.5-27b
   prompt_template: prompts/target_only_semantic.txt
-  timeout_seconds: 180
-  max_tokens: 800
+  # Six image frames can be slow when the shared Qwen GPU is busy.  The
+  # target-only JSON has one role, so 400 output tokens are ample while the
+  # longer HTTP timeout avoids abandoning an in-flight generation.
+  timeout_seconds: 600
+  max_tokens: 400
   query_selection: first_recommended
   allow_query_fallback: false
 
