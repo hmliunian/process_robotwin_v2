@@ -1,0 +1,55 @@
+# Runtime-only Target-only v2 pilot config.  Keep the dedicated Qwen service
+# isolated from the existing service on port 18086.
+annotation:
+  mode: target_only
+
+dataset:
+  root: /DATA/disk8/xuran/add_mask_robotwin/dataset/target_only_20_v2/beat_block_hammer
+  manifest: datasets/target_only_20_v2_selection.json
+  task: beat_block_hammer
+  camera: cam_high
+  smoke_episode_ids: [550]
+  regression_episode_ids: [550, 551, 562, 565, 574, 577, 584, 585, 598, 599,
+                           600, 605, 713, 756, 844, 863, 970, 973, 1096, 1098]
+
+qwen:
+  endpoint: http://127.0.0.1:18087/v1/chat/completions
+  model: qwen3.5-27b
+  prompt_template: prompts/target_only_semantic.txt
+  timeout_seconds: 600
+  max_tokens: 400
+  query_selection: first_recommended
+  allow_query_fallback: false
+
+sam3:
+  checkpoint: ../checkpoints/sam3/sam3.pt
+  gpus: [2]
+
+mask:
+  target_envelope_padding_px: 4
+  receiver_envelope_padding_px: 4
+  temporal_qc_min_adjacent_iou_p05: 0.5
+  temporal_qc_max_centroid_jump_p95_px: 5.0
+  temporal_qc_max_area_ratio_jump_p95: 0.4
+  temporal_qc_quarantine_signal_count: 2
+  qc_enabled: true
+  qc_prompt_template: prompts/target_only_mask_candidate_qc.txt
+  qc_max_candidates: 3
+  qc_max_tokens: 160
+  qc_max_attempts: 2
+  qc_min_confidence: 0.70
+  qc_min_area_fraction: 0.0001
+  qc_max_area_fraction: 0.85
+  qc_duplicate_iou_threshold: 0.98
+
+gripper_roi:
+  prompt:
+    axial_back_m: 0.120
+    axial_front_m: 0.060
+  hard:
+    axial_back_m: 0.120
+    axial_front_m: 0.045
+  fixed_half_width_m: 0.085
+
+output:
+  root: ../artifacts/target_only_v2_validation

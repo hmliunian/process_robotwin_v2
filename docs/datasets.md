@@ -194,3 +194,111 @@ target/receiver source 未通过 QC 时 fail closed。若希望 source 阶段仍
 `scripts/process_dataset.py` 使用 Parquet 帧数为有效长度；原始 RGB/depth 多出的尾帧不会进入
 mask。任务适配前还应检查 prompt 中 target/receiver 角色定义，以及新类别在 Qwen/SAM
 candidate QC 中的表现。
+
+## 8. `target_only_20_v2` 扩展抽取
+
+### 8.1 范围和数量
+
+这里的 target-only 是“每个任务只交付一个待标注 target/action-site channel”的数据集范围，
+不等价于当前 `close_hold` timeline 已支持所有任务，也不代表这些任务都满足第 2 节的
+pick-and-place receiver 合同。
+
+[architecture.md](architecture.md#123-target-基数) 中的 **14,994/27,500（54.52%）** 指：
+
+- 27 个固定单移动-target task，共 14,850 条；
+- `place_bread_basket` 中经 state loop 显式筛出的 144 条单 bread episode。
+
+按每个 task slice 抽 20 条，严格单移动-target 部分为 **28 个 slice、560 条**。为覆盖门、盖和
+开关类 action-site，再额外加入 `open_laptop`、`open_microwave`、`turn_switch` 三类；它们是
+fixed-root articulated part，不应回算进 54.52% 的移动-target 比例。最终版本化数据集为：
+
+```text
+/DATA/disk8/xuran/add_mask_robotwin/dataset/target_only_20_v2/
+  <task>/
+```
+
+合计 **31 个 task slice、620 条 episode**。旧的 `target_only_20` 和 `profile_compat_20` 保留，
+不原地覆盖。
+
+严格单移动-target 的 27 个完整 task：
+
+```text
+adjust_bottle              beat_block_hammer          dump_bin_bigbin
+grab_roller                handover_block              handover_mic
+hanging_mug                lift_pot                    move_can_pot
+move_pillbottle_pad        move_playingcard_away       move_stapler_pad
+place_a2b_left             place_a2b_right             place_container_plate
+place_empty_cup            place_fan                   place_mouse_pad
+place_object_scale         place_object_stand          place_phone_stand
+place_shoe                 put_object_cabinet          rotate_qrcode
+shake_bottle               shake_bottle_horizontally   stamp_seal
+```
+
+第 28 个移动-target slice 是 `place_bread_basket` 的单 bread 子集。扩展的 articulated
+action-site slice 是：
+
+```text
+open_laptop
+open_microwave
+turn_switch
+```
+
+`click_alarmclock`、`click_bell`、`press_stapler` 暂不并入本版；它们属于 fixed-root contact
+action-site，若后续纳入，应单独声明 tool/contact outcome，而不是借“单移动 target”口径扩张。
+
+### 8.2 抽样合同
+
+每个 slice 都保留原始全局 episode id，不重编号，并只物化 `cam_high` 所需输入：Parquet、
+HDF5 sidecar、RGB MP4 和 depth MKV。抽样必须同时满足：
+
+1. `geometry_valid=true`，且上述四个 episode 文件实际存在；
+2. 通常每类 10 条 clean + 10 条 randomized；
+3. `place_bread_basket` 必须通过 exactly-one complete loop 的单 bread gate。可用池复算为
+   144 条，其中只有 9 条 clean，因此该 slice 固定采用 9 clean + 11 randomized；
+4. 能从 gripper state 唯一识别控制臂时，在可行的 domain 内平衡左右臂；单臂约束、双臂同步
+   或 multi-stage task 则按 episode id 分散抽样，不伪造左右臂平衡；
+5. selection manifest 记录 task kind、domain、episode id 和复用/源抽取 provenance；每个
+   子目录另写逐文件 checksum 的 `EXTRACT_MANIFEST.json`，根目录写 collection manifest。
+
+现有字节一致的 sparse extract 可复用 17 个 slice、340 条：`profile_compat_20` 的 16 类，加
+`target_only_20/adjust_bottle`。因此新增从完整 RoboTwin 根读取的是 **14 个 slice、280 条**；
+最终目录仍对全部 620 条统一校验，不能因为复用而跳过 checksum 或输入合同检查。
+
+### 8.3 兼容性边界
+
+这 31 类是 target-only 数据覆盖集合，不是“31 类已由同一个时间线自动处理”的声明：
+
+- 当前 `close_hold` 实现只在 `adjust_bottle` 的 20 条上完成了集成合同；
+- 10 类标准 pick-and-place 可继续使用现有单 target/receiver loop，但 target-only 发布时只保留
+  target channel；
+- handover、cabinet、hammer、stamp 等仍需要各自的 multi-stage/tool outcome；
+- `open_laptop`、`open_microwave`、`turn_switch` 的 target 是 articulated link/handle 或
+  action-site，不是独立 movable root entity。
+
+因此数据抽取完成只证明 RGB-D/状态输入和 selection provenance 完整；在新增 profile 的事件、
+prompt、传播和 QC 合同通过前，不得把 620 条表述为统一 pipeline 的 mask 完成率。
+
+### 8.4 已物化版本
+
+2026-08-14 已按上述合同完成：
+
+```text
+selection: configs/datasets/target_only_20_v2_selection.json
+dataset:   /DATA/disk8/xuran/add_mask_robotwin/dataset/target_only_20_v2
+```
+
+可复现命令：
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/prepare_target_only_dataset.py
+PYTHONPATH=src .venv/bin/python scripts/prepare_target_only_dataset.py --materialize
+PYTHONPATH=src .venv/bin/python scripts/prepare_target_only_dataset.py --validate-only
+```
+
+第一条生成 selection，已存在时验证内容无漂移；第二条只允许写入不存在的新目录，先在随机
+staging 目录完成全部复制和检查，再原子发布，拒绝合并或覆盖；第三条重新计算发布后文件的
+大小和 SHA-256。
+
+本次发布验收结果：31 个 task 目录、每类 20 条；Parquet、HDF5、cam_high RGB MP4、cam_high
+depth MKV 各 620 个；selection/collection/per-task manifest 计数一致；共重新验证 2,790 个
+manifest 记录文件、1013.9 MiB，未发现 checksum、metadata、task 或 staging-path 错误。
