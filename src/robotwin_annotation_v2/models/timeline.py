@@ -70,8 +70,30 @@ class PickPlaceEvents:
         return FrameWindow(self.t_move_start, self.t_open_done)
 
     @property
-    def target_window(self) -> FrameWindow:
+    def target_primary_window(self) -> FrameWindow:
+        """Ordinary target encoding through the completed close event."""
+
         return FrameWindow(self.t_move_start, self.t_close_done)
+
+    @property
+    def target_window(self) -> FrameWindow:
+        """Compatibility name for the ordinary, pre-hold target window."""
+
+        return self.target_primary_window
+
+    @property
+    def target_hold_window(self) -> FrameWindow | None:
+        """Held-target frames strictly after close and before open starts."""
+
+        start = self.t_close_done + 1
+        end = self.t_open_start - 1
+        return None if end < start else FrameWindow(start, end)
+
+    @property
+    def target_output_window(self) -> FrameWindow:
+        """Full published target window, excluding ``t_open_start`` itself."""
+
+        return FrameWindow(self.t_move_start, self.t_open_start - 1)
 
     @property
     def receiver_window(self) -> FrameWindow:
@@ -110,7 +132,16 @@ class TargetOnlyEvents:
 
     @property
     def target_window(self) -> FrameWindow:
+        """Ordinary target encoding through the completed close event."""
+
         return FrameWindow(self.t_remove_start, self.t_close_end)
+
+    def target_hold_window(self, frame_count: int) -> FrameWindow | None:
+        if frame_count <= self.t_close_end:
+            raise ValueError("target-only close event extends beyond the episode")
+        if self.t_close_end + 1 >= frame_count:
+            return None
+        return FrameWindow(self.t_close_end + 1, frame_count - 1)
 
     def operation_window(self, frame_count: int) -> FrameWindow:
         if frame_count <= self.t_close_end:
@@ -151,7 +182,7 @@ def derive_episode_windows(events: TimelineEvents, *, frame_count: int) -> Episo
         operation = events.operation_window(frame_count)
         return EpisodeWindows(
             operation=operation,
-            target=events.target_window,
+            target=operation,
             receiver=None,
             gripper=operation,
         )
@@ -161,7 +192,7 @@ def derive_episode_windows(events: TimelineEvents, *, frame_count: int) -> Episo
         raise ValueError("pick/place loop extends beyond the episode")
     return EpisodeWindows(
         operation=events.loop_window,
-        target=events.target_window,
+        target=events.target_output_window,
         receiver=events.receiver_window,
         gripper=events.loop_window,
     )

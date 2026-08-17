@@ -9,7 +9,6 @@ from robotwin_annotation_v2.config import load_config
 from robotwin_annotation_v2.models import EpisodeRef
 from robotwin_annotation_v2.pipeline import build_loop_context
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG = load_config(PROJECT_ROOT / "configs/pilot_move_pillbottle_pad.yaml")
 
@@ -76,3 +75,6 @@ def test_all_coverage20_episodes_have_one_ordered_loop() -> None:
         assert events.t_close_start < events.t_close_done
         assert events.t_close_done < events.t_open_start < events.t_open_done
         assert events.t_open_done < context.frame_count
+        assert context.windows.target.start == events.t_move_start
+        assert context.windows.target.end == events.t_open_start - 1
+        assert context.to_json()["format_version"] == "robotwin_loop_context_v3"

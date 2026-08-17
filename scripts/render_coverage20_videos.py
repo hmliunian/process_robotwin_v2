@@ -24,6 +24,14 @@ from PIL import Image, ImageDraw
 from robotwin_annotation_v2.adapters.artifact_store import ArtifactStore
 from robotwin_annotation_v2.adapters.robotwin_dataset import RoboTwinDataset
 from robotwin_annotation_v2.config import PipelineConfig, load_config
+from robotwin_annotation_v2.mask_schema import (
+    LEGACY_MASK_FORMAT_VERSION,
+    MASK_FORMAT_VERSION,
+    TARGET_HOLD_COLOR_RGB,
+    FrameEncoding,
+    default_frame_encoding,
+    validate_frame_encoding,
+)
 from robotwin_annotation_v2.models import EpisodeRef
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -34,6 +42,7 @@ ROLE_COLORS: dict[str, tuple[int, int, int]] = {
     "receiver": (35, 116, 224),
     "gripper": (232, 67, 55),
 }
+TARGET_HOLD_COLOR = TARGET_HOLD_COLOR_RGB
 DEFAULT_COLOR = (255, 196, 0)
 HALO_COLOR = (0, 0, 0)
 DEFAULT_FILL_ALPHA = 0.32
@@ -84,6 +93,7 @@ class MaskArtifact:
     frame_count: int
     format_version: str
     qc_status: tuple[str, ...] = ()
+    frame_encoding: np.ndarray | None = None
 
 
 def _parse_args() -> argparse.Namespace:
@@ -277,6 +287,11 @@ def _load_masks(path: Path) -> MaskArtifact:
         )
         frame_count = int(archive["frame_count"])
         format_version = str(archive["format_version"])
+        raw_frame_encoding = (
+            np.asarray(archive["frame_encoding"])
+            if "frame_encoding" in archive.files
+            else None
+        )
     if masks.ndim != 4:
         raise ValueError(f"masks must be [N,T,H,W], got {masks.shape}: {path}")
     if (
@@ -288,6 +303,19 @@ def _load_masks(path: Path) -> MaskArtifact:
         raise ValueError(f"mask metadata length mismatch: {path}")
     if masks.shape[1] != frame_count:
         raise ValueError(f"mask frame_count mismatch: {path}")
+    if format_version == MASK_FORMAT_VERSION:
+        if raw_frame_encoding is None:
+            raise ValueError(f"visible masks v3 are missing frame_encoding: {path}")
+    elif format_version != LEGACY_MASK_FORMAT_VERSION:
+        raise ValueError(f"unsupported mask format {format_version!r}: {path}")
+    try:
+        frame_encoding = (
+            default_frame_encoding(masks)
+            if raw_frame_encoding is None
+            else validate_frame_encoding(masks, raw_frame_encoding).copy()
+        )
+    except ValueError as exc:
+        raise ValueError(f"invalid frame_encoding in {path}: {exc}") from exc
     return MaskArtifact(
         masks,
         names,
@@ -296,6 +324,7 @@ def _load_masks(path: Path) -> MaskArtifact:
         frame_count,
         format_version,
         qc_statuses,
+        frame_encoding,
     )
 
 
@@ -364,7 +393,18 @@ def overlay_frame(
         mask = artifact.masks[index, frame_id]
         if not mask.any():
             continue
-        color = np.asarray(ROLE_COLORS.get(role, DEFAULT_COLOR), dtype=np.float32)
+        encoding = (
+            FrameEncoding.VISIBLE.value
+            if artifact.frame_encoding is None
+            else int(artifact.frame_encoding[index, frame_id])
+        )
+        color_value = (
+            TARGET_HOLD_COLOR
+            if role == "target"
+            and encoding == FrameEncoding.TARGET_GRASP_HOLD.value
+            else ROLE_COLORS.get(role, DEFAULT_COLOR)
+        )
+        color = np.asarray(color_value, dtype=np.float32)
         black_halo, colored_outline = _external_outline_layers(
             mask,
             outline_radius=outline_radius,
@@ -715,7 +755,10 @@ def main() -> None:
             "gripper",
         ],
         "alpha": args.alpha,
-        "colors_rgb": {key: list(value) for key, value in ROLE_COLORS.items()},
+        "colors_rgb": {
+            **{key: list(value) for key, value in ROLE_COLORS.items()},
+            "target_grasp_hold": list(TARGET_HOLD_COLOR),
+        },
         "render_style": {
             "fill_alpha": args.alpha,
             "outline_mode": "external",

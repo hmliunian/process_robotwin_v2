@@ -13,6 +13,7 @@ import pytest
 import scripts.render_urdf_gripper_masks as render_module
 from robotwin_annotation_v2.urdf_gripper_data import ActiveGripperLoop
 from scripts.render_urdf_gripper_masks import (
+    TARGET_HOLD_COLOR,
     IncrementalUrdfEpisodeWorker,
     RunConfig,
     UrdfMaskProduct,
@@ -417,6 +418,9 @@ def test_compose_replaces_both_old_gripper_channels_without_mutating_source(
     np.testing.assert_array_equal(payload["masks"][0:2], original[0:2])
     assert not payload["masks"][2].any()
     np.testing.assert_array_equal(payload["masks"][3], replacement)
+    assert payload["frame_encoding"][0].tolist() == [1, 1, 1]
+    assert payload["frame_encoding"][2].tolist() == [0, 0, 0]
+    assert payload["frame_encoding"][3].tolist() == [0, 1, 1]
     np.testing.assert_array_equal(source.masks, original)
     assert payload["annotation_status"].tolist() == [
         "valid",
@@ -496,6 +500,25 @@ def test_overlay_frame_respects_invalid_channels_and_colors() -> None:
     np.testing.assert_array_equal(result[0, 0], (36, 180, 92))
     np.testing.assert_array_equal(result[1, 2], (232, 67, 55))
     np.testing.assert_array_equal(result[0, 2], (100, 100, 100))
+
+
+def test_overlay_frame_uses_yellow_for_held_target() -> None:
+    rgb = np.full((2, 3, 3), 100, dtype=np.uint8)
+    masks = np.zeros((4, 1, 2, 3), dtype=bool)
+    masks[0, 0, 0, 0] = True
+    encoding = np.zeros((4, 1), dtype=np.uint8)
+    encoding[0, 0] = 2
+
+    result = overlay_frame(
+        rgb,
+        masks,
+        ("valid", "valid", "not_annotated", "not_annotated"),
+        frame_id=0,
+        alpha=1.0,
+        frame_encoding=encoding,
+    )
+
+    np.testing.assert_array_equal(result[0, 0], TARGET_HOLD_COLOR.astype(np.uint8))
 
 
 def test_dry_run_preflights_without_creating_output_or_renderer(

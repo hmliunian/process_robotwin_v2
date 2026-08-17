@@ -156,6 +156,18 @@ class AuthoritativeLoopContext:
     def gripper_window(self) -> tuple[int, int]:
         return (self.windows.gripper.start, self.windows.gripper.end)
 
+    @property
+    def target_hold_window(self) -> tuple[int, int] | None:
+        """Inclusive frames carrying the held-target encoding."""
+
+        if isinstance(self.events, TargetOnlyEvents):
+            start = self.events.t_close_end + 1
+            end = self.frame_count - 1
+        else:
+            start = self.events.t_close_done + 1
+            end = self.events.t_open_start - 1
+        return None if end < start else (start, end)
+
 
 @dataclass(frozen=True)
 class CameraCalibrationSeries:
@@ -268,11 +280,16 @@ def _frame_window(value: tuple[int, int]) -> FrameWindow:
     return FrameWindow(start=value[0], end=value[1])
 
 
-def _pick_place_windows(events: ActiveGripperLoop) -> EpisodeWindows:
+def _pick_place_windows(
+    events: ActiveGripperLoop,
+    *,
+    include_held_target: bool,
+) -> EpisodeWindows:
     operation = _frame_window(events.inclusive_window)
+    target_end = events.t_open_start - 1 if include_held_target else events.t_close_done
     return EpisodeWindows(
         operation=operation,
-        target=_frame_window((events.t_move_start, events.t_close_done)),
+        target=_frame_window((events.t_move_start, target_end)),
         receiver=_frame_window((events.t_close_done, events.t_open_done)),
         gripper=operation,
     )
@@ -282,24 +299,31 @@ def _target_only_windows(
     events: TargetOnlyEvents,
     *,
     frame_count: int,
+    include_held_target: bool,
 ) -> EpisodeWindows:
     operation = _frame_window((events.t_remove_start, frame_count - 1))
     return EpisodeWindows(
         operation=operation,
-        target=_frame_window((events.t_remove_start, events.t_close_end)),
+        target=(
+            operation
+            if include_held_target
+            else _frame_window((events.t_remove_start, events.t_close_end))
+        ),
         receiver=None,
         gripper=operation,
     )
 
 
-def _validate_v2_windows(
+def _validate_versioned_windows(
     windows: Mapping[str, Any],
     expected: EpisodeWindows,
+    *,
+    format_version: str,
 ) -> None:
     expected_keys = {"operation", "target_0", "receiver_0", "gripper"}
     if set(windows) != expected_keys:
         raise UrdfGripperDataError(
-            "source loop v2 windows must contain exactly "
+            f"source loop {format_version} windows must contain exactly "
             f"{sorted(expected_keys)}, got {sorted(str(key) for key in windows)}"
         )
     _validate_recorded_window(
@@ -339,9 +363,9 @@ def load_authoritative_loop_context(
 ) -> AuthoritativeLoopContext:
     """Load one frozen timeline and normalize its downstream windows.
 
-    Legacy v1 artifacts are accepted only for pick/place.  New v2 artifacts
-    encode either the five-event pick/place timeline or the three-event
-    close-and-hold timeline without inventing release boundaries.
+    Legacy v1/v2 artifacts retain their historic short target window.  V3
+    extends target publication through the post-close hold interval while
+    preserving the same concrete event state machines.
     """
 
     source = path.expanduser().resolve()
@@ -359,6 +383,7 @@ def load_authoritative_loop_context(
     if format_version not in {
         "robotwin_loop_context_v1",
         "robotwin_loop_context_v2",
+        "robotwin_loop_context_v3",
     }:
         raise UrdfGripperDataError(
             f"unsupported source loop format: {format_version!r}"
@@ -398,9 +423,12 @@ def load_authoritative_loop_context(
         raise UrdfGripperDataError(
             "source loop required_object_roles differ from annotation_mode"
         )
-    if format_version == "robotwin_loop_context_v2" and raw_roles is None:
+    if format_version in {
+        "robotwin_loop_context_v2",
+        "robotwin_loop_context_v3",
+    } and raw_roles is None:
         raise UrdfGripperDataError(
-            "source loop v2 must declare required_object_roles"
+            f"source loop {format_version} must declare required_object_roles"
         )
 
     event_payload = _required_mapping(payload, "events", description="source loop")
@@ -443,7 +471,10 @@ def load_authoritative_loop_context(
             )
         except ValueError as exc:
             raise UrdfGripperDataError(f"invalid source loop events: {exc}") from exc
-        normalized_windows = _pick_place_windows(events)
+        normalized_windows = _pick_place_windows(
+            events,
+            include_held_target=False,
+        )
         if events.end >= frame_count:
             raise UrdfGripperDataError(
                 f"source loop active window {events.inclusive_window} exceeds frame count "
@@ -503,7 +534,10 @@ def load_authoritative_loop_context(
                 raise UrdfGripperDataError(
                     f"invalid source loop events: {exc}"
                 ) from exc
-            normalized_windows = _pick_place_windows(events)
+            normalized_windows = _pick_place_windows(
+                events,
+                include_held_target=format_version == "robotwin_loop_context_v3",
+            )
         else:
             event_keys = {
                 "active_arm",
@@ -532,13 +566,18 @@ def load_authoritative_loop_context(
             normalized_windows = _target_only_windows(
                 events,
                 frame_count=frame_count,
+                include_held_target=format_version == "robotwin_loop_context_v3",
             )
         if set(event_payload) != event_keys:
             raise UrdfGripperDataError(
                 f"{annotation_mode.value} source events must contain exactly "
                 f"{sorted(event_keys)}"
             )
-        _validate_v2_windows(windows, normalized_windows)
+        _validate_versioned_windows(
+            windows,
+            normalized_windows,
+            format_version=str(format_version),
+        )
 
     return AuthoritativeLoopContext(
         path=source,
