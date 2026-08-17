@@ -52,17 +52,20 @@ def test_loop_context_contract() -> None:
 
     assert context.episode.episode_id == "007152"
     assert context.events.target_window == FrameWindow(4, 68)
+    assert context.events.target_hold_window == FrameWindow(69, 122)
+    assert context.events.target_output_window == FrameWindow(4, 122)
     assert context.events.receiver_window == FrameWindow(68, 136)
     assert context.windows.operation == FrameWindow(4, 136)
+    assert context.windows.target == FrameWindow(4, 122)
     assert context.windows.gripper == FrameWindow(4, 136)
     assert context.seed_candidates("target") == (0,)
     assert context.seed_candidates("receiver") == (0,)
     payload = context.to_json()
-    assert payload["format_version"] == "robotwin_loop_context_v2"
+    assert payload["format_version"] == "robotwin_loop_context_v3"
     assert payload["timeline_kind"] == "pick_place"
     assert payload["windows"] == {
         "operation": [4, 136],
-        "target_0": [4, 68],
+        "target_0": [4, 122],
         "receiver_0": [68, 136],
         "gripper": [4, 136],
     }
@@ -73,18 +76,20 @@ def test_loop_events_reject_invalid_order() -> None:
         LoopEvents("right", 4, 56, 68, 60, 136)
 
 
-def test_target_only_events_derive_short_target_and_full_gripper_windows() -> None:
+def test_target_only_events_derive_full_target_and_gripper_hold_windows() -> None:
     events = TargetOnlyEvents("left", 4, 53, 65)
 
     windows = derive_episode_windows(events, frame_count=139)
 
-    assert windows.target == FrameWindow(4, 65)
+    assert events.target_window == FrameWindow(4, 65)
+    assert events.target_hold_window(139) == FrameWindow(66, 138)
+    assert windows.target == FrameWindow(4, 138)
     assert windows.receiver is None
     assert windows.operation == FrameWindow(4, 138)
     assert windows.gripper == FrameWindow(4, 138)
     assert windows.to_json() == {
         "operation": [4, 138],
-        "target_0": [4, 65],
+        "target_0": [4, 138],
         "receiver_0": None,
         "gripper": [4, 138],
     }
@@ -95,7 +100,7 @@ def test_target_only_events_reject_close_before_remove_start() -> None:
         TargetOnlyEvents("right", 60, 55, 68)
 
 
-def test_target_only_context_has_v2_close_hold_contract_without_fake_open() -> None:
+def test_target_only_context_has_v3_close_hold_contract_without_fake_open() -> None:
     context = LoopContext(
         episode=EpisodeRef("adjust_bottle", 0, "cam_high"),
         task_text="Lift the bottle with the left arm.",
@@ -117,7 +122,7 @@ def test_target_only_context_has_v2_close_hold_contract_without_fake_open() -> N
 
     payload = context.to_json()
 
-    assert context.windows.target == FrameWindow(4, 65)
+    assert context.windows.target == FrameWindow(4, 138)
     assert context.windows.receiver is None
     assert context.windows.gripper == FrameWindow(4, 138)
     assert context.seed_candidates("receiver") == ()
@@ -131,7 +136,7 @@ def test_target_only_context_has_v2_close_hold_contract_without_fake_open() -> N
     assert not ({"t_open_start", "t_open_done"} & payload["events"].keys())
     assert payload["windows"] == {
         "operation": [4, 138],
-        "target_0": [4, 65],
+        "target_0": [4, 138],
         "receiver_0": None,
         "gripper": [4, 138],
     }

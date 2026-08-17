@@ -36,6 +36,7 @@ MASK_KEYS = {
     "roles",
     "annotation_status",
     "qc_status",
+    "frame_encoding",
 }
 
 
@@ -95,7 +96,14 @@ def _source_role(role: str, window: tuple[int, int]) -> dict[str, Any]:
     }
 
 
-def _write_source_episode(source: Path, *, target_only: bool = False) -> np.ndarray:
+def _write_source_episode(
+    source: Path,
+    *,
+    target_only: bool = False,
+    v3: bool = False,
+) -> np.ndarray:
+    if v3 and not target_only:
+        raise ValueError("test v3 fixture currently models target_only hold")
     source.mkdir(parents=True)
     masks = np.zeros((4, FRAME_COUNT, 2, 3), dtype=bool)
     masks[0, :, 0, 0] = True
@@ -105,16 +113,17 @@ def _write_source_episode(source: Path, *, target_only: bool = False) -> np.ndar
     # must never leak either of them into the canonical URDF result.
     masks[2, :, 1, 0] = True
     masks[3, :, 1, 1] = True
-    np.savez_compressed(
-        source / "masks.npz",
-        format_version=np.asarray("robotwin_visible_masks_v2"),
-        frame_count=np.asarray(FRAME_COUNT, dtype=np.int64),
-        masks=masks,
-        instance_names=np.asarray(
+    mask_payload = {
+        "format_version": np.asarray(
+            "robotwin_visible_masks_v3" if v3 else "robotwin_visible_masks_v2"
+        ),
+        "frame_count": np.asarray(FRAME_COUNT, dtype=np.int64),
+        "masks": masks,
+        "instance_names": np.asarray(
             ("target_0", "receiver_0", "gripper_left", "gripper_right")
         ),
-        roles=np.asarray(("target", "receiver", "gripper", "gripper")),
-        annotation_status=np.asarray(
+        "roles": np.asarray(("target", "receiver", "gripper", "gripper")),
+        "annotation_status": np.asarray(
             (
                 "valid",
                 "not_applicable" if target_only else "valid",
@@ -122,7 +131,7 @@ def _write_source_episode(source: Path, *, target_only: bool = False) -> np.ndar
                 "valid",
             )
         ),
-        qc_status=np.asarray(
+        "qc_status": np.asarray(
             (
                 "passed",
                 "not_applicable" if target_only else "passed",
@@ -130,7 +139,14 @@ def _write_source_episode(source: Path, *, target_only: bool = False) -> np.ndar
                 "passed",
             )
         ),
-    )
+    }
+    if v3:
+        frame_encoding = np.where(
+            masks.reshape(4, FRAME_COUNT, -1).any(axis=2), 1, 0
+        ).astype(np.uint8)
+        frame_encoding[0, 2:] = 2
+        mask_payload["frame_encoding"] = frame_encoding
+    np.savez_compressed(source / "masks.npz", **mask_payload)
 
     object_directories = ("target_0",) if target_only else ("target_0", "receiver_0")
     for role in object_directories:
@@ -169,7 +185,9 @@ def _write_source_episode(source: Path, *, target_only: bool = False) -> np.ndar
         path.touch()
     loop_contract = (
         {
-            "format_version": "robotwin_loop_context_v2",
+            "format_version": (
+                "robotwin_loop_context_v3" if v3 else "robotwin_loop_context_v2"
+            ),
             "annotation_mode": "target_only",
             "timeline_kind": "close_hold",
             "required_object_roles": ["target"],
@@ -181,7 +199,7 @@ def _write_source_episode(source: Path, *, target_only: bool = False) -> np.ndar
             },
             "windows": {
                 "operation": [0, 3],
-                "target_0": [0, 1],
+                "target_0": [0, 3] if v3 else [0, 1],
                 "receiver_0": None,
                 "gripper": [0, 3],
             },
@@ -256,7 +274,7 @@ def _write_source_episode(source: Path, *, target_only: bool = False) -> np.ndar
             },
             "frame_count": FRAME_COUNT,
             "roles": [
-                _source_role("target", (0, 1)),
+                _source_role("target", (0, 3) if v3 else (0, 1)),
                 (
                     {
                         "role": "receiver",
@@ -313,11 +331,26 @@ def _write_source_episode(source: Path, *, target_only: bool = False) -> np.ndar
                 else {}
             ),
             "composition": "source SAM tracks",
+            **(
+                {
+                    "frame_encoding": {
+                        "npz_key": "frame_encoding",
+                        "legend": {
+                            "0": "absent",
+                            "1": "visible",
+                            "2": "target_grasp_hold",
+                        },
+                        "target_hold_window": [2, 3],
+                    }
+                }
+                if v3
+                else {}
+            ),
             "channels": {
                 "target_0": {
                     "status": "ok",
                     "qc_status": "passed",
-                    "output_window": [0, 1],
+                    "output_window": [0, 3] if v3 else [0, 1],
                     "source_marker": "keep-target",
                 },
                 "receiver_0": {
@@ -403,6 +436,17 @@ def _write_backend_episode(
     combined = source_masks.copy()
     combined[2:] = False
     combined[3] = track
+    with np.load(source_masks_path, allow_pickle=False) as source_archive:
+        source_encoding = (
+            np.asarray(source_archive["frame_encoding"]).copy()
+            if "frame_encoding" in source_archive.files
+            else np.where(
+                source_masks.reshape(4, FRAME_COUNT, -1).any(axis=2), 1, 0
+            ).astype(np.uint8)
+        )
+    combined_encoding = source_encoding.copy()
+    combined_encoding[2:] = 0
+    combined_encoding[3] = 1
     np.savez_compressed(
         backend / "masks.npz",
         format_version=np.asarray("robotwin_visible_masks_urdf_gripper_v1"),
@@ -416,6 +460,7 @@ def _write_backend_episode(
             ("valid", "valid", "not_annotated", "valid")
         ),
         qc_status=np.asarray(("passed", "passed", "not_run", "not_run")),
+        frame_encoding=combined_encoding,
     )
     quality = {
         "eligible_frame_count": FRAME_COUNT,
@@ -551,6 +596,32 @@ def _target_only_fixture(tmp_path: Path) -> PublishFixture:
         / CAMERA
     )
     source_masks = _write_source_episode(source, target_only=True)
+    backend = tmp_path / "backend-run" / f"episode_{EPISODE_INDEX:06d}"
+    track, record = _write_backend_episode(
+        backend,
+        source / "masks.npz",
+        source_masks,
+    )
+    destination = (
+        tmp_path
+        / "public-runs"
+        / RUN_ID
+        / TASK
+        / f"episode_{EPISODE_INDEX:06d}"
+        / CAMERA
+    )
+    return PublishFixture(source, backend, destination, record, source_masks, track)
+
+
+def _target_only_v3_fixture(tmp_path: Path) -> PublishFixture:
+    source = (
+        tmp_path
+        / "frozen-source-run"
+        / TASK
+        / f"episode_{EPISODE_INDEX:06d}"
+        / CAMERA
+    )
+    source_masks = _write_source_episode(source, target_only=True, v3=True)
     backend = tmp_path / "backend-run" / f"episode_{EPISODE_INDEX:06d}"
     track, record = _write_backend_episode(
         backend,
@@ -780,7 +851,7 @@ def test_publish_writes_canonical_mask_schema_and_only_replaces_gripper(
         assert set(archive.files) == MASK_KEYS
         assert archive["format_version"].shape == ()
         assert archive["format_version"].dtype == np.dtype("<U25")
-        assert archive["format_version"].item() == "robotwin_visible_masks_v2"
+        assert archive["format_version"].item() == "robotwin_visible_masks_v3"
         assert archive["frame_count"].dtype == np.dtype(np.int64)
         assert archive["frame_count"].shape == ()
         assert archive["masks"].dtype == np.dtype(bool)
@@ -789,6 +860,8 @@ def test_publish_writes_canonical_mask_schema_and_only_replaces_gripper(
         assert archive["roles"].dtype == np.dtype("<U8")
         assert archive["annotation_status"].dtype == np.dtype("<U13")
         assert archive["qc_status"].dtype == np.dtype("<U7")
+        assert archive["frame_encoding"].dtype == np.dtype(np.uint8)
+        assert archive["frame_encoding"].shape == (4, FRAME_COUNT)
         assert archive["instance_names"].tolist() == [
             "target_0",
             "receiver_0",
@@ -802,6 +875,10 @@ def test_publish_writes_canonical_mask_schema_and_only_replaces_gripper(
             "gripper",
         ]
         np.testing.assert_array_equal(archive["masks"][:2], fixture.source_masks[:2])
+        assert archive["frame_encoding"][0].tolist() == [1] * FRAME_COUNT
+        assert archive["frame_encoding"][1].tolist() == [1] * FRAME_COUNT
+        assert archive["frame_encoding"][2].tolist() == [0] * FRAME_COUNT
+        assert archive["frame_encoding"][3].tolist() == [1] * FRAME_COUNT
         assert not archive["masks"][2].any()
         np.testing.assert_array_equal(archive["masks"][3], fixture.urdf_track)
         assert archive["annotation_status"].tolist() == [
@@ -860,6 +937,27 @@ def test_target_only_urdf_publish_preserves_not_applicable_receiver(
         (fixture.destination_dir / "frame_provenance.json").read_text(encoding="utf-8")
     )
     assert provenance["channels"]["receiver_0"]["status"] == "not_applicable"
+
+
+def test_target_only_v3_publish_preserves_held_target_encoding(
+    tmp_path: Path,
+) -> None:
+    fixture = _target_only_v3_fixture(tmp_path)
+
+    fixture.publish()
+
+    with np.load(fixture.destination_dir / "masks.npz", allow_pickle=False) as archive:
+        assert archive["format_version"].item() == "robotwin_visible_masks_v3"
+        assert archive["frame_encoding"][0].tolist() == [1, 1, 2, 2]
+        assert archive["frame_encoding"][1].tolist() == [0, 0, 0, 0]
+        assert archive["frame_encoding"][2].tolist() == [0, 0, 0, 0]
+        assert archive["frame_encoding"][3].tolist() == [1, 1, 1, 1]
+    provenance = json.loads(
+        (fixture.destination_dir / "frame_provenance.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert provenance["frame_encoding"]["target_hold_window"] == [2, 3]
 
 
 def test_target_only_publish_rejects_backend_window_ending_at_close_end(
@@ -1096,7 +1194,7 @@ def test_publish_rejects_noncanonical_source_mask_contract(
         payload = {key: np.asarray(archive[key]).copy() for key in archive.files}
     if mask_contract == "extra_key":
         payload["unexpected"] = np.asarray(1, dtype=np.int64)
-        message = "exactly the canonical seven keys"
+        message = "keys differ from its schema"
     else:
         payload["format_version"] = np.asarray("unsupported")
         message = "unsupported source masks format"

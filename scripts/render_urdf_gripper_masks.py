@@ -22,6 +22,13 @@ from typing import Any, Mapping, Sequence, cast
 
 import numpy as np
 
+from robotwin_annotation_v2.mask_schema import (
+    MASK_FORMAT_VERSION,
+    TARGET_HOLD_COLOR_RGB,
+    FrameEncoding,
+    default_frame_encoding,
+    validate_frame_encoding,
+)
 from robotwin_annotation_v2.urdf_gripper_data import (
     ActiveGripperEvents,
     CameraCalibrationSeries,
@@ -51,6 +58,7 @@ ROLE_COLORS = np.asarray(
     ),
     dtype=np.float32,
 )
+TARGET_HOLD_COLOR = np.asarray(TARGET_HOLD_COLOR_RGB, dtype=np.float32)
 RUN_FORMAT_VERSION = "robotwin_urdf_gripper_run_v2"
 DIAGNOSTICS_FORMAT_VERSION = "robotwin_urdf_gripper_diagnostics_v2"
 PRODUCT_FORMAT_VERSION = "robotwin_urdf_gripper_masks_v2"
@@ -75,6 +83,7 @@ class FourChannelMasks:
     path: Path
     payload: dict[str, np.ndarray]
     masks: np.ndarray
+    frame_encoding: np.ndarray
     annotation_status: tuple[str, ...]
     qc_status: tuple[str, ...]
 
@@ -407,6 +416,7 @@ def load_four_channel_masks(path: Path, *, frame_count: int) -> FourChannelMasks
         else tuple("not_run" for _ in INSTANCE_NAMES)
     )
     stored_frame_count = int(payload["frame_count"])
+    format_version = str(np.asarray(payload["format_version"]).item())
     if names != INSTANCE_NAMES or roles != ROLES:
         raise UrdfMaskRunError(
             f"source channel contract mismatch: names={names}, roles={roles}"
@@ -420,10 +430,21 @@ def load_four_channel_masks(path: Path, *, frame_count: int) -> FourChannelMasks
         )
     if len(statuses) != 4 or len(qc_statuses) != 4:
         raise UrdfMaskRunError("source annotation/QC status must contain four entries")
+    if format_version == MASK_FORMAT_VERSION and "frame_encoding" not in payload:
+        raise UrdfMaskRunError("visible masks v3 are missing frame_encoding")
+    try:
+        frame_encoding = (
+            default_frame_encoding(masks)
+            if "frame_encoding" not in payload
+            else validate_frame_encoding(masks, payload["frame_encoding"]).copy()
+        )
+    except ValueError as exc:
+        raise UrdfMaskRunError(f"source frame_encoding is invalid: {exc}") from exc
     return FourChannelMasks(
         path=source,
         payload=payload,
         masks=masks,
+        frame_encoding=frame_encoding,
         annotation_status=statuses,
         qc_status=qc_statuses,
     )
@@ -490,6 +511,13 @@ def compose_four_channel_payload(
     masks[2:4] = False
     active_index = 2 if active_arm == "left" else 3
     masks[active_index] = track
+    frame_encoding = source.frame_encoding.copy()
+    frame_encoding[2:4] = FrameEncoding.ABSENT.value
+    frame_encoding[active_index] = np.where(
+        track.reshape(track.shape[0], -1).any(axis=1),
+        FrameEncoding.VISIBLE.value,
+        FrameEncoding.ABSENT.value,
+    ).astype(np.uint8)
     statuses = list(source.annotation_status)
     statuses[2:4] = ["not_annotated", "not_annotated"]
     statuses[active_index] = "valid"
@@ -499,6 +527,7 @@ def compose_four_channel_payload(
         {
             "format_version": np.asarray("robotwin_visible_masks_urdf_gripper_v1"),
             "masks": masks,
+            "frame_encoding": frame_encoding,
             "annotation_status": np.asarray(statuses),
             "qc_status": np.asarray(qc_statuses),
         }
@@ -801,6 +830,7 @@ def overlay_frame(
     *,
     frame_id: int,
     alpha: float,
+    frame_encoding: np.ndarray | None = None,
 ) -> np.ndarray:
     frame = np.asarray(rgb, dtype=np.uint8)
     tracks = np.asarray(masks, dtype=bool)
@@ -810,13 +840,28 @@ def overlay_frame(
         raise ValueError(f"masks must have shape [4,T,{frame.shape[0]},{frame.shape[1]}]")
     if not 0 <= frame_id < tracks.shape[1]:
         raise IndexError(f"frame_id is outside masks: {frame_id}")
+    encoding = None if frame_encoding is None else np.asarray(frame_encoding)
+    if encoding is not None and (
+        encoding.dtype != np.uint8 or encoding.shape != tracks.shape[:2]
+    ):
+        raise ValueError(
+            f"frame_encoding must have uint8 shape {tracks.shape[:2]}"
+        )
     output = frame.astype(np.float32)
     for channel, status in enumerate(annotation_status):
         if status != "valid":
             continue
         mask = tracks[channel, frame_id]
         if mask.any():
-            output[mask] = output[mask] * (1.0 - alpha) + ROLE_COLORS[channel] * alpha
+            color = (
+                TARGET_HOLD_COLOR
+                if channel == 0
+                and encoding is not None
+                and encoding[channel, frame_id]
+                == FrameEncoding.TARGET_GRASP_HOLD.value
+                else ROLE_COLORS[channel]
+            )
+            output[mask] = output[mask] * (1.0 - alpha) + color * alpha
     return np.clip(output, 0, 255).astype(np.uint8)
 
 
@@ -841,6 +886,7 @@ def render_overlay_video(
             combined_masks.annotation_status,
             frame_id=frame_id,
             alpha=alpha,
+            frame_encoding=combined_masks.frame_encoding,
         )
     rate = _video_rate(rgb_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1628,6 +1674,7 @@ def _implementation_identity() -> dict[str, Any]:
         PROJECT_ROOT / "src/robotwin_annotation_v2/urdf_gripper_data.py",
         PROJECT_ROOT / "src/robotwin_annotation_v2/urdf_gripper_renderer.py",
         PROJECT_ROOT / "src/robotwin_annotation_v2/urdf_gripper_publisher.py",
+        PROJECT_ROOT / "src/robotwin_annotation_v2/mask_schema.py",
     )
     return {
         "git_revision": _git_revision(),
@@ -1671,6 +1718,8 @@ def _run_contract(
             "alpha": config.overlay_alpha,
             "crf": config.overlay_crf,
             "preset": config.overlay_preset,
+            "target_hold_color_rgb": TARGET_HOLD_COLOR.astype(np.uint8).tolist(),
+            "target_hold_encoding": FrameEncoding.TARGET_GRASP_HOLD.value,
         },
         "episode_plans": episode_plans,
         "assets": collect_asset_identity(config.urdf_path, config.mesh_root),

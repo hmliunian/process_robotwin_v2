@@ -12,6 +12,7 @@ from PIL import Image
 from robotwin_annotation_v2.adapters import ArtifactStore
 from robotwin_annotation_v2.config import MaskConfig
 from robotwin_annotation_v2.domain import AnnotationMode
+from robotwin_annotation_v2.mask_schema import FrameEncoding, target_hold_window
 from robotwin_annotation_v2.models import (
     EpisodeRef,
     FramePurpose,
@@ -207,6 +208,36 @@ class DiscontinuousSamBackend(FakeSamBackend):
         return output
 
 
+class DiscontinuousHoldSamBackend(FakeSamBackend):
+    """Keep the grasp prefix stable while simulating large held-object motion."""
+
+    def propagate_mask(
+        self,
+        resource_path: Path,
+        seed_mask: np.ndarray,
+        *,
+        frame_count: int,
+        tracking_window: tuple[int, int],
+        **kwargs: Any,
+    ) -> np.ndarray:
+        output = super().propagate_mask(
+            resource_path,
+            seed_mask,
+            frame_count=frame_count,
+            tracking_window=tracking_window,
+            **kwargs,
+        )
+        if int(seed_mask.sum()) != 4:
+            return output
+        for frame_id in range(9, tracking_window[1] + 1):
+            output[frame_id] = False
+            if frame_id % 2:
+                output[frame_id, 0, 0] = True
+            else:
+                output[frame_id, 3:5, 3:6] = True
+        return output
+
+
 def test_visible_composition_preserves_native_pixels_and_applies_window() -> None:
     native = np.zeros((4, 3, 3), dtype=bool)
     native[:, 0:2, 1:3] = True
@@ -274,6 +305,48 @@ def test_sam_stage_does_not_publish_a_quarantined_track() -> None:
     assert result.receiver.status is MaskStatus.OK
 
 
+@pytest.mark.parametrize(
+    ("context", "plan"),
+    [
+        pytest.param(_context(), _plan(), id="pick_place"),
+        pytest.param(
+            _target_only_context(),
+            _target_only_plan(),
+            id="target_only",
+        ),
+    ],
+)
+def test_target_temporal_qc_does_not_quarantine_normal_hold_motion(
+    context: LoopContext,
+    plan: SemanticPlan,
+) -> None:
+    result = run_sam_stage(
+        context,
+        plan,
+        DiscontinuousHoldSamBackend(),
+        Path("/tmp/fake-resource"),
+        frame_shape=FRAME_SHAPE,
+        mask_config=MaskConfig(
+            0,
+            0,
+            temporal_qc_min_adjacent_iou_p05=0.9,
+            temporal_qc_max_centroid_jump_p95_px=0.1,
+            temporal_qc_max_area_ratio_jump_p95=0.01,
+        ),
+    )
+
+    hold = target_hold_window(context.events, frame_count=context.frame_count)
+    assert hold is not None
+    hold_start, hold_end = hold
+    assert result.target.status is MaskStatus.OK
+    assert result.target.temporal_qc is not None
+    assert result.target.temporal_qc.status == "pass"
+    assert result.target.temporal_qc.window == context.events.target_window
+    hold_masks = result.target.visible_mask[hold_start : hold_end + 1]
+    assert hold_masks.any(axis=(1, 2)).all()
+    assert not np.array_equal(hold_masks[0], hold_masks[1])
+
+
 def test_dilate_envelope_expands_seed_by_configured_radius() -> None:
     seed = np.zeros((5, 5), dtype=bool)
     seed[2, 2] = True
@@ -306,7 +379,8 @@ def test_sam_stage_uses_only_primary_queries_and_role_windows() -> None:
     assert result.target.temporal_qc is not None
     assert result.target.temporal_qc.status == "pass"
     assert not result.target.visible_mask[:2].any()
-    assert not result.target.visible_mask[9:].any()
+    assert result.target.visible_mask[9:14].any()
+    assert not result.target.visible_mask[14:].any()
     assert not result.receiver.visible_mask[:8].any()
     assert not result.receiver.visible_mask[18:].any()
     assert not result.masks[2:].any()
@@ -330,8 +404,8 @@ def test_target_only_sam_tracks_target_and_leaves_receiver_channel_zero() -> Non
         "orange bottle"
     ]
     assert result.target.output_window == context.windows.target
-    assert backend.tracking_windows == [(0, 8)]
-    assert not result.target.visible_mask[9:].any()
+    assert backend.tracking_windows == [(0, 19)]
+    assert result.target.visible_mask[9:].any()
     assert not result.masks[1].any()
     with pytest.raises(KeyError, match="non-applicable"):
         _ = result.receiver
@@ -361,9 +435,8 @@ def test_target_only_sam_propagates_the_qwen_qc_selected_candidate() -> None:
     assert result.target.qc_status is MaskQCStatus.PASSED
     assert result.target.primary_query == "bottle"
     assert not any(kind == "seed" for kind, _value in backend.calls)
-    assert backend.tracking_windows == [(0, 8)]
-    assert result.target.visible_mask[2:9].any()
-    assert not result.target.visible_mask[9:].any()
+    assert backend.tracking_windows == [(0, 19)]
+    assert result.target.visible_mask[2:].any()
     assert not result.masks[1].any()
 
 
@@ -491,9 +564,17 @@ def test_save_sam_artifacts_marks_grippers_not_annotated(tmp_path: Path) -> None
 
     episode_dir = Path(mask_run.artifact_dir)
     with np.load(episode_dir / "masks.npz", allow_pickle=False) as archive:
-        assert archive["format_version"].item() == "robotwin_visible_masks_v2"
+        assert archive["format_version"].item() == "robotwin_visible_masks_v3"
         assert archive["frame_count"].item() == 20
         assert archive["masks"].shape == (4, 20, *FRAME_SHAPE)
+        assert archive["frame_encoding"].shape == (4, 20)
+        assert archive["frame_encoding"].dtype == np.uint8
+        assert archive["frame_encoding"][0].tolist() == [
+            *([FrameEncoding.ABSENT.value] * 2),
+            *([FrameEncoding.VISIBLE.value] * 7),
+            *([FrameEncoding.TARGET_GRASP_HOLD.value] * 5),
+            *([FrameEncoding.ABSENT.value] * 6),
+        ]
         assert not archive["masks"][2:].any()
         assert archive["annotation_status"].tolist() == [
             "valid",
@@ -509,6 +590,8 @@ def test_save_sam_artifacts_marks_grippers_not_annotated(tmp_path: Path) -> None
         ]
     manifest = json.loads((episode_dir / "run_manifest.json").read_text())
     assert manifest["format_version"] == "robotwin_mask_run_v2"
+    assert manifest["mask_format_version"] == "robotwin_visible_masks_v3"
+    assert manifest["frame_encoding"]["target_hold_window"] == [9, 13]
     assert manifest["gripper_backend"] == "sam"
     assert not manifest["algorithm"]["per_frame_text_observation"]
     assert manifest["algorithm"]["canonical_envelope_usage"] == "seed_diagnostic_only"
@@ -517,8 +600,21 @@ def test_save_sam_artifacts_marks_grippers_not_annotated(tmp_path: Path) -> None
     assert (episode_dir / "receiver_0/canonical_envelope.png").is_file()
     assert (episode_dir / "target_0/temporal_qc.json").is_file()
     assert not (episode_dir / "target_0/text_observations.npz").exists()
+    target_qc = json.loads(
+        (episode_dir / "target_0/temporal_qc.json").read_text()
+    )
+    assert target_qc["window"] == [2, 8]
+    assert target_qc["target_hold_coverage"] == {
+        "window": [9, 13],
+        "window_frames": 5,
+        "nonempty_frames": 5,
+        "coverage": 1.0,
+    }
     provenance = json.loads((episode_dir / "frame_provenance.json").read_text())
     assert provenance["gripper_backend"] == "sam"
+    assert provenance["channels"]["target_0"]["target_hold_coverage"] == (
+        target_qc["target_hold_coverage"]
+    )
 
 
 def test_target_only_artifacts_publish_receiver_as_not_applicable(
@@ -548,6 +644,9 @@ def test_target_only_artifacts_publish_receiver_as_not_applicable(
     episode_dir = Path(mask_run.artifact_dir)
     with np.load(episode_dir / "masks.npz", allow_pickle=False) as archive:
         assert not archive["masks"][1].any()
+        assert archive["frame_encoding"][0, 9:].tolist() == [
+            FrameEncoding.TARGET_GRASP_HOLD.value
+        ] * 11
         assert archive["annotation_status"].tolist()[:2] == [
             "valid",
             "not_applicable",

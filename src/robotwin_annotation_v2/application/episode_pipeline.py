@@ -371,7 +371,11 @@ def _load_completed_sam_stage(
         visible = compose_visible_mask(native, output_window)
         temporal_qc = evaluate_temporal_mask(
             visible,
-            output_window,
+            (
+                context.events.target_window
+                if role == "target"
+                else output_window
+            ),
             config.mask,
             reference_mask=seed_mask,
         )

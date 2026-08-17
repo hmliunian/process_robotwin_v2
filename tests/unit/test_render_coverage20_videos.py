@@ -11,9 +11,11 @@ import scripts.render_coverage20_videos as render_module
 from scripts.render_coverage20_videos import (
     HALO_COLOR,
     ROLE_COLORS,
+    TARGET_HOLD_COLOR,
     MaskArtifact,
     MaskCandidate,
     _external_outline_layers,
+    _load_masks,
     _output_video_name,
     _text_prompt_slug,
     build_sheets,
@@ -80,6 +82,59 @@ def test_overlay_uses_external_colored_outline_and_black_halo() -> None:
     np.testing.assert_array_equal(result[8, 13], HALO_COLOR)
     np.testing.assert_array_equal(result[8, 15], (200, 200, 200))
     np.testing.assert_array_equal(frame[8, 8], (200, 200, 200))
+
+
+def test_overlay_renders_held_target_with_yellow_encoding() -> None:
+    frame = np.full((5, 5, 3), 100, dtype=np.uint8)
+    masks = np.zeros((1, 1, 5, 5), dtype=bool)
+    masks[0, 0, 2, 2] = True
+    artifact = MaskArtifact(
+        masks=masks,
+        instance_names=("target_0",),
+        roles=("target",),
+        annotation_status=("valid",),
+        frame_count=1,
+        format_version="robotwin_visible_masks_v3",
+        frame_encoding=np.asarray([[2]], dtype=np.uint8),
+    )
+
+    result = overlay_frame(
+        frame,
+        artifact,
+        frame_id=0,
+        alpha=1.0,
+        outline_radius=0,
+        halo_radius=0,
+    )
+
+    np.testing.assert_array_equal(result[2, 2], TARGET_HOLD_COLOR)
+
+
+def test_load_masks_synthesizes_visible_encoding_for_legacy_v2(tmp_path: Path) -> None:
+    path = tmp_path / "masks.npz"
+    masks = np.zeros((4, 2, 2, 3), dtype=bool)
+    masks[0, 1, 0, 0] = True
+    np.savez_compressed(
+        path,
+        format_version=np.asarray("robotwin_visible_masks_v2"),
+        frame_count=np.asarray(2, dtype=np.int64),
+        masks=masks,
+        instance_names=np.asarray(
+            ("target_0", "receiver_0", "gripper_left", "gripper_right")
+        ),
+        roles=np.asarray(("target", "receiver", "gripper", "gripper")),
+        annotation_status=np.asarray(
+            ("valid", "not_applicable", "not_annotated", "not_annotated")
+        ),
+        qc_status=np.asarray(
+            ("passed", "not_applicable", "not_run", "not_run")
+        ),
+    )
+
+    artifact = _load_masks(path)
+
+    assert artifact.frame_encoding is not None
+    assert artifact.frame_encoding[0].tolist() == [0, 1]
 
 
 def test_outline_layers_never_consume_mask_pixels() -> None:

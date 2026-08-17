@@ -18,8 +18,17 @@ from typing import Any
 import numpy as np
 
 from .domain import AnnotationMode, ObjectRole, annotation_spec
+from .mask_schema import (
+    FRAME_ENCODING_LEGEND,
+    LEGACY_MASK_FORMAT_VERSION,
+    MASK_BASE_KEYS,
+    MASK_FORMAT_VERSION,
+    MASK_KEYS,
+    FrameEncoding,
+    default_frame_encoding,
+    validate_frame_encoding,
+)
 
-MASK_FORMAT_VERSION = "robotwin_visible_masks_v2"
 MASK_RUN_FORMAT_VERSION = "robotwin_mask_run_v2"
 PROVENANCE_FORMAT_VERSION = "robotwin_frame_provenance_v2"
 URDF_PRODUCT_FORMAT_VERSION = "robotwin_urdf_gripper_masks_v2"
@@ -261,7 +270,10 @@ def publisher_implementation_identity() -> dict[str, Any]:
     """Return a dirty-worktree-safe identity for the canonical publisher."""
 
     project_root = Path(__file__).resolve().parents[2]
-    path = Path(__file__).resolve()
+    paths = (
+        Path(__file__).resolve(),
+        project_root / "src/robotwin_annotation_v2/mask_schema.py",
+    )
     return {
         "format_version": PUBLISHER_IMPLEMENTATION_FORMAT_VERSION,
         "files": [
@@ -269,6 +281,7 @@ def publisher_implementation_identity() -> dict[str, Any]:
                 path,
                 relative_path=path.relative_to(project_root).as_posix(),
             )
+            for path in paths
         ],
     }
 
@@ -315,41 +328,48 @@ def _load_source_masks(
 ) -> dict[str, Any]:
     try:
         with np.load(path, allow_pickle=False) as archive:
-            required = {
-                "format_version",
-                "frame_count",
-                "masks",
-                "instance_names",
-                "roles",
-                "annotation_status",
-                "qc_status",
-            }
             actual_keys = set(archive.files)
-            missing = sorted(required - actual_keys)
-            extra = sorted(actual_keys - required)
-            if missing or extra:
+            missing = sorted(MASK_BASE_KEYS - actual_keys)
+            if missing:
                 raise UrdfGripperPublishError(
-                    "source masks must contain exactly the canonical seven keys: "
-                    f"missing={missing}, extra={extra}: {path}"
+                    f"source masks are missing canonical keys {missing}: {path}"
                 )
             format_version = np.asarray(archive["format_version"])
+            if format_version.ndim != 0:
+                raise UrdfGripperPublishError(
+                    "source masks format_version must be one scalar"
+                )
+            format_name = str(format_version.item())
+            if format_name == MASK_FORMAT_VERSION:
+                expected_keys = MASK_KEYS
+            elif format_name == LEGACY_MASK_FORMAT_VERSION:
+                expected_keys = MASK_BASE_KEYS
+            else:
+                raise UrdfGripperPublishError(
+                    f"unsupported source masks format: {format_name!r}"
+                )
+            missing = sorted(expected_keys - actual_keys)
+            extra = sorted(actual_keys - expected_keys)
+            if missing or extra:
+                raise UrdfGripperPublishError(
+                    f"source masks {format_name} keys differ from its schema: "
+                    f"missing={missing}, extra={extra}: {path}"
+                )
             masks = np.asarray(archive["masks"])
             frame_count = _scalar_int(archive["frame_count"], label="source frame_count")
             names = _small_strings(np.asarray(archive["instance_names"]))
             roles = _small_strings(np.asarray(archive["roles"]))
             statuses = _small_strings(np.asarray(archive["annotation_status"]))
             qc_statuses = _small_strings(np.asarray(archive["qc_status"]))
+            raw_frame_encoding = (
+                np.asarray(archive["frame_encoding"])
+                if format_name == MASK_FORMAT_VERSION
+                else None
+            )
     except (EOFError, OSError, ValueError, zipfile.BadZipFile) as exc:
         if isinstance(exc, UrdfGripperPublishError):
             raise
         raise UrdfGripperPublishError(f"cannot load source masks {path}: {exc}") from exc
-    if (
-        format_version.ndim != 0
-        or str(format_version.item()) != MASK_FORMAT_VERSION
-    ):
-        raise UrdfGripperPublishError(
-            f"unsupported source masks format: {format_version!r}"
-        )
     if masks.dtype != np.bool_ or masks.ndim != 4 or masks.shape[0] != 4:
         raise UrdfGripperPublishError(
             f"source masks must have bool shape [4,T,H,W], got {masks.shape}/{masks.dtype}"
@@ -358,6 +378,16 @@ def _load_source_masks(
         raise UrdfGripperPublishError("source masks and frame_count disagree")
     if names != INSTANCE_NAMES or roles != ROLES:
         raise UrdfGripperPublishError("source mask channel names/roles are not canonical")
+    try:
+        frame_encoding = (
+            default_frame_encoding(masks)
+            if raw_frame_encoding is None
+            else validate_frame_encoding(masks, raw_frame_encoding).copy()
+        )
+    except ValueError as exc:
+        raise UrdfGripperPublishError(
+            f"source frame_encoding is invalid: {exc}"
+        ) from exc
     required_names = {role.value for role in required_roles}
     for index, role in enumerate((ObjectRole.TARGET, ObjectRole.RECEIVER)):
         if role.value in required_names:
@@ -374,9 +404,10 @@ def _load_source_masks(
                 f"source {role.value} must be zero and not_applicable"
             )
     return {
-        "format_version": MASK_FORMAT_VERSION,
+        "format_version": format_name,
         "frame_count": frame_count,
         "masks": masks.copy(),
+        "frame_encoding": frame_encoding,
         "annotation_status": statuses,
         "qc_status": qc_statuses,
     }
@@ -494,12 +525,19 @@ def _validate_backend_combined_masks(
     path: Path,
     *,
     source_masks: np.ndarray,
+    source_frame_encoding: np.ndarray,
+    source_mask_format: str,
     gripper_track: np.ndarray,
     active_arm: str,
 ) -> None:
     try:
         with np.load(path, allow_pickle=False) as archive:
             masks = np.asarray(archive["masks"])
+            raw_frame_encoding = (
+                np.asarray(archive["frame_encoding"])
+                if "frame_encoding" in archive.files
+                else None
+            )
             names = _small_strings(np.asarray(archive["instance_names"]))
             roles = _small_strings(np.asarray(archive["roles"]))
     except (EOFError, KeyError, OSError, ValueError, zipfile.BadZipFile) as exc:
@@ -510,12 +548,44 @@ def _validate_backend_combined_masks(
         raise UrdfGripperPublishError("backend combined masks have an invalid shape/dtype")
     if names != INSTANCE_NAMES or roles != ROLES:
         raise UrdfGripperPublishError("backend combined masks have invalid channels")
+    if raw_frame_encoding is None and source_mask_format != LEGACY_MASK_FORMAT_VERSION:
+        raise UrdfGripperPublishError(
+            "backend combined masks are missing v3 frame_encoding"
+        )
+    frame_encoding = (
+        default_frame_encoding(masks)
+        if raw_frame_encoding is None
+        else raw_frame_encoding
+    )
+    try:
+        validate_frame_encoding(masks, frame_encoding)
+    except ValueError as exc:
+        raise UrdfGripperPublishError(
+            f"backend combined frame_encoding is invalid: {exc}"
+        ) from exc
     active_index = 2 if active_arm == "left" else 3
     inactive_index = 3 if active_index == 2 else 2
     if not np.array_equal(masks[:2], source_masks[:2]):
         raise UrdfGripperPublishError("backend changed source target/receiver pixels")
+    if not np.array_equal(frame_encoding[:2], source_frame_encoding[:2]):
+        raise UrdfGripperPublishError(
+            "backend changed source target/receiver frame_encoding"
+        )
     if not np.array_equal(masks[active_index], gripper_track) or masks[inactive_index].any():
         raise UrdfGripperPublishError("backend combined gripper channels differ from product")
+    expected_gripper_encoding = np.where(
+        gripper_track.reshape(gripper_track.shape[0], -1).any(axis=1),
+        FrameEncoding.VISIBLE.value,
+        FrameEncoding.ABSENT.value,
+    ).astype(np.uint8)
+    if not np.array_equal(frame_encoding[active_index], expected_gripper_encoding):
+        raise UrdfGripperPublishError(
+            "backend combined active gripper frame_encoding differs from product"
+        )
+    if frame_encoding[inactive_index].any():
+        raise UrdfGripperPublishError(
+            "backend combined inactive gripper frame_encoding must be absent"
+        )
 
 
 def _source_material_files(
@@ -1021,6 +1091,7 @@ def _validate_source_loop(
     dict[str, tuple[int, int]],
     str,
     tuple[int, int],
+    tuple[int, int] | None,
 ]:
     from robotwin_annotation_v2.urdf_gripper_data import (
         UrdfGripperDataError,
@@ -1070,7 +1141,52 @@ def _validate_source_loop(
             context.windows.receiver.start,
             context.windows.receiver.end,
         )
-    return loop, role_windows, context.active_arm, context.gripper_window
+    return (
+        loop,
+        role_windows,
+        context.active_arm,
+        context.gripper_window,
+        context.target_hold_window,
+    )
+
+
+def _validate_source_frame_encoding(
+    source: Mapping[str, Any],
+    *,
+    loop_format_version: Any,
+    target_hold: tuple[int, int] | None,
+) -> None:
+    """Require v3 sources to encode exactly their event-derived hold phase."""
+
+    source_format = source.get("format_version")
+    if source_format == LEGACY_MASK_FORMAT_VERSION:
+        if loop_format_version == "robotwin_loop_context_v3":
+            raise UrdfGripperPublishError(
+                "loop context v3 requires visible masks v3 frame_encoding"
+            )
+        return
+    if source_format != MASK_FORMAT_VERSION:
+        raise UrdfGripperPublishError(
+            f"unsupported source masks format: {source_format!r}"
+        )
+    if loop_format_version != "robotwin_loop_context_v3":
+        raise UrdfGripperPublishError(
+            "visible masks v3 require loop context v3 hold boundaries"
+        )
+    masks = np.asarray(source["masks"], dtype=bool)
+    expected = default_frame_encoding(masks)
+    if target_hold is not None:
+        start, end = target_hold
+        target_present = expected[0, start : end + 1] != FrameEncoding.ABSENT.value
+        expected[0, start : end + 1] = np.where(
+            target_present,
+            FrameEncoding.TARGET_GRASP_HOLD.value,
+            FrameEncoding.ABSENT.value,
+        )
+    if not np.array_equal(source["frame_encoding"], expected):
+        raise UrdfGripperPublishError(
+            "source frame_encoding differs from masks and event-derived hold window"
+        )
 
 
 def _validate_source_provenance(
@@ -1078,12 +1194,31 @@ def _validate_source_provenance(
     *,
     role_windows: Mapping[str, tuple[int, int]],
     required_roles: tuple[ObjectRole, ...],
+    source_mask_format: str,
+    target_hold: tuple[int, int] | None,
 ) -> None:
     if provenance.get("format_version") != PROVENANCE_FORMAT_VERSION:
         raise UrdfGripperPublishError("source frame provenance format is unsupported")
     channels = provenance.get("channels")
     if not isinstance(channels, Mapping):
         raise UrdfGripperPublishError("source frame provenance has no channel map")
+    encoding_metadata = provenance.get("frame_encoding")
+    if source_mask_format == MASK_FORMAT_VERSION:
+        expected_encoding_metadata = {
+            "npz_key": "frame_encoding",
+            "legend": FRAME_ENCODING_LEGEND,
+            "target_hold_window": (
+                None if target_hold is None else list(target_hold)
+            ),
+        }
+        if encoding_metadata != expected_encoding_metadata:
+            raise UrdfGripperPublishError(
+                "source frame provenance encoding metadata differs from masks/loop"
+            )
+    elif encoding_metadata is not None:
+        raise UrdfGripperPublishError(
+            "legacy source masks must not declare v3 frame encoding metadata"
+        )
     required_names = {role.value for role in required_roles}
     for role, channel_name in (("target", "target_0"), ("receiver", "receiver_0")):
         channel = channels.get(channel_name)
@@ -1288,13 +1423,18 @@ def _validate_derivation_source_episode(
             "source masks frame_count differs from the expected dataset frame count"
         )
 
-    loop, role_windows, active_arm, gripper_window = _validate_source_loop(
+    loop, role_windows, active_arm, gripper_window, target_hold = _validate_source_loop(
         episode_dir / "loop.json",
         dataset_root=dataset_root,
         task=task,
         camera=camera,
         episode_index=episode_index,
         frame_count=frame_count,
+    )
+    _validate_source_frame_encoding(
+        source,
+        loop_format_version=loop.get("format_version"),
+        target_hold=target_hold,
     )
     loop_mode = loop.get("annotation_mode", AnnotationMode.PICK_PLACE.value)
     if loop_mode != annotation_mode.value:
@@ -1325,6 +1465,8 @@ def _validate_derivation_source_episode(
         provenance,
         role_windows=role_windows,
         required_roles=required_roles,
+        source_mask_format=str(source["format_version"]),
+        target_hold=target_hold,
     )
 
     dynamic = source_metadata["dynamic_manifest"]
@@ -1683,21 +1825,21 @@ def _validate_backend_publisher_identity(
             "URDF backend implementation does not anchor publisher files"
         )
     publisher = publisher_implementation_identity()
-    expected = publisher["files"][0]
-    matches = [
-        item
-        for item in files
-        if isinstance(item, Mapping) and item.get("path") == expected["path"]
-    ]
-    if len(matches) != 1:
-        raise UrdfGripperPublishError(
-            "URDF backend implementation must anchor exactly one publisher file"
-        )
-    actual = matches[0]
-    if any(actual.get(key) != expected[key] for key in ("sha256", "bytes")):
-        raise UrdfGripperPublishError(
-            "URDF backend publisher identity differs from the current publisher"
-        )
+    for expected in publisher["files"]:
+        matches = [
+            item
+            for item in files
+            if isinstance(item, Mapping) and item.get("path") == expected["path"]
+        ]
+        if len(matches) != 1:
+            raise UrdfGripperPublishError(
+                "URDF backend implementation must anchor every publisher schema file"
+            )
+        actual = matches[0]
+        if any(actual.get(key) != expected[key] for key in ("sha256", "bytes")):
+            raise UrdfGripperPublishError(
+                "URDF backend publisher identity differs from the current publisher"
+            )
     return publisher
 
 
@@ -1730,6 +1872,15 @@ def _build_public_payloads(
     masks = np.zeros_like(np.asarray(source["masks"], dtype=bool))
     masks[:2] = np.asarray(source["masks"], dtype=bool)[:2]
     masks[active_index] = visible
+    frame_encoding = np.zeros_like(
+        np.asarray(source["frame_encoding"], dtype=np.uint8)
+    )
+    frame_encoding[:2] = np.asarray(source["frame_encoding"], dtype=np.uint8)[:2]
+    frame_encoding[active_index] = np.where(
+        visible.reshape(frame_count, -1).any(axis=1),
+        FrameEncoding.VISIBLE.value,
+        FrameEncoding.ABSENT.value,
+    ).astype(np.uint8)
     annotation_status = np.asarray(
         [
             *source["annotation_status"][:2],
@@ -1750,6 +1901,7 @@ def _build_public_payloads(
         "roles": np.asarray(ROLES),
         "annotation_status": annotation_status,
         "qc_status": qc_status,
+        "frame_encoding": frame_encoding,
     }
 
     source_roles = [_json_clone(record) for record in validated_source.source_roles]
@@ -1905,6 +2057,18 @@ def _build_public_payloads(
         "source_lineage_sha256": validated_source.lineage["lineage_sha256"],
         "backend_run_id": backend_provenance["run_id"],
     }
+    source_encoding_metadata = source_provenance.get("frame_encoding")
+    public_encoding_metadata = (
+        _json_clone(source_encoding_metadata)
+        if isinstance(source_encoding_metadata, Mapping)
+        else {
+            "npz_key": "frame_encoding",
+            "legend": FRAME_ENCODING_LEGEND,
+            "target_hold_window": None,
+        }
+    )
+    run_manifest["mask_format_version"] = MASK_FORMAT_VERSION
+    run_manifest["frame_encoding"] = _json_clone(public_encoding_metadata)
     frame_provenance = {
         "format_version": PROVENANCE_FORMAT_VERSION,
         "annotation_mode": validated_source.annotation_mode.value,
@@ -1917,6 +2081,7 @@ def _build_public_payloads(
             "applicable object source tracks clipped to role output windows; "
             "gripper from URDF visual geometry clipped by recorded scene depth"
         ),
+        "frame_encoding": public_encoding_metadata,
         "channels": provenance_channels,
     }
     return masks_payload, run_manifest, frame_provenance
@@ -2047,6 +2212,8 @@ def _prepare_contract(
     _validate_backend_combined_masks(
         combined_path,
         source_masks=np.asarray(source["masks"]),
+        source_frame_encoding=np.asarray(source["frame_encoding"]),
+        source_mask_format=str(source["format_version"]),
         gripper_track=np.asarray(product["tracks"]["gripper_track"]),
         active_arm=str(active_arm),
     )
@@ -2153,7 +2320,7 @@ def _validate_public_masks(path: Path, contract: Mapping[str, Any]) -> None:
         with np.load(path, allow_pickle=False) as archive:
             if set(archive.files) != set(contract["masks_payload"]):
                 raise UrdfGripperPublishError(
-                    "public masks.npz must contain exactly the canonical seven keys"
+                    "public masks.npz must contain exactly the canonical v3 keys"
                 )
             for key, expected in contract["masks_payload"].items():
                 actual = np.asarray(archive[key])

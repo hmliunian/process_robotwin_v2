@@ -11,6 +11,13 @@ from PIL import Image
 
 from ..adapters.artifact_store import ArtifactStore
 from ..config import MaskConfig
+from ..mask_schema import (
+    FRAME_ENCODING_LEGEND,
+    MASK_FORMAT_VERSION,
+    FrameEncoding,
+    build_frame_encoding,
+    target_hold_window,
+)
 from ..models import (
     FrameWindow,
     LoopContext,
@@ -60,6 +67,7 @@ class SamBackend(Protocol):
 
 @dataclass(frozen=True)
 class TemporalMaskQc:
+    window: FrameWindow
     status: Literal["pass", "review", "quarantine"]
     window_frames: int
     nonempty_frames: int
@@ -76,6 +84,7 @@ class TemporalMaskQc:
     def to_json(self) -> dict[str, Any]:
         return {
             "format_version": "robotwin_temporal_mask_qc_v1",
+            "window": self.window.to_json(),
             "status": self.status,
             "window_frames": self.window_frames,
             "nonempty_frames": self.nonempty_frames,
@@ -304,6 +313,7 @@ def evaluate_temporal_mask(
     else:
         status = "pass"
     return TemporalMaskQc(
+        window=output_window,
         status=status,
         window_frames=len(window),
         nonempty_frames=nonempty_frames,
@@ -317,6 +327,27 @@ def evaluate_temporal_mask(
         max_reference_centroid_distance_px=max_reference_distance,
         issues=tuple(issues),
     )
+
+
+def _window_coverage(
+    mask_stack: np.ndarray,
+    window: tuple[int, int],
+) -> dict[str, Any]:
+    """Summarize report-only presence for one inclusive frame interval."""
+
+    masks = np.asarray(mask_stack, dtype=bool)
+    if masks.ndim != 3:
+        raise ValueError("coverage mask must have [T,H,W] shape")
+    start, end = window
+    if start < 0 or end < start or end >= masks.shape[0]:
+        raise ValueError(f"coverage window is outside the mask stack: {window}")
+    present = masks[start : end + 1].reshape(end - start + 1, -1).any(axis=1)
+    return {
+        "window": [start, end],
+        "window_frames": int(present.size),
+        "nonempty_frames": int(present.sum()),
+        "coverage": float(present.mean()),
+    }
 
 
 def _empty_role(
@@ -359,6 +390,7 @@ def _run_role(
     *,
     semantic: RoleSemanticPlan,
     output_window: FrameWindow,
+    temporal_qc_window: FrameWindow,
     padding: int,
     mask_config: MaskConfig,
     context: LoopContext,
@@ -368,6 +400,13 @@ def _run_role(
     qc_report: RoleMaskQC | None = None,
     qc_seed_mask: np.ndarray | None = None,
 ) -> RoleMaskData:
+    if not (
+        output_window.start <= temporal_qc_window.start
+        and temporal_qc_window.end <= output_window.end
+    ):
+        raise SamStageError(
+            f"{role} temporal QC window must be within its output window"
+        )
     if semantic.status is SemanticStatus.NO_CLEAR_SEED:
         return _empty_role(
             role,
@@ -446,12 +485,14 @@ def _run_role(
     visible = compose_visible_mask(native, output_window)
     temporal_qc = evaluate_temporal_mask(
         visible,
-        output_window,
+        temporal_qc_window,
         mask_config,
         reference_mask=seed_mask,
     )
 
-    native_window = native[output_window.start : output_window.end + 1]
+    native_window = native[
+        temporal_qc_window.start : temporal_qc_window.end + 1
+    ]
     if not native_window.any():
         failure = "native_track_empty_in_output_window"
         status = MaskStatus.FAILED
@@ -524,6 +565,11 @@ def run_sam_stage(
                 role,
                 semantic=semantic,
                 output_window=output_window,
+                temporal_qc_window=(
+                    context.events.target_window
+                    if role == "target"
+                    else output_window
+                ),
                 padding=padding_by_role[role],
                 mask_config=mask_config,
                 context=context,
@@ -556,6 +602,15 @@ def save_sam_artifacts(
     """Persist Stage-3 diagnostics, compatible masks, and provenance."""
 
     episode_dir = store.episode_dir(run_id, context.episode)
+    hold = target_hold_window(
+        context.events,
+        frame_count=context.frame_count,
+    )
+    target_hold_coverage = (
+        None
+        if hold is None
+        else _window_coverage(result.target.visible_mask, hold)
+    )
     role_results: list[RoleMaskResult] = []
     role_data = result.role_masks
     for data in role_data:
@@ -592,9 +647,14 @@ def save_sam_artifacts(
             )
             native_path = str(native_file.relative_to(episode_dir))
             if data.temporal_qc is not None:
+                temporal_qc_payload = data.temporal_qc.to_json()
+                if data.role == "target" and target_hold_coverage is not None:
+                    temporal_qc_payload["target_hold_coverage"] = (
+                        target_hold_coverage
+                    )
                 temporal_qc_file = store.write_json(
                     role_dir / "temporal_qc.json",
-                    data.temporal_qc.to_json(),
+                    temporal_qc_payload,
                 )
                 temporal_qc_path = str(temporal_qc_file.relative_to(episode_dir))
         role_results.append(
@@ -747,15 +807,17 @@ def save_sam_artifacts(
             *gripper_qc,
         ]
     )
+    frame_encoding = build_frame_encoding(masks, context.events)
     masks_path = store.write_npz(
         episode_dir / "masks.npz",
-        format_version=np.asarray("robotwin_visible_masks_v2"),
+        format_version=np.asarray(MASK_FORMAT_VERSION),
         frame_count=np.asarray(result.frame_count, dtype=np.int64),
         masks=masks,
         instance_names=np.asarray(INSTANCE_NAMES),
         roles=np.asarray(ROLES),
         annotation_status=annotation_statuses,
         qc_status=qc_status,
+        frame_encoding=frame_encoding,
     )
     provenance_channels: dict[str, Any] = {
         "gripper_left": {"status": "not_annotated"},
@@ -772,7 +834,7 @@ def save_sam_artifacts(
             }
             continue
         data = result.for_role(role)
-        provenance_channels[channel_name] = {
+        channel_provenance: dict[str, Any] = {
             "status": data.status.value,
             "seed_frame_id": data.seed_frame_id,
             "primary_query": data.primary_query,
@@ -786,12 +848,21 @@ def save_sam_artifacts(
                 None if data.temporal_qc is None else data.temporal_qc.to_json()
             ),
         }
-    provenance = {
+        if role == "target" and target_hold_coverage is not None:
+            channel_provenance["target_hold_coverage"] = target_hold_coverage
+        provenance_channels[channel_name] = channel_provenance
+    encoding_metadata: dict[str, Any] = {
+        "npz_key": "frame_encoding",
+        "legend": FRAME_ENCODING_LEGEND,
+        "target_hold_window": None if hold is None else list(hold),
+    }
+    provenance: dict[str, Any] = {
         "format_version": "robotwin_frame_provenance_v2",
         "annotation_mode": context.annotation_mode.value,
         "required_object_roles": list(context.annotation_spec.required_role_names),
         "gripper_backend": "sam",
         "composition": "native_track clipped_to role_output_window",
+        "frame_encoding": encoding_metadata,
         "channels": provenance_channels,
     }
     if gripper_result is not None and gripper_role_name is not None:
@@ -837,11 +908,18 @@ def save_sam_artifacts(
             "annotation_mode": context.annotation_mode.value,
             "required_object_roles": list(context.annotation_spec.required_role_names),
             "gripper_backend": "sam",
+            "mask_format_version": MASK_FORMAT_VERSION,
+            "frame_encoding": encoding_metadata,
             "semantic_prompt_sha256": semantic_plan.prompt_sha256,
             "algorithm": {
                 "seed": "sam3_text_only_primary_query",
                 "propagation": "sam3_native_mask_forward_backward",
                 "visibility": "native_track clipped_to role_output_window",
+                "target_hold_encoding": {
+                    "code": FrameEncoding.TARGET_GRASP_HOLD.value,
+                    "window": encoding_metadata["target_hold_window"],
+                    "ends_before_open_start": True,
+                },
                 "per_frame_text_observation": False,
                 "canonical_envelope_usage": "seed_diagnostic_only",
                 "automatic_query_fallback": False,

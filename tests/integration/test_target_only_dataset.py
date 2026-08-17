@@ -6,7 +6,12 @@ from pathlib import Path
 import pytest
 
 from robotwin_annotation_v2.adapters import RoboTwinDataset
-from robotwin_annotation_v2.models import EpisodeRef, TargetOnlyEvents
+from robotwin_annotation_v2.mask_schema import target_hold_window
+from robotwin_annotation_v2.models import (
+    EpisodeRef,
+    TargetOnlyEvents,
+    derive_episode_windows,
+)
 from robotwin_annotation_v2.pipeline import (
     StateLoopError,
     detect_episode_loop,
@@ -74,6 +79,13 @@ def test_target_only_20_has_exactly_one_close_and_hold_arm() -> None:
         events.append(event)
         assert 0 <= event.t_remove_start <= event.t_close_start < event.t_close_end
         assert event.t_close_end < state.frame_count
+        windows = derive_episode_windows(event, frame_count=state.frame_count)
+        assert windows.target.start == event.t_remove_start
+        assert windows.target.end == state.frame_count - 1
+        assert target_hold_window(event, frame_count=state.frame_count) == (
+            event.t_close_end + 1,
+            state.frame_count - 1,
+        )
         with pytest.raises(StateLoopError, match="expected exactly one active-arm loop"):
             detect_episode_loop(state)
 
