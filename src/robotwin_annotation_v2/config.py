@@ -9,6 +9,8 @@ from typing import Any
 
 import yaml
 
+from .domain import AnnotationMode, AnnotationSpec, annotation_spec
+
 
 class ConfigError(ValueError):
     """Configuration is missing or violates the pipeline contract."""
@@ -155,9 +157,18 @@ class GripperRoiConfig:
         }
         for name, value in values.items():
             if not math.isfinite(value) or value <= 0.0:
-                raise ConfigError(
-                    f"gripper_roi.{name} must be a finite number greater than zero"
-                )
+                raise ConfigError(f"gripper_roi.{name} must be a finite number greater than zero")
+
+
+@dataclass(frozen=True)
+class AnnotationConfig:
+    """Task-declared semantic mode and its resolved pipeline behavior."""
+
+    mode: AnnotationMode
+
+    @property
+    def spec(self) -> AnnotationSpec:
+        return annotation_spec(self.mode)
 
 
 @dataclass(frozen=True)
@@ -169,6 +180,7 @@ class PipelineConfig:
     mask: MaskConfig
     gripper_roi: GripperRoiConfig
     output_root: Path
+    annotation: AnnotationConfig = AnnotationConfig(AnnotationMode.PICK_PLACE)
 
 
 def load_config(path: Path) -> PipelineConfig:
@@ -189,11 +201,28 @@ def load_config(path: Path) -> PipelineConfig:
     mask_raw = raw.get("mask", {})
     gripper_roi_raw = _required(raw, "gripper_roi")
     output_raw = raw.get("output", {})
-    sections = (dataset_raw, qwen_raw, sam3_raw, mask_raw, gripper_roi_raw, output_raw)
+    annotation_raw = raw.get("annotation", {"mode": AnnotationMode.PICK_PLACE.value})
+    sections = (
+        dataset_raw,
+        qwen_raw,
+        sam3_raw,
+        mask_raw,
+        gripper_roi_raw,
+        output_raw,
+        annotation_raw,
+    )
     if not all(isinstance(item, dict) for item in sections):
         raise ConfigError(
-            "dataset, qwen, sam3, mask, gripper_roi and output must be mappings"
+            "dataset, qwen, sam3, mask, gripper_roi, output and annotation must be mappings"
         )
+
+    try:
+        annotation = AnnotationConfig(
+            AnnotationMode(annotation_raw.get("mode", AnnotationMode.PICK_PLACE.value))
+        )
+    except ValueError as exc:
+        choices = ", ".join(mode.value for mode in AnnotationMode)
+        raise ConfigError(f"annotation.mode must be one of: {choices}") from exc
 
     prompt_roi_raw = _required(gripper_roi_raw, "prompt", section="gripper_roi")
     hard_roi_raw = _required(gripper_roi_raw, "hard", section="gripper_roi")
@@ -285,9 +314,7 @@ def load_config(path: Path) -> PipelineConfig:
         qc_min_confidence=float(mask_raw.get("qc_min_confidence", 0.70)),
         qc_min_area_fraction=float(mask_raw.get("qc_min_area_fraction", 0.0001)),
         qc_max_area_fraction=float(mask_raw.get("qc_max_area_fraction", 0.85)),
-        qc_duplicate_iou_threshold=float(
-            mask_raw.get("qc_duplicate_iou_threshold", 0.98)
-        ),
+        qc_duplicate_iou_threshold=float(mask_raw.get("qc_duplicate_iou_threshold", 0.98)),
     )
     gripper_roi = GripperRoiConfig(
         prompt_axial_back_m=_positive_float(
@@ -324,4 +351,5 @@ def load_config(path: Path) -> PipelineConfig:
         mask=mask,
         gripper_roi=gripper_roi,
         output_root=output_root,
+        annotation=annotation,
     )

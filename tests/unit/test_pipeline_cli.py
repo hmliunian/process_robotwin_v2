@@ -8,7 +8,9 @@ from typing import Any
 
 import pytest
 
+from robotwin_annotation_v2.application import episode_pipeline
 from robotwin_annotation_v2.adapters import ArtifactStore, Sam3Error
+from robotwin_annotation_v2.domain import AnnotationMode
 from robotwin_annotation_v2.models import EpisodeRef, MaskStatus
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -42,6 +44,12 @@ def _batch_config(tmp_path: Path) -> SimpleNamespace:
     )
 
 
+def _target_only_batch_config(tmp_path: Path) -> SimpleNamespace:
+    config = _batch_config(tmp_path)
+    config.annotation = SimpleNamespace(mode=AnnotationMode.TARGET_ONLY)
+    return config
+
+
 def test_run_entrypoint_calls_qwen_sam_then_gripper_with_same_run_id() -> None:
     module = runpy.run_path(str(PROJECT_ROOT / "scripts/run_target_receiver.py"))
     calls: list[tuple[str, int, str]] = []
@@ -66,6 +74,41 @@ def test_run_entrypoint_calls_qwen_sam_then_gripper_with_same_run_id() -> None:
         ("sam", 7152, "test-run"),
         ("gripper", 7152, "test-run"),
     ]
+
+
+def test_episode_context_passes_annotation_mode_as_keyword() -> None:
+    received: dict[str, Any] = {}
+
+    def fake_build_context(
+        dataset: Any,
+        ref: Any,
+        *,
+        annotation_mode: AnnotationMode,
+    ) -> str:
+        received.update(
+            dataset=dataset,
+            ref=ref,
+            annotation_mode=annotation_mode,
+        )
+        return "context"
+
+    original = episode_pipeline.build_loop_context
+    episode_pipeline.build_loop_context = fake_build_context
+    config = SimpleNamespace(
+        annotation=SimpleNamespace(mode=AnnotationMode.PICK_PLACE)
+    )
+
+    try:
+        result = episode_pipeline._build_context(config, "dataset", "episode-ref")
+    finally:
+        episode_pipeline.build_loop_context = original
+
+    assert result == "context"
+    assert received == {
+        "dataset": "dataset",
+        "ref": "episode-ref",
+        "annotation_mode": AnnotationMode.PICK_PLACE,
+    }
 
 
 def test_sam_batch_reuses_one_backend_for_multiple_episodes(tmp_path: Path) -> None:
@@ -175,6 +218,41 @@ def test_sam_batch_skips_complete_episode(tmp_path: Path) -> None:
         )
     )
     assert summary["records"][0] == {"episode": 1, "status": "skipped_complete"}
+
+
+def test_target_only_sam_completion_accepts_receiver_not_applicable(
+    tmp_path: Path,
+) -> None:
+    module = runpy.run_path(str(PROJECT_ROOT / "scripts/run_target_receiver.py"))
+    config = _target_only_batch_config(tmp_path)
+    store = ArtifactStore(config.output_root)
+    ref = EpisodeRef("task", 1, "cam_high")
+    episode_dir = store.episode_dir("target-only", ref)
+    episode_dir.mkdir(parents=True)
+    (episode_dir / "masks.npz").touch()
+    ArtifactStore.write_json(
+        episode_dir / "run_manifest.json",
+        {
+            "annotation_mode": "target_only",
+            "required_object_roles": ["target"],
+            "roles": [
+                {"role": "target", "status": "ok", "qc_status": "passed"},
+                {
+                    "role": "receiver",
+                    "status": "not_applicable",
+                    "qc_status": "not_applicable",
+                },
+            ],
+        },
+    )
+    ArtifactStore.write_json(
+        episode_dir / "mask_qc.json",
+        {"roles": {"target": {"status": "passed"}}},
+    )
+
+    assert module["_sam_episode_complete"](
+        config, store, "target-only", ref
+    )
 
 
 def test_sam_batch_stops_after_fatal_cuda_error(tmp_path: Path) -> None:

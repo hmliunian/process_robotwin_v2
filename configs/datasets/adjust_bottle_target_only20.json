@@ -1,0 +1,21 @@
+{
+  "format_version": "robotwin_dataset_manifest_v1",
+  "task": "adjust_bottle",
+  "camera": "cam_high",
+  "frame_shape_hw": [240, 320],
+  "raw_video_frame_surplus": 1,
+  "usable_frame_count_source": "parquet",
+  "dataset_root": "/DATA/disk8/xuran/add_mask_robotwin/dataset/target_only_20/adjust_bottle",
+  "smoke_episode_ids": [0],
+  "regression_episode_ids": [
+    0, 6, 10, 18, 21, 30, 34, 42, 48, 49,
+    50, 51, 171, 176, 287, 313, 415, 431, 547, 549
+  ],
+  "required_relative_files": [
+    "data/chunk-000/episode_{episode_id}.parquet",
+    "videos/chunk-000/observation.images.{camera}/episode_{episode_id}.mp4",
+    "sidecars/episode_{episode_id}.hdf5",
+    "sidecars/videos/chunk-000/observation.depths.{camera}/episode_{episode_id}.mkv"
+  ],
+  "notes": "Target-only close-and-hold validation set: 10 clean and 10 randomized episodes, balanced across left/right active arms. Parquet length is authoritative; RGB has one trailing frame."
+}

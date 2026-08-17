@@ -17,6 +17,7 @@ class MaskQCStatus(StrEnum):
     REJECTED = "rejected"
     AMBIGUOUS = "ambiguous"
     ERROR = "error"
+    NOT_APPLICABLE = "not_applicable"
 
 
 @dataclass(frozen=True)
@@ -113,32 +114,46 @@ class RoleMaskQC:
 
 @dataclass(frozen=True)
 class MaskQCResult:
-    """Joint QC result and the selected seed masks used by Stage 3."""
+    """QC reports for exactly the object roles declared by ``SemanticPlan``."""
 
-    target: RoleMaskQC
-    receiver: RoleMaskQC
+    role_reports: tuple[RoleMaskQC, ...]
     selected_masks: dict[RoleName, Any]
     health: dict[str, Any]
     candidate_masks: dict[RoleName, dict[str, Any]] = field(default_factory=dict)
     candidate_panels: dict[RoleName, dict[str, Any]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if self.target.role != "target" or self.receiver.role != "receiver":
-            raise ValueError("MaskQCResult must contain target then receiver reports")
-        for role, report in (("target", self.target), ("receiver", self.receiver)):
+        roles = tuple(report.role for report in self.role_reports)
+        if not roles or roles[0] != "target" or len(set(roles)) != len(roles):
+            raise ValueError("MaskQCResult requires unique roles beginning with target")
+        if not set(self.selected_masks) <= set(roles):
+            raise ValueError("selected mask exists for an unknown QC role")
+        for report in self.role_reports:
+            role = report.role
             has_selected_mask = role in self.selected_masks
             if (report.status is MaskQCStatus.PASSED) != has_selected_mask:
                 raise ValueError("passed QC and selected seed masks must match")
 
-    def reports(self) -> tuple[RoleMaskQC, RoleMaskQC]:
-        return self.target, self.receiver
+    def reports(self) -> tuple[RoleMaskQC, ...]:
+        return self.role_reports
+
+    def for_role(self, role: RoleName) -> RoleMaskQC:
+        for report in self.role_reports:
+            if report.role == role:
+                return report
+        raise KeyError(f"mask QC has no report for non-applicable role {role!r}")
+
+    @property
+    def target(self) -> RoleMaskQC:
+        return self.for_role("target")
+
+    @property
+    def receiver(self) -> RoleMaskQC:
+        return self.for_role("receiver")
 
     def to_json(self) -> dict[str, Any]:
         return {
-            "format_version": "robotwin_mask_qc_v1",
-            "roles": {
-                "target": self.target.to_json(),
-                "receiver": self.receiver.to_json(),
-            },
+            "format_version": "robotwin_mask_qc_v2",
+            "roles": {report.role: report.to_json() for report in self.role_reports},
             "health": self.health,
         }

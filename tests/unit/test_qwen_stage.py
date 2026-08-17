@@ -10,12 +10,14 @@ from PIL import Image
 
 from robotwin_annotation_v2.adapters import QwenCompletion
 from robotwin_annotation_v2.config import QwenConfig
+from robotwin_annotation_v2.domain import AnnotationMode
 from robotwin_annotation_v2.models import (
     EpisodeRef,
     FramePurpose,
     LoopContext,
     LoopEvents,
     SemanticFrame,
+    TargetOnlyEvents,
 )
 from robotwin_annotation_v2.pipeline import (
     QwenStageError,
@@ -23,7 +25,6 @@ from robotwin_annotation_v2.pipeline import (
     parse_semantic_plan,
     run_qwen_stage,
 )
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -56,6 +57,26 @@ def _frames() -> dict[int, Image.Image]:
         )
         for frame_id in (0, 9, 15)
     }
+
+
+def _target_only_context() -> LoopContext:
+    return LoopContext(
+        episode=EpisodeRef("move_object", 1, "cam_high"),
+        task_text="Pick up the bottle.",
+        frame_count=20,
+        events=TargetOnlyEvents("right", 2, 6, 8),
+        semantic_frames=(
+            SemanticFrame(
+                0,
+                FramePurpose.PRE_GRASP_SEED_CANDIDATE,
+                ("target",),
+            ),
+            SemanticFrame(9, FramePurpose.POST_GRASP_CONTEXT, ("target",)),
+        ),
+        state_source="episode.parquet",
+        video_source="episode.mp4",
+        annotation_mode=AnnotationMode.TARGET_ONLY,
+    )
 
 
 def _response() -> str:
@@ -95,6 +116,10 @@ def _response() -> str:
         },
         ensure_ascii=False,
     )
+
+
+def _target_only_response() -> str:
+    return json.dumps({"target": json.loads(_response())["target"]}, ensure_ascii=False)
 
 
 class FakeQwenClient:
@@ -178,6 +203,64 @@ def test_parse_semantic_plan_uses_first_qwen_recommendation() -> None:
     assert plan.receiver.primary_query == "blue square pad"
     assert plan.input_frame_ids == (0, 9, 15)
     assert len(plan.prompt_sha256) == 64
+
+
+def test_target_only_qwen_contract_accepts_exactly_target() -> None:
+    context = _target_only_context()
+    plan = parse_semantic_plan(
+        _target_only_response(),
+        context=context,
+        model="fake-qwen",
+        rendered_prompt="rendered prompt",
+    )
+
+    assert plan.annotation_mode is AnnotationMode.TARGET_ONLY
+    assert tuple(item.role for item in plan.role_plans) == ("target",)
+    assert plan.target.primary_query == "orange bottle"
+    with pytest.raises(KeyError, match="not applicable"):
+        _ = plan.receiver
+
+    with pytest.raises(QwenStageError, match="exactly"):
+        parse_semantic_plan(
+            _response(),
+            context=context,
+            model="fake-qwen",
+            rendered_prompt="rendered prompt",
+        )
+
+
+def test_target_only_semantic_prompt_contains_only_target_contract() -> None:
+    template = (
+        PROJECT_ROOT / "configs/prompts/target_only_semantic.txt"
+    ).read_text(encoding="utf-8")
+    context = _target_only_context()
+    frames = {frame_id: _frames()[frame_id] for frame_id in (0, 9)}
+
+    request = build_qwen_request(context, frames, template)
+
+    assert "本模式只识别 target" in request.rendered_prompt
+    assert "不得添加其他角色" in request.rendered_prompt
+    assert '"target"' in request.rendered_prompt
+    assert "receiver" not in request.rendered_prompt
+    assert "active_arm: right" in request.rendered_prompt
+    assert "remove_start: 2" in request.rendered_prompt
+    assert "close_start: 6" in request.rendered_prompt
+    assert "close_end: 8" in request.rendered_prompt
+    assert "episode_end: 19" in request.rendered_prompt
+    assert "open_start" not in request.rendered_prompt
+    assert "open_done" not in request.rendered_prompt
+
+
+def test_target_only_rejects_a_pick_place_prompt_before_model_request() -> None:
+    template = (
+        "open={open_start}\nframes:\n{labeled_multimodal_frames}\n"
+        "schema={response_schema}"
+    )
+    context = _target_only_context()
+    frames = {frame_id: _frames()[frame_id] for frame_id in (0, 9)}
+
+    with pytest.raises(QwenStageError, match="unknown prompt template.*open_start"):
+        build_qwen_request(context, frames, template)
 
 
 def test_parse_semantic_plan_canonicalizes_exact_duplicate_candidates() -> None:

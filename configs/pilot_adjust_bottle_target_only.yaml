@@ -1,21 +1,24 @@
 annotation:
-  mode: pick_place
+  mode: target_only
 
 dataset:
-  root: /DATA/disk8/xuran/add_mask_robotwin/dataset/move_pillbottle_pad_coverage20_original
-  manifest: datasets/move_pillbottle_pad_coverage20.json
-  task: move_pillbottle_pad
+  root: /DATA/disk8/xuran/add_mask_robotwin/dataset/target_only_20/adjust_bottle
+  manifest: datasets/adjust_bottle_target_only20.json
+  task: adjust_bottle
   camera: cam_high
-  smoke_episode_ids: [7152]
-  regression_episode_ids: [7152, 7156, 7157, 7163, 7168, 7179, 7181, 7185, 7187, 7188,
-                           7274, 7317, 7335, 7367, 7424, 7464, 7571, 7621, 7673, 7674]
+  smoke_episode_ids: [0]
+  regression_episode_ids: [0, 6, 10, 18, 21, 30, 34, 42, 48, 49,
+                           50, 51, 171, 176, 287, 313, 415, 431, 547, 549]
 
 qwen:
   endpoint: http://127.0.0.1:18086/v1/chat/completions
   model: qwen3.5-27b
-  prompt_template: prompts/target_receiver_semantic.txt
-  timeout_seconds: 180
-  max_tokens: 800
+  prompt_template: prompts/target_only_semantic.txt
+  # Six image frames can be slow when the shared Qwen GPU is busy.  The
+  # target-only JSON has one role, so 400 output tokens are ample while the
+  # longer HTTP timeout avoids abandoning an in-flight generation.
+  timeout_seconds: 600
+  max_tokens: 400
   query_selection: first_recommended
   allow_query_fallback: false
 
@@ -31,7 +34,7 @@ mask:
   temporal_qc_max_area_ratio_jump_p95: 0.4
   temporal_qc_quarantine_signal_count: 2
   qc_enabled: true
-  qc_prompt_template: prompts/mask_candidate_qc.txt
+  qc_prompt_template: prompts/target_only_mask_candidate_qc.txt
   qc_max_candidates: 3
   qc_max_tokens: 160
   qc_max_attempts: 2
@@ -40,6 +43,8 @@ mask:
   qc_max_area_fraction: 0.85
   qc_duplicate_iou_threshold: 0.98
 
+# The target-only mode uses the default URDF gripper backend. These values are
+# retained because the shared config schema also supports the legacy SAM backend.
 gripper_roi:
   prompt:
     axial_back_m: 0.120

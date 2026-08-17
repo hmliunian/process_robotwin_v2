@@ -1,3 +1,6 @@
+annotation:
+  mode: pick_place
+
 dataset:
   root: /DATA/disk8/xuran/add_mask_robotwin/dataset/place_container_plate_full547_original
   manifest: datasets/place_container_plate_full547.json

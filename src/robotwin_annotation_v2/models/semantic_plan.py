@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Literal
 
+from ..domain import AnnotationMode, AnnotationSpec, annotation_spec
 from .loop_context import EpisodeRef
-
 
 RoleName = Literal["target", "receiver"]
 CANDIDATE_FIELDS = (
@@ -212,20 +212,25 @@ class RoleSemanticPlan:
 
 @dataclass(frozen=True)
 class SemanticPlan:
-    """Joint target/receiver result passed from Stage 2 to Stage 3."""
+    """Exact role collection passed from semantic planning to object-mask stages."""
 
     episode: EpisodeRef
-    target: RoleSemanticPlan
-    receiver: RoleSemanticPlan
+    role_plans: tuple[RoleSemanticPlan, ...]
     model: str
     prompt_sha256: str
     input_frame_ids: tuple[int, ...]
     raw_response: str
-    prompt_version: str = "target_receiver_semantic_v1"
+    annotation_mode: AnnotationMode = AnnotationMode.PICK_PLACE
+    prompt_version: str = "object_roles_semantic_v2"
 
     def __post_init__(self) -> None:
-        if self.target.role != "target" or self.receiver.role != "receiver":
-            raise ValueError("SemanticPlan must contain target and receiver roles")
+        expected = self.annotation_spec.required_role_names
+        actual = tuple(plan.role for plan in self.role_plans)
+        if actual != expected:
+            raise ValueError(
+                "SemanticPlan roles must exactly match annotation mode: "
+                f"expected={expected}, actual={actual}"
+            )
         if not self.model.strip():
             raise ValueError("model must be non-empty")
         if len(self.prompt_sha256) != 64:
@@ -235,7 +240,31 @@ class SemanticPlan:
 
     @property
     def usable(self) -> bool:
-        return self.target.primary_query is not None and self.receiver.primary_query is not None
+        return all(plan.primary_query is not None for plan in self.role_plans)
+
+    @property
+    def annotation_spec(self) -> AnnotationSpec:
+        return annotation_spec(self.annotation_mode)
+
+    def for_role(self, role: RoleName) -> RoleSemanticPlan:
+        """Return one applicable role, failing clearly for a non-applicable role."""
+
+        for plan in self.role_plans:
+            if plan.role == role:
+                return plan
+        raise KeyError(f"role {role!r} is not applicable in {self.annotation_mode.value} mode")
+
+    @property
+    def target(self) -> RoleSemanticPlan:
+        """Compatibility accessor for existing pick-place callers."""
+
+        return self.for_role("target")
+
+    @property
+    def receiver(self) -> RoleSemanticPlan:
+        """Compatibility accessor; target-only callers should iterate ``role_plans``."""
+
+        return self.for_role("receiver")
 
     @staticmethod
     def prompt_hash(rendered_prompt: str) -> str:
@@ -243,13 +272,14 @@ class SemanticPlan:
 
     def to_json(self) -> dict[str, Any]:
         return {
-            "format_version": "robotwin_semantic_plan_v1",
+            "format_version": "robotwin_semantic_plan_v2",
             "prompt_version": self.prompt_version,
+            "annotation_mode": self.annotation_mode.value,
+            "required_object_roles": list(self.annotation_spec.required_role_names),
             "episode": self.episode.to_json(),
             "model": self.model,
             "prompt_sha256": self.prompt_sha256,
             "input_frame_ids": list(self.input_frame_ids),
-            "target": self.target.to_json(),
-            "receiver": self.receiver.to_json(),
+            "roles": {plan.role: plan.to_json() for plan in self.role_plans},
             "raw_response": self.raw_response,
         }

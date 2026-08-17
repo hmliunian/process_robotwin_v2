@@ -26,7 +26,7 @@ from ..models import (
     SemanticStatus,
 )
 from ..models.loop_context import RoleName
-
+from .prompt_context import timeline_prompt_fields
 
 _CANDIDATE_MARKER = "{candidate_panels}"
 _CONTEXT_MARKER = "{context_frames}"
@@ -42,9 +42,6 @@ _PANEL_COLORS = (
     (20, 160, 160),
     (220, 90, 150),
 )
-_ROLES: tuple[RoleName, RoleName] = ("target", "receiver")
-
-
 class MaskQCError(RuntimeError):
     """The candidate-mask QC request or response violated its contract."""
 
@@ -302,21 +299,36 @@ def _context_items(
     limit: int = 2,
 ) -> tuple[tuple[int, Image.Image], ...]:
     eligible = [
-        frame.frame_id
+        frame
         for frame in context.semantic_frames
         if frame.frame_id != seed_frame_id
         and role in frame.eligible_roles
         and frame.frame_id in context_images
     ]
-    if len(eligible) > limit:
+
+    def sample(frame_ids: list[int], count: int) -> list[int]:
+        if len(frame_ids) <= count:
+            return frame_ids
         indices = tuple(
             dict.fromkeys(
-                int(round(value))
-                for value in np.linspace(0, len(eligible) - 1, num=limit)
+                round(value)
+                for value in np.linspace(0, len(frame_ids) - 1, num=count)
             )
         )
-        eligible = [eligible[index] for index in indices]
-    return tuple((frame_id, context_images[frame_id]) for frame_id in eligible)
+        return [frame_ids[index] for index in indices]
+
+    # Close/hold/place evidence identifies the manipulated instance more
+    # reliably than another static pre-grasp view.  Only use spare slots for
+    # additional seed candidates when fewer action-context frames exist.
+    evidence = [frame.frame_id for frame in eligible if not frame.seed_eligible]
+    selected = sample(evidence, limit)
+    if len(selected) < limit:
+        supporting_seeds = [
+            frame.frame_id for frame in eligible if frame.seed_eligible
+        ]
+        selected.extend(sample(supporting_seeds, limit - len(selected)))
+    selected = sorted(set(selected))
+    return tuple((frame_id, context_images[frame_id]) for frame_id in selected)
 
 
 def _decode_response(raw_response: str) -> dict[str, Any]:
@@ -403,9 +415,7 @@ def _render_request(
         "role": role,
         "seed_frame_id": str(seed_frame_id),
         "candidate_ids": candidate_ids,
-        "close_done": str(context.events.t_close_done),
-        "open_start": str(context.events.t_open_start),
-        "open_done": str(context.events.t_open_done),
+        **timeline_prompt_fields(context),
     }
     placeholders = set(_PLACEHOLDER_PATTERN.findall(template))
     unknown = sorted(
@@ -778,22 +788,30 @@ def run_mask_qc_stage(
 
     if semantic_plan.episode != context.episode:
         raise MaskQCError("SemanticPlan and LoopContext refer to different episodes")
+    if semantic_plan.annotation_mode is not context.annotation_mode:
+        raise MaskQCError("SemanticPlan and LoopContext use different annotation modes")
     health: dict[str, Any] = {}
     if check_health:
         try:
             health = client.health()
         except Exception as exc:
             error = str(exc)
-            target = _error_report("target", MaskQCStatus.ERROR, f"mask QC health failed: {error}")
-            receiver = _error_report(
-                "receiver", MaskQCStatus.ERROR, f"mask QC health failed: {error}"
+            reports = tuple(
+                _error_report(
+                    semantic.role,
+                    MaskQCStatus.ERROR,
+                    f"mask QC health failed: {error}",
+                )
+                for semantic in semantic_plan.role_plans
             )
-            return MaskQCResult(target, receiver, {}, {"status": "error", "error": error})
+            return MaskQCResult(
+                role_reports=reports,
+                selected_masks={},
+                health={"status": "error", "error": error},
+            )
     executions: list[_RoleExecution] = []
-    for role, semantic in (
-        (_ROLES[0], semantic_plan.target),
-        (_ROLES[1], semantic_plan.receiver),
-    ):
+    for semantic in semantic_plan.role_plans:
+        role = semantic.role
         if semantic.seed_frame_id is None:
             seed_image = Image.new("RGB", (frame_shape[1], frame_shape[0]))
         else:
@@ -820,7 +838,8 @@ def run_mask_qc_stage(
     selected_masks: dict[RoleName, np.ndarray] = {}
     candidate_masks: dict[RoleName, dict[str, np.ndarray]] = {}
     candidate_panels: dict[RoleName, dict[str, Image.Image]] = {}
-    for role, execution in zip(_ROLES, executions, strict=True):
+    for semantic, execution in zip(semantic_plan.role_plans, executions, strict=True):
+        role = semantic.role
         candidate_masks[role] = {
             candidate.candidate_id: candidate.mask for candidate in execution.candidates
         }
@@ -842,8 +861,7 @@ def run_mask_qc_stage(
         )
         selected_masks[role] = selected.mask
     return MaskQCResult(
-        target=executions[0].report,
-        receiver=executions[1].report,
+        role_reports=tuple(execution.report for execution in executions),
         selected_masks=selected_masks,
         health=health,
         candidate_masks=candidate_masks,

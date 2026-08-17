@@ -21,7 +21,7 @@ from ..models import (
     SemanticPlanError,
     SemanticStatus,
 )
-
+from .prompt_context import timeline_prompt_fields
 
 _FRAME_MARKER = "{labeled_multimodal_frames}"
 _PLACEHOLDER_PATTERN = re.compile(r"\{([a-z][a-z0-9_]*)\}")
@@ -108,15 +108,13 @@ def build_qwen_request(
             f"prompt template must contain {_FRAME_MARKER!r} exactly once"
         )
 
-    events = context.events
     replacements = {
         "task_text": context.task_text,
         "camera": context.episode.camera,
-        "move_start": str(events.t_move_start),
-        "close_start": str(events.t_close_start),
-        "close_done": str(events.t_close_done),
-        "open_start": str(events.t_open_start),
-        "open_done": str(events.t_open_done),
+        "annotation_mode": context.annotation_mode.value,
+        "required_object_roles": ", ".join(context.annotation_spec.required_role_names),
+        "response_schema": _response_schema(context),
+        **timeline_prompt_fields(context),
     }
     placeholders = set(_PLACEHOLDER_PATTERN.findall(prompt_template))
     unknown = sorted(placeholders - set(replacements) - {"labeled_multimodal_frames"})
@@ -156,7 +154,30 @@ def build_qwen_request(
     )
 
 
-def _decode_response(raw_response: str) -> dict[str, Any]:
+def _response_schema(context: LoopContext) -> str:
+    role_schema = {
+        "status": "ok | no_clear_seed",
+        "seed_frame_id": "integer | null",
+        "category_query": "1-4 lowercase English words | null",
+        "color_category_query": "1-4 lowercase English words | null",
+        "shape_category_query": "1-4 lowercase English words | null",
+        "general_fallback_query": "1-4 lowercase English words | null",
+        "recommended_order": ["candidate field", "..."],
+        "exclude": ["other visible object", "..."],
+        "reason": "short semantic reason",
+    }
+    return json.dumps(
+        {role: role_schema for role in context.annotation_spec.required_role_names},
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+def _decode_response(
+    raw_response: str,
+    *,
+    expected_roles: tuple[str, ...],
+) -> dict[str, Any]:
     text = raw_response.strip()
     if text.startswith("```"):
         lines = text.splitlines()
@@ -172,9 +193,9 @@ def _decode_response(raw_response: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise QwenStageError("Qwen response must be a JSON object")
     fields = frozenset(payload)
-    if fields != {"target", "receiver"}:
+    if fields != frozenset(expected_roles):
         raise QwenStageError(
-            "Qwen response must contain exactly target and receiver; "
+            f"Qwen response must contain exactly {list(expected_roles)}; "
             f"got {sorted(fields)}"
         )
     return payload
@@ -358,15 +379,18 @@ def parse_semantic_plan(
 ) -> SemanticPlan:
     """Parse one joint response and enforce seed/query constraints."""
 
-    payload = _decode_response(raw_response)
+    expected_roles = context.annotation_spec.required_role_names
+    payload = _decode_response(raw_response, expected_roles=expected_roles)
     return SemanticPlan(
         episode=context.episode,
-        target=_parse_role("target", payload["target"], context),
-        receiver=_parse_role("receiver", payload["receiver"], context),
+        role_plans=tuple(
+            _parse_role(role, payload[role], context) for role in expected_roles
+        ),
         model=model,
         prompt_sha256=SemanticPlan.prompt_hash(rendered_prompt),
         input_frame_ids=tuple(frame.frame_id for frame in context.semantic_frames),
         raw_response=raw_response,
+        annotation_mode=context.annotation_mode,
     )
 
 

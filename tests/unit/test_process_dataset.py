@@ -445,8 +445,8 @@ def test_process_dataset_reports_sam_stages_without_embedded_json(
     assert reporter.stages == [
         ("started", 7, "qwen", None),
         ("finished", 7, "qwen", "completed"),
-        ("started", 7, "target_receiver_sam", None),
-        ("finished", 7, "target_receiver_sam", "completed"),
+        ("started", 7, "object_sam", None),
+        ("finished", 7, "object_sam", "completed"),
         ("started", 7, "gripper_sam", None),
         ("finished", 7, "gripper_sam", "completed"),
     ]
@@ -510,6 +510,118 @@ def test_process_dataset_target_receiver_only_skips_gripper_and_uses_sam_resume(
     ]
     assert summary["passed"] is True
     assert summary["records"] == [{"episode": 7, "status": "completed"}]
+    assert summary["annotation_mode"] == "pick_place"
+    assert summary["required_object_roles"] == ["target", "receiver"]
+    assert summary["gripper_backend"] is None
+    assert summary["backend"] == {"object_masks": "sam", "gripper": None}
+    assert summary["stage_mode"] == "object_source_only"
+
+
+def test_target_only_rejects_sam_gripper_before_loading_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_runtime_load() -> Any:
+        pytest.fail("unsupported target-only SAM gripper must fail before model loading")
+
+    monkeypatch.setattr(process_module, "_load_sam_runtime", unexpected_runtime_load)
+    config = process_module.load_config(
+        Path("configs/pilot_adjust_bottle_target_only.yaml")
+    )
+
+    with pytest.raises(ValueError, match="target_only.*URDF"):
+        process_module.process_dataset(
+            config,
+            dataset_root=tmp_path / "unused",
+            task="adjust_bottle",
+            camera="cam_high",
+            output_root=tmp_path / "output",
+            episode_ids=(0,),
+            skip_render=True,
+        )
+
+
+def test_target_only_review_manifest_lists_only_applicable_roles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target_config = process_module.load_config(
+        Path("configs/pilot_adjust_bottle_target_only.yaml")
+    )
+    config = SimpleNamespace(
+        config_path=target_config.config_path,
+        output_root=tmp_path / "runs",
+        annotation=target_config.annotation,
+        dataset=SimpleNamespace(
+            root=tmp_path / "dataset",
+            task="adjust_bottle",
+            camera="cam_high",
+            manifest=None,
+            manifest_data={},
+        ),
+    )
+    source_video = tmp_path / "episode_000000.mp4"
+    source_video.touch()
+
+    class FakeDataset:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        def paths(self, _ref: Any) -> Any:
+            return SimpleNamespace(video=source_video)
+
+        def task_text(self, _episode_id: int) -> str:
+            return "adjust bottle"
+
+    masks_path = tmp_path / "masks.npz"
+    masks_path.touch()
+    artifact = SimpleNamespace(
+        format_version="robotwin_visible_masks_v2",
+        instance_names=(
+            "target_0",
+            "receiver_0",
+            "gripper_left",
+            "gripper_right",
+        ),
+        annotation_status=("valid", "not_applicable", "valid", "not_annotated"),
+        qc_status=("passed", "not_applicable", "passed", "not_run"),
+    )
+
+    def render_video(
+        _video_path: Path,
+        _artifact: Any,
+        output_path: Path,
+        **_kwargs: Any,
+    ) -> dict[str, Any]:
+        output_path.write_bytes(b"video")
+        return {"frame_count": 1}
+
+    fake_render = SimpleNamespace(
+        DEFAULT_FILL_ALPHA=0.36,
+        DEFAULT_OUTLINE_RADIUS=1,
+        DEFAULT_HALO_RADIUS=2,
+        ROLE_COLORS={"target": (1, 2, 3), "gripper": (4, 5, 6)},
+        select_best_masks=lambda *_args, **_kwargs: {
+            0: SimpleNamespace(path=masks_path, run_id="target-only")
+        },
+        _load_masks=lambda _path: artifact,
+        _output_video_name=lambda **_kwargs: "episode_000000.mp4",
+        render_video=render_video,
+        _sha256=lambda _path: "sha256",
+        build_sheets=lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setitem(sys.modules, "render_coverage20_videos", fake_render)
+    monkeypatch.setattr(process_module, "RoboTwinDataset", FakeDataset)
+
+    report = process_module._render_processed(
+        config,
+        run_id="target-only",
+        episode_ids=(0,),
+        output_dir=tmp_path / "output",
+    )
+
+    manifest = json.loads(Path(report["manifest"]).read_text(encoding="utf-8"))
+    assert manifest["rendered_roles"] == ["target", "gripper"]
 
 
 def test_default_bundled_urdf_path_is_repository_asset() -> None:
@@ -522,12 +634,12 @@ def test_default_bundled_urdf_path_is_repository_asset() -> None:
     assert process_module.DEFAULT_BUNDLED_URDF_PATH.is_file()
 
 
-def test_parse_args_defaults_to_sam_and_preserves_just_sentinel_paths() -> None:
+def test_parse_args_defaults_to_urdf_and_preserves_just_sentinel_paths() -> None:
     args = process_module._parse_args(
         ["--source-run-dir", "-", "--urdf-path", "-"]
     )
 
-    assert args.gripper_backend == "sam"
+    assert args.gripper_backend == "urdf"
     assert args.urdf_depth_tolerance_mm is None
     assert args.urdf_minimum_eligible_nonempty_fraction is None
     assert args.source_run_dir == "-"
@@ -595,6 +707,8 @@ def test_main_legacy_cli_dispatches_sam_without_urdf_path(
         "argv",
         [
             "process_dataset.py",
+            "--gripper-backend",
+            "sam",
             "--dataset-root",
             str(tmp_path / "dataset"),
             "--output-dir",
@@ -767,12 +881,12 @@ def test_live_urdf_pipeline_runs_target_receiver_source_before_derived_urdf(
     )
 
     expected_source_root = (output_root / "_sources").resolve()
-    expected_source_run = expected_source_root / "live-urdf-test-target-receiver"
+    expected_source_run = expected_source_root / "live-urdf-test-object-source"
     assert events == ["target_receiver", "release", "urdf"]
     assert source_calls["config"] is config
     assert source_calls["output_root"] == expected_source_root
-    assert source_calls["run_id"] == "live-urdf-test-target-receiver"
-    assert source_calls["target_receiver_only"] is True
+    assert source_calls["run_id"] == "live-urdf-test-object-source"
+    assert source_calls["object_source_only"] is True
     assert source_calls["skip_render"] is True
     assert urdf_calls["pipeline_config"] is config
     assert urdf_calls["source_run_dir"] == expected_source_run
@@ -860,6 +974,8 @@ def test_main_json_mode_prints_one_machine_readable_summary(
         "argv",
         [
             "process_dataset.py",
+            "--gripper-backend",
+            "sam",
             "--dataset-root",
             str(tmp_path / "dataset"),
             "--ui",
@@ -897,6 +1013,8 @@ def test_main_json_mode_prints_failed_summary_before_exit(
         "argv",
         [
             "process_dataset.py",
+            "--gripper-backend",
+            "sam",
             "--dataset-root",
             str(tmp_path / "dataset"),
             "--ui",
@@ -928,10 +1046,21 @@ def test_main_json_mode_prints_failed_summary_before_exit(
             ),
             "explicit --run-id",
         ),
-        (("--source-run-dir", "source"), "URDF-only options"),
-        (("--urdf-depth-tolerance-mm", "9"), "URDF-only options"),
         (
-            ("--urdf-minimum-eligible-nonempty-fraction", "0.8"),
+            ("--gripper-backend", "sam", "--source-run-dir", "source"),
+            "URDF-only options",
+        ),
+        (
+            ("--gripper-backend", "sam", "--urdf-depth-tolerance-mm", "9"),
+            "URDF-only options",
+        ),
+        (
+            (
+                "--gripper-backend",
+                "sam",
+                "--urdf-minimum-eligible-nonempty-fraction",
+                "0.8",
+            ),
             "URDF-only options",
         ),
         (
@@ -1793,6 +1922,8 @@ def test_process_urdf_source_run_renders_successes_after_partial_backend_failure
     persisted = json.loads(Path(summary["artifact"]).read_text(encoding="utf-8"))
     assert set(persisted) == {
         "format_version",
+        "annotation_mode",
+        "required_object_roles",
         "gripper_backend",
         "run_id",
         "dataset_root",

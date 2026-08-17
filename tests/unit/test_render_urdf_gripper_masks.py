@@ -87,6 +87,8 @@ def _write_source_loop(
     active_arm: str = "right",
 ) -> Path:
     events = _derived_loop(active_arm=active_arm)
+    chunk = episode_index // 1000
+    episode_stem = f"episode_{episode_index:06d}"
     path = masks_path.with_name("loop.json")
     payload = {
         "format_version": "robotwin_loop_context_v1",
@@ -111,12 +113,12 @@ def _write_source_loop(
             else {
                 "state": str(
                     dataset_root
-                    / "data/chunk-007/episode_007152.parquet"
+                    / f"data/chunk-{chunk:03d}/{episode_stem}.parquet"
                 ),
                 "video": str(
                     dataset_root
-                    / "videos/chunk-007/observation.images.cam_high/"
-                    "episode_007152.mp4"
+                    / f"videos/chunk-{chunk:03d}/observation.images.cam_high/"
+                    f"{episode_stem}.mp4"
                 ),
             }
         ),
@@ -125,12 +127,21 @@ def _write_source_loop(
     return path
 
 
-def _write_source_contract(masks_path: Path, *, dataset_root: Path) -> Path:
+def _write_source_contract(
+    masks_path: Path,
+    *,
+    dataset_root: Path,
+    episode_index: int = 7152,
+) -> Path:
     """Write one complete canonical source episode used by derived-run tests."""
 
     source_run = masks_path.parents[3]
     episode_dir = masks_path.parent
-    loop_path = _write_source_loop(masks_path, dataset_root=dataset_root)
+    loop_path = _write_source_loop(
+        masks_path,
+        dataset_root=dataset_root,
+        episode_index=episode_index,
+    )
     for instance_name in ("target_0", "receiver_0"):
         artifact = episode_dir / instance_name / "native_track.npz"
         artifact.parent.mkdir(parents=True, exist_ok=True)
@@ -140,8 +151,8 @@ def _write_source_contract(masks_path: Path, *, dataset_root: Path) -> Path:
         "run_id": source_run.name,
         "episode": {
             "task": "move_pillbottle_pad",
-            "episode_index": 7152,
-            "episode_id": "007152",
+            "episode_index": episode_index,
+            "episode_id": f"{episode_index:06d}",
             "camera": "cam_high",
         },
         "frame_count": 6,
@@ -184,29 +195,45 @@ def _write_source_contract(masks_path: Path, *, dataset_root: Path) -> Path:
     (episode_dir / "frame_provenance.json").write_text(
         json.dumps(provenance), encoding="utf-8"
     )
-    summary = {
-        "format_version": "robotwin_process_dataset_summary_v1",
-        "run_id": source_run.name,
-        "dataset_root": str(dataset_root.resolve()),
-        "task": "move_pillbottle_pad",
-        "camera": "cam_high",
-        "dynamic_manifest": {
+    summary_path = source_run / "process_summary.json"
+    if summary_path.is_file():
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        summary["dynamic_manifest"]["regression_episode_ids"].append(
+            episode_index
+        )
+        summary["records"].append(
+            {"episode": episode_index, "status": "completed"}
+        )
+    else:
+        summary = {
+            "format_version": "robotwin_process_dataset_summary_v1",
+            "run_id": source_run.name,
+            "dataset_root": str(dataset_root.resolve()),
             "task": "move_pillbottle_pad",
             "camera": "cam_high",
-            "dataset_root": str(dataset_root.resolve()),
-            "regression_episode_ids": [7152],
-            "frame_shape_hw": [2, 3],
-        },
-        "records": [{"episode": 7152, "status": "completed"}],
-    }
-    (source_run / "process_summary.json").write_text(
+            "dynamic_manifest": {
+                "task": "move_pillbottle_pad",
+                "camera": "cam_high",
+                "dataset_root": str(dataset_root.resolve()),
+                "regression_episode_ids": [episode_index],
+                "frame_shape_hw": [2, 3],
+            },
+            "records": [{"episode": episode_index, "status": "completed"}],
+        }
+    summary_path.write_text(
         json.dumps(summary), encoding="utf-8"
     )
     return loop_path
 
 
-def _derived_episode(tmp_path: Path, *, active_arm: str = "right") -> Any:
+def _derived_episode(
+    tmp_path: Path,
+    *,
+    active_arm: str = "right",
+    episode_index: int = 7152,
+) -> Any:
     loop = _derived_loop(active_arm=active_arm)
+    suffix = "" if episode_index == 7152 else f".{episode_index}"
     return SimpleNamespace(
         frame_count=6,
         active_arm=loop.active_arm,
@@ -214,11 +241,11 @@ def _derived_episode(tmp_path: Path, *, active_arm: str = "right") -> Any:
         loop=loop,
         joint_absolute=np.zeros((6, 14), dtype=np.float64),
         paths=SimpleNamespace(
-            episode_index=7152,
-            parquet=tmp_path / "episode.parquet",
-            rgb_video=tmp_path / "rgb.mp4",
-            depth_video=tmp_path / "depth.mkv",
-            sidecar=tmp_path / "sidecar.hdf5",
+            episode_index=episode_index,
+            parquet=tmp_path / f"episode{suffix}.parquet",
+            rgb_video=tmp_path / f"rgb{suffix}.mp4",
+            depth_video=tmp_path / f"depth{suffix}.mkv",
+            sidecar=tmp_path / f"sidecar{suffix}.hdf5",
         ),
     )
 
@@ -710,6 +737,61 @@ def test_render_driver_uses_per_joint_temporal_priors_and_component_acceptance()
     assert not product.gripper_track[1, 1, 1]
 
 
+def test_close_hold_render_consumes_normalized_window_through_final_frame() -> None:
+    rendered_frames: list[int] = []
+    mask = np.zeros((2, 3), dtype=bool)
+    mask[1, 2] = True
+    render_depth = np.where(mask, 100.0, 0.0)
+
+    class FakeRenderer:
+        def fit_finger_q(self, joints: np.ndarray, *_args: Any, **_kwargs: Any) -> Any:
+            rendered_frames.append(int(joints[0]))
+            acceptance = {
+                "fr_link6": True,
+                "fr_link7": True,
+                "fr_link8": True,
+            }
+            return SimpleNamespace(
+                accepted=True,
+                selected_q_by_joint={"fr_joint7": 0.02, "fr_joint8": 0.02},
+                component_acceptance=acceptance,
+                selected_render=SimpleNamespace(
+                    active_gripper_mask=mask.copy(),
+                    active_gripper_depth_mm=render_depth.copy(),
+                ),
+                visible_mask=mask.copy(),
+                diagnostics={"mode": "close_hold"},
+            )
+
+    joints = np.zeros((5, 14), dtype=np.float64)
+    joints[:, 0] = np.arange(5)
+    episode = SimpleNamespace(
+        frame_count=5,
+        active_arm="right",
+        active_window=(1, 4),
+        joint_absolute=joints,
+    )
+    calibration = SimpleNamespace(
+        intrinsic_cv=np.repeat(np.eye(3)[None, ...], 5, axis=0),
+        cam2world_gl=np.repeat(np.eye(4)[None, ...], 5, axis=0),
+    )
+
+    product = render_episode_product(
+        FakeRenderer(),
+        {},
+        episode,
+        calibration,
+        np.full((5, 2, 3), 100, dtype=np.uint16),
+        frame_shape=(2, 3),
+        tolerance_mm=8.0,
+    )
+
+    assert rendered_frames == [1, 2, 3, 4]
+    assert not product.gripper_track[0].any()
+    assert product.gripper_track[4].any()
+    assert [item["frame_id"] for item in product.frame_diagnostics] == [1, 2, 3, 4]
+
+
 def test_derived_runner_passes_source_loop_to_plan_and_actual_render_load(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -717,14 +799,15 @@ def test_derived_runner_passes_source_loop_to_plan_and_actual_render_load(
     config = _integration_config(tmp_path, run_id="authoritative-loop")
     _mock_integration_pipeline(monkeypatch, tmp_path)
     episode = _derived_episode(tmp_path)
-    observed: list[ActiveGripperLoop | None] = []
+    observed: list[tuple[Any, tuple[int, int] | None]] = []
 
     def load_episode(
         *_args: Any,
-        authoritative_loop: ActiveGripperLoop | None = None,
+        authoritative_events: Any = None,
+        authoritative_gripper_window: tuple[int, int] | None = None,
         **_kwargs: Any,
     ) -> Any:
-        observed.append(authoritative_loop)
+        observed.append((authoritative_events, authoritative_gripper_window))
         return episode
 
     monkeypatch.setattr(render_module, "load_urdf_gripper_episode", load_episode)
@@ -732,7 +815,10 @@ def test_derived_runner_passes_source_loop_to_plan_and_actual_render_load(
     result = run_experiment(config, renderer=object(), fit_config={})
 
     assert result["status"] == "complete"
-    assert observed == [_derived_loop(), _derived_loop()]
+    assert observed == [
+        (_derived_loop(), _derived_loop().inclusive_window),
+        (_derived_loop(), _derived_loop().inclusive_window),
+    ]
     assert result["run_contract"]["episode_plans"][0]["events"] == (
         _derived_loop().to_json()
     )
@@ -757,6 +843,302 @@ def test_resume_skips_only_fully_validated_episode_without_creating_renderer(
 
     assert result["status"] == "complete"
     assert result["resume_skipped_episode_count"] == 1
+
+
+def test_frozen_resume_completes_partial_streaming_plan_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _integration_config(tmp_path, run_id="partial-plan-resume")
+    _mock_integration_pipeline(monkeypatch, tmp_path)
+    run_experiment(config, renderer=object(), fit_config={})
+    manifest_path = config.run_dir / "manifest.json"
+    manifest = render_module._load_json_object(
+        manifest_path, description="test manifest"
+    )
+    expected_plan = manifest["run_contract"]["episode_plans"][0]
+    manifest["run_contract"]["episode_plans"] = []
+    manifest["episodes"] = [{"episode_index": 7152, "status": "pending"}]
+    output_dir = config.run_dir / "episode_007152"
+    output_dir.rename(tmp_path / "detached-initial-output")
+    render_module._atomic_write_json(manifest_path, manifest)
+    resumed = RunConfig(**{**config.__dict__, "resume": True})
+
+    result = run_experiment(resumed, renderer=object(), fit_config={})
+
+    assert result["status"] == "complete"
+    assert result["resume_skipped_episode_count"] == 0
+    assert result["run_contract"]["episode_plans"] == [expected_plan]
+    persisted = render_module._load_json_object(
+        manifest_path, description="test manifest"
+    )
+    assert persisted["run_contract"]["episode_plans"] == [expected_plan]
+    assert persisted["episodes"][0]["status"] == "complete"
+
+
+def test_frozen_resume_skips_complete_and_renders_missing_streaming_episode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = _integration_config(tmp_path, run_id="production-shape-partial")
+    second_masks = (
+        base.source_run_dir
+        / "move_pillbottle_pad/episode_007153/cam_high/masks.npz"
+    )
+    _write_masks(second_masks, frame_count=6)
+    _write_source_contract(
+        second_masks,
+        dataset_root=base.dataset_root,
+        episode_index=7153,
+    )
+    config = RunConfig(**{**base.__dict__, "episode_ids": (7152, 7153)})
+    _mock_integration_pipeline(monkeypatch, tmp_path)
+    episodes = {
+        7152: _derived_episode(tmp_path),
+        7153: _derived_episode(tmp_path, episode_index=7153),
+    }
+    _write_episode_inputs(episodes[7153])
+    monkeypatch.setattr(
+        render_module,
+        "load_urdf_gripper_episode",
+        lambda _root, episode_index, **_kwargs: episodes[episode_index],
+    )
+    run_experiment(config, renderer=object(), fit_config={})
+    manifest_path = config.run_dir / "manifest.json"
+    manifest = render_module._load_json_object(
+        manifest_path, description="test manifest"
+    )
+    expected_plans = manifest["run_contract"]["episode_plans"]
+    manifest["run_contract"]["episode_plans"] = [expected_plans[0]]
+    manifest["episodes"] = [
+        manifest["episodes"][0],
+        {"episode_index": 7153, "status": "pending"},
+    ]
+    second_output = config.run_dir / "episode_007153"
+    second_output.rename(tmp_path / "detached-second-output")
+    render_module._atomic_write_json(manifest_path, manifest)
+    resumed = RunConfig(**{**config.__dict__, "resume": True})
+
+    result = run_experiment(resumed, renderer=object(), fit_config={})
+
+    assert result["status"] == "complete"
+    assert result["resume_skipped_episode_count"] == 1
+    assert result["episodes"][0]["resume_action"] == "validated_skip"
+    assert result["episodes"][1]["status"] == "complete"
+    assert [
+        plan["episode_index"]
+        for plan in result["run_contract"]["episode_plans"]
+    ] == [7152, 7153]
+    assert second_output.is_dir()
+
+
+@pytest.mark.parametrize("record_status", ("complete", "failed", "pending"))
+def test_frozen_resume_rejects_missing_plan_for_non_pending_or_published_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    record_status: str,
+) -> None:
+    config = _integration_config(
+        tmp_path,
+        run_id=f"missing-{record_status}-plan",
+    )
+    _mock_integration_pipeline(monkeypatch, tmp_path)
+    run_experiment(config, renderer=object(), fit_config={})
+    manifest_path = config.run_dir / "manifest.json"
+    manifest = render_module._load_json_object(
+        manifest_path, description="test manifest"
+    )
+    manifest["run_contract"]["episode_plans"] = []
+    manifest["episodes"][0]["status"] = record_status
+    render_module._atomic_write_json(manifest_path, manifest)
+    before = manifest_path.read_bytes()
+    resumed = RunConfig(**{**config.__dict__, "resume": True})
+    monkeypatch.setattr(
+        render_module,
+        "create_renderer",
+        lambda *_args, **_kwargs: pytest.fail(
+            "invalid partial contract must fail before renderer creation"
+        ),
+    )
+
+    with pytest.raises(render_module.UrdfMaskRunError, match="has no plan"):
+        run_experiment(resumed, fit_config={})
+
+    assert manifest_path.read_bytes() == before
+
+
+def test_frozen_resume_rejects_failed_missing_plan_without_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _integration_config(tmp_path, run_id="failed-planless-no-output")
+    _mock_integration_pipeline(monkeypatch, tmp_path)
+    run_experiment(config, renderer=object(), fit_config={})
+    manifest_path = config.run_dir / "manifest.json"
+    manifest = render_module._load_json_object(
+        manifest_path, description="test manifest"
+    )
+    manifest["run_contract"]["episode_plans"] = []
+    manifest["episodes"][0]["status"] = "failed"
+    (config.run_dir / "episode_007152").rename(tmp_path / "detached-failed-output")
+    render_module._atomic_write_json(manifest_path, manifest)
+    before = manifest_path.read_bytes()
+    resumed = RunConfig(**{**config.__dict__, "resume": True})
+
+    with pytest.raises(render_module.UrdfMaskRunError, match="has no plan"):
+        run_experiment(resumed, renderer=object(), fit_config={})
+
+    assert manifest_path.read_bytes() == before
+
+
+def test_frozen_resume_rejects_changed_existing_episode_plan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _integration_config(tmp_path, run_id="changed-existing-plan")
+    _mock_integration_pipeline(monkeypatch, tmp_path)
+    run_experiment(config, renderer=object(), fit_config={})
+    manifest_path = config.run_dir / "manifest.json"
+    manifest = render_module._load_json_object(
+        manifest_path, description="test manifest"
+    )
+    manifest["run_contract"]["episode_plans"][0]["source_masks"] = (
+        "/tampered/source/masks.npz"
+    )
+    render_module._atomic_write_json(manifest_path, manifest)
+    before = manifest_path.read_bytes()
+    resumed = RunConfig(**{**config.__dict__, "resume": True})
+    monkeypatch.setattr(
+        render_module,
+        "create_renderer",
+        lambda *_args, **_kwargs: pytest.fail(
+            "changed plan must fail before renderer creation"
+        ),
+    )
+
+    with pytest.raises(
+        render_module.UrdfMaskRunError,
+        match="immutable run contract",
+    ):
+        run_experiment(resumed, fit_config={})
+
+    assert manifest_path.read_bytes() == before
+
+
+def test_frozen_resume_rejects_changed_implementation_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _integration_config(tmp_path, run_id="changed-implementation")
+    _mock_integration_pipeline(monkeypatch, tmp_path)
+    run_experiment(config, renderer=object(), fit_config={})
+    manifest_path = config.run_dir / "manifest.json"
+    manifest = render_module._load_json_object(
+        manifest_path, description="test manifest"
+    )
+    manifest["run_contract"]["implementation"]["git_revision"] = "historical-revision"
+    render_module._atomic_write_json(manifest_path, manifest)
+    before = manifest_path.read_bytes()
+    resumed = RunConfig(**{**config.__dict__, "resume": True})
+    monkeypatch.setattr(
+        render_module,
+        "create_renderer",
+        lambda *_args, **_kwargs: pytest.fail(
+            "historical implementation must fail before renderer creation"
+        ),
+    )
+
+    with pytest.raises(
+        render_module.UrdfMaskRunError,
+        match="immutable run contract",
+    ):
+        run_experiment(resumed, fit_config={})
+
+    assert manifest_path.read_bytes() == before
+
+
+def test_frozen_resume_rejects_changed_episode_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _integration_config(tmp_path, run_id="changed-episode-count")
+    _mock_integration_pipeline(monkeypatch, tmp_path)
+    run_experiment(config, renderer=object(), fit_config={})
+    manifest_path = config.run_dir / "manifest.json"
+    manifest = render_module._load_json_object(
+        manifest_path, description="test manifest"
+    )
+    manifest["episode_count"] = 2
+    render_module._atomic_write_json(manifest_path, manifest)
+    before = manifest_path.read_bytes()
+    resumed = RunConfig(**{**config.__dict__, "resume": True})
+
+    with pytest.raises(render_module.UrdfMaskRunError, match="episode_count"):
+        run_experiment(resumed, renderer=object(), fit_config={})
+
+    assert manifest_path.read_bytes() == before
+
+
+@pytest.mark.parametrize("record_episode_index", ("7152", 7152.0, True))
+def test_frozen_resume_rejects_non_integer_record_episode_index(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    record_episode_index: object,
+) -> None:
+    config = _integration_config(
+        tmp_path,
+        run_id=f"record-id-{type(record_episode_index).__name__}",
+    )
+    _mock_integration_pipeline(monkeypatch, tmp_path)
+    run_experiment(config, renderer=object(), fit_config={})
+    manifest_path = config.run_dir / "manifest.json"
+    manifest = render_module._load_json_object(
+        manifest_path, description="test manifest"
+    )
+    manifest["episodes"][0]["episode_index"] = record_episode_index
+    render_module._atomic_write_json(manifest_path, manifest)
+    before = manifest_path.read_bytes()
+    resumed = RunConfig(**{**config.__dict__, "resume": True})
+
+    with pytest.raises(render_module.UrdfMaskRunError, match="must be integers"):
+        run_experiment(resumed, renderer=object(), fit_config={})
+
+    assert manifest_path.read_bytes() == before
+
+
+def test_frozen_reconcile_rejects_cli_episode_universe_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _integration_config(tmp_path, run_id="changed-cli-universe")
+    _mock_integration_pipeline(monkeypatch, tmp_path)
+    run_experiment(config, renderer=object(), fit_config={})
+    manifest = render_module._load_json_object(
+        config.run_dir / "manifest.json", description="test manifest"
+    )
+    expected_contract = json.loads(json.dumps(manifest["run_contract"]))
+    second_plan = json.loads(
+        json.dumps(expected_contract["episode_plans"][0])
+    )
+    second_plan["episode_index"] = 7153
+    expected_contract["episode_plans"].append(second_plan)
+    resumed = RunConfig(
+        **{
+            **config.__dict__,
+            "episode_ids": (7152, 7153),
+            "resume": True,
+        }
+    )
+    before = json.loads(json.dumps(manifest))
+
+    with pytest.raises(render_module.UrdfMaskRunError, match="episode_count"):
+        render_module._reconcile_resume_contract(
+            manifest,
+            config=resumed,
+            expected_contract=expected_contract,
+        )
+
+    assert manifest == before
 
 
 @pytest.mark.parametrize("tamper", ("summary", "loop", "role_artifact"))
@@ -932,6 +1314,214 @@ def test_incremental_worker_finalizes_unready_source_episode_as_failed(
     assert result["status"] == "failed"
     assert result["episodes"][1]["episode_index"] == 7153
     assert result["episodes"][1]["error_type"] == "SourceEpisodeUnavailable"
+
+
+def test_incremental_resume_accepts_exact_partial_plan_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = _integration_config(tmp_path, run_id="incremental-partial-resume")
+    config = RunConfig(**{**base.__dict__, "episode_ids": (7152, 7153)})
+    _mock_integration_pipeline(monkeypatch, tmp_path)
+    worker = IncrementalUrdfEpisodeWorker(
+        config,
+        renderer=object(),
+        fit_config={},
+    )
+    assert worker.process_episode(7152)["status"] == "complete"
+    worker.close()
+
+    resumed = RunConfig(**{**config.__dict__, "resume": True})
+    resumed_worker = IncrementalUrdfEpisodeWorker(
+        resumed,
+        renderer=object(),
+        fit_config={},
+    )
+    snapshot = resumed_worker.snapshot()
+    resumed_worker.close()
+
+    assert [item["episode_index"] for item in snapshot["episodes"]] == [7152, 7153]
+    assert [item["status"] for item in snapshot["episodes"]] == [
+        "complete",
+        "pending",
+    ]
+    assert [
+        item["episode_index"]
+        for item in snapshot["run_contract"]["episode_plans"]
+    ] == [7152]
+
+
+def test_incremental_resume_rejects_tampered_stored_plan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _integration_config(tmp_path, run_id="incremental-tampered-plan")
+    _mock_integration_pipeline(monkeypatch, tmp_path)
+    worker = IncrementalUrdfEpisodeWorker(
+        config,
+        renderer=object(),
+        fit_config={},
+    )
+    assert worker.process_episode(7152)["status"] == "complete"
+    worker.close()
+    manifest_path = config.run_dir / "manifest.json"
+    manifest = render_module._load_json_object(
+        manifest_path, description="test manifest"
+    )
+    manifest["run_contract"]["episode_plans"][0]["source_masks"] = (
+        "/tampered/source/masks.npz"
+    )
+    render_module._atomic_write_json(manifest_path, manifest)
+    before = manifest_path.read_bytes()
+    resumed = RunConfig(**{**config.__dict__, "resume": True})
+
+    with pytest.raises(
+        render_module.UrdfMaskRunError,
+        match="immutable run contract",
+    ):
+        IncrementalUrdfEpisodeWorker(
+            resumed,
+            renderer=object(),
+            fit_config={},
+        )
+
+    assert manifest_path.read_bytes() == before
+
+
+@pytest.mark.parametrize("damage", ("missing", "corrupt"))
+def test_incremental_resume_rejects_damaged_complete_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    damage: str,
+) -> None:
+    config = _integration_config(
+        tmp_path,
+        run_id=f"incremental-complete-{damage}",
+    )
+    _mock_integration_pipeline(monkeypatch, tmp_path)
+    worker = IncrementalUrdfEpisodeWorker(
+        config,
+        renderer=object(),
+        fit_config={},
+    )
+    assert worker.process_episode(7152)["status"] == "complete"
+    worker.close()
+    masks_path = config.run_dir / "episode_007152/masks.npz"
+    if damage == "missing":
+        masks_path.rename(tmp_path / "detached-complete-masks.npz")
+    else:
+        masks_path.write_bytes(b"corrupt-complete-artifact")
+    manifest_path = config.run_dir / "manifest.json"
+    before = manifest_path.read_bytes()
+    resumed = RunConfig(**{**config.__dict__, "resume": True})
+
+    with pytest.raises(
+        render_module.UrdfMaskRunError,
+        match="immutable resume validation",
+    ):
+        IncrementalUrdfEpisodeWorker(
+            resumed,
+            renderer=object(),
+            fit_config={},
+        )
+
+    assert manifest_path.read_bytes() == before
+
+
+def test_incremental_resume_rejects_expanded_episode_universe(
+    tmp_path: Path,
+) -> None:
+    config = _integration_config(tmp_path, run_id="incremental-expanded-universe")
+    worker = IncrementalUrdfEpisodeWorker(
+        config,
+        renderer=object(),
+        fit_config={},
+    )
+    worker.close()
+    manifest_path = config.run_dir / "manifest.json"
+    before = manifest_path.read_bytes()
+    resumed = RunConfig(
+        **{
+            **config.__dict__,
+            "episode_ids": (7152, 7153),
+            "resume": True,
+        }
+    )
+
+    with pytest.raises(
+        render_module.UrdfMaskRunError,
+        match="episode (order|universe)",
+    ):
+        IncrementalUrdfEpisodeWorker(
+            resumed,
+            renderer=object(),
+            fit_config={},
+        )
+
+    assert manifest_path.read_bytes() == before
+
+
+def test_incremental_resume_rejects_out_of_order_partial_plans(
+    tmp_path: Path,
+) -> None:
+    base = _integration_config(tmp_path, run_id="incremental-plan-order")
+    config = RunConfig(**{**base.__dict__, "episode_ids": (7152, 7153)})
+    worker = IncrementalUrdfEpisodeWorker(
+        config,
+        renderer=object(),
+        fit_config={},
+    )
+    worker.close()
+    manifest_path = config.run_dir / "manifest.json"
+    manifest = render_module._load_json_object(
+        manifest_path, description="test manifest"
+    )
+    manifest["run_contract"]["episode_plans"] = [
+        {"episode_index": 7153, "frame_shape_hw": [2, 3]},
+        {"episode_index": 7152, "frame_shape_hw": [2, 3]},
+    ]
+    render_module._atomic_write_json(manifest_path, manifest)
+    before = manifest_path.read_bytes()
+    resumed = RunConfig(**{**config.__dict__, "resume": True})
+
+    with pytest.raises(render_module.UrdfMaskRunError, match="preserve episode order"):
+        IncrementalUrdfEpisodeWorker(
+            resumed,
+            renderer=object(),
+            fit_config={},
+        )
+
+    assert manifest_path.read_bytes() == before
+
+
+def test_incremental_resume_rejects_reordered_episode_records(
+    tmp_path: Path,
+) -> None:
+    base = _integration_config(tmp_path, run_id="incremental-record-order")
+    config = RunConfig(**{**base.__dict__, "episode_ids": (7152, 7153)})
+    worker = IncrementalUrdfEpisodeWorker(
+        config,
+        renderer=object(),
+        fit_config={},
+    )
+    worker.close()
+    manifest_path = config.run_dir / "manifest.json"
+    manifest = render_module._load_json_object(
+        manifest_path, description="test manifest"
+    )
+    manifest["episodes"] = list(reversed(manifest["episodes"]))
+    render_module._atomic_write_json(manifest_path, manifest)
+    before = manifest_path.read_bytes()
+    resumed = RunConfig(**{**config.__dict__, "resume": True})
+
+    with pytest.raises(render_module.UrdfMaskRunError, match="episode order"):
+        IncrementalUrdfEpisodeWorker(
+            resumed,
+            renderer=object(),
+            fit_config={},
+        )
+
+    assert manifest_path.read_bytes() == before
 
 
 def test_create_renderer_scopes_egl_device_environment(

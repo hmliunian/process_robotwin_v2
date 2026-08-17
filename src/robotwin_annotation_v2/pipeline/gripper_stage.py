@@ -23,8 +23,10 @@ from PIL import Image, ImageDraw
 
 from ..adapters.qwen_client import QwenCompletion, image_data_url
 from ..config import GripperRoiConfig
-from ..models.loop_context import EpisodeRef, FrameWindow, LoopContext, LoopEvents
+from ..domain import AnnotationMode, ObjectRole
+from ..models.loop_context import EpisodeRef, LoopContext
 from ..models.mask_qc import MaskQCStatus
+from ..models.timeline import FrameWindow, LoopEvents
 from .mask_qc import MaskQCError, parse_mask_qc_response
 
 
@@ -460,13 +462,45 @@ class GripperSamBackend(Protocol):
 
 @dataclass(frozen=True)
 class KnownObjectTracks:
-    target: np.ndarray
-    receiver: np.ndarray
-    target_seed_mask: np.ndarray
-    receiver_seed_mask: np.ndarray
-    target_seed_frame: int
-    receiver_seed_frame: int
+    tracks: Mapping[ObjectRole, np.ndarray]
+    seed_masks: Mapping[ObjectRole, np.ndarray]
+    seed_frames: Mapping[ObjectRole, int]
     provenance: dict[str, Any]
+
+    def track(self, role: ObjectRole, *, empty_like: np.ndarray | None = None) -> np.ndarray:
+        value = self.tracks.get(role)
+        if value is not None:
+            return np.asarray(value, dtype=bool)
+        if empty_like is None:
+            raise KeyError(f"known object track has no applicable role {role.value}")
+        return np.zeros_like(np.asarray(empty_like, dtype=bool))
+
+    @property
+    def target(self) -> np.ndarray:
+        return self.track(ObjectRole.TARGET)
+
+    @property
+    def receiver(self) -> np.ndarray:
+        return self.track(ObjectRole.RECEIVER, empty_like=self.target)
+
+    @property
+    def target_seed_mask(self) -> np.ndarray:
+        return np.asarray(self.seed_masks[ObjectRole.TARGET], dtype=bool)
+
+    @property
+    def receiver_seed_mask(self) -> np.ndarray:
+        return np.asarray(
+            self.seed_masks.get(ObjectRole.RECEIVER, np.zeros_like(self.target_seed_mask)),
+            dtype=bool,
+        )
+
+    @property
+    def target_seed_frame(self) -> int:
+        return self.seed_frames[ObjectRole.TARGET]
+
+    @property
+    def receiver_seed_frame(self) -> int | None:
+        return self.seed_frames.get(ObjectRole.RECEIVER)
 
 
 @dataclass(frozen=True)
@@ -583,6 +617,7 @@ def load_qc_native_object_tracks(
     ref: EpisodeRef,
     *,
     expected_shape: tuple[int, int, int],
+    required_roles: tuple[ObjectRole, ...] = (ObjectRole.TARGET, ObjectRole.RECEIVER),
 ) -> KnownObjectTracks:
     """Load identity-QC-passed full native tracks by structured role metadata."""
 
@@ -619,7 +654,8 @@ def load_qc_native_object_tracks(
     seed_frames: dict[str, int] = {}
     sources: dict[str, Any] = {}
     root = episode_dir.resolve()
-    for role in ("target", "receiver"):
+    for object_role in required_roles:
+        role = object_role.value
         matches = [record for record in role_records if record.get("role") == role]
         if len(matches) != 1:
             raise ValueError(f"object manifest must contain exactly one {role} role")
@@ -677,12 +713,9 @@ def load_qc_native_object_tracks(
             "qc_reason": record.get("qc_reason"),
         }
     return KnownObjectTracks(
-        target=tracks["target"],
-        receiver=tracks["receiver"],
-        target_seed_mask=seed_masks["target"],
-        receiver_seed_mask=seed_masks["receiver"],
-        target_seed_frame=seed_frames["target"],
-        receiver_seed_frame=seed_frames["receiver"],
+        tracks={ObjectRole(role): track for role, track in tracks.items()},
+        seed_masks={ObjectRole(role): mask for role, mask in seed_masks.items()},
+        seed_frames={ObjectRole(role): frame for role, frame in seed_frames.items()},
         provenance={
             "run_id": manifest.get("run_id"),
             "manifest": str(manifest_path),
@@ -1514,8 +1547,7 @@ def run_gripper_stage(
     resource_path: Path,
     frame_shape: tuple[int, int],
     gripper_roi_config: GripperRoiConfig,
-    target_native_track: np.ndarray,
-    receiver_native_track: np.ndarray,
+    object_tracks: Mapping[ObjectRole, np.ndarray],
     qc_client: GripperQwenClient,
     qc_prompt_template: Path,
     qc_max_tokens: int = 220,
@@ -1526,15 +1558,26 @@ def run_gripper_stage(
 ) -> GripperStageResult:
     """Run pose-ROI candidate selection and one native gripper propagation."""
 
-    gate = seed_quality_gate or GripperSeedQualityGateConfig()
-    target = np.asarray(target_native_track, dtype=bool)
-    receiver = np.asarray(receiver_native_track, dtype=bool)
-    expected_shape = (context.frame_count, *frame_shape)
-    if target.shape != expected_shape or receiver.shape != expected_shape:
+    if context.annotation_mode is AnnotationMode.TARGET_ONLY:
         raise GripperStageError(
-            "target_native_track and receiver_native_track must both have "
-            f"shape {expected_shape}"
+            "target_only does not support the SAM gripper backend; use URDF"
         )
+    gate = seed_quality_gate or GripperSeedQualityGateConfig()
+    expected_shape = (context.frame_count, *frame_shape)
+    expected_roles = context.annotation_spec.required_object_roles
+    if set(object_tracks) != set(expected_roles):
+        raise GripperStageError(
+            "object_tracks roles must exactly match annotation mode: "
+            f"expected={[role.value for role in expected_roles]}, "
+            f"actual={[role.value for role in object_tracks]}"
+        )
+    normalized_tracks = {
+        role: np.asarray(track, dtype=bool) for role, track in object_tracks.items()
+    }
+    if any(track.shape != expected_shape for track in normalized_tracks.values()):
+        raise GripperStageError(f"every object track must have shape {expected_shape}")
+    target = normalized_tracks[ObjectRole.TARGET]
+    receiver = normalized_tracks.get(ObjectRole.RECEIVER, np.zeros(expected_shape, dtype=bool))
     if not resource_path.is_dir():
         raise GripperStageError(f"SAM3 resource directory does not exist: {resource_path}")
 

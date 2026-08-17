@@ -6,10 +6,12 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pytest
 from PIL import Image
 
 from robotwin_annotation_v2.adapters import ArtifactStore
 from robotwin_annotation_v2.config import MaskConfig
+from robotwin_annotation_v2.domain import AnnotationMode
 from robotwin_annotation_v2.models import (
     EpisodeRef,
     FramePurpose,
@@ -25,6 +27,7 @@ from robotwin_annotation_v2.models import (
     SemanticFrame,
     SemanticPlan,
     SemanticStatus,
+    TargetOnlyEvents,
 )
 from robotwin_annotation_v2.pipeline import (
     GripperSeedQCResult,
@@ -82,8 +85,10 @@ def _role(role: str, query: str) -> RoleSemanticPlan:
 def _plan(*, target: RoleSemanticPlan | None = None) -> SemanticPlan:
     return SemanticPlan(
         episode=_context().episode,
-        target=target or _role("target", "orange bottle"),
-        receiver=_role("receiver", "blue pad"),
+        role_plans=(
+            target or _role("target", "orange bottle"),
+            _role("receiver", "blue pad"),
+        ),
         model="fake-qwen",
         prompt_sha256=hashlib.sha256(b"prompt").hexdigest(),
         input_frame_ids=(0, 9, 15),
@@ -91,9 +96,44 @@ def _plan(*, target: RoleSemanticPlan | None = None) -> SemanticPlan:
     )
 
 
+def _target_only_context() -> LoopContext:
+    base = _context()
+    return LoopContext(
+        episode=base.episode,
+        task_text=base.task_text,
+        frame_count=base.frame_count,
+        events=TargetOnlyEvents("right", 2, 6, 8),
+        semantic_frames=(
+            SemanticFrame(
+                0,
+                FramePurpose.PRE_GRASP_SEED_CANDIDATE,
+                ("target",),
+            ),
+            SemanticFrame(9, FramePurpose.POST_GRASP_CONTEXT, ("target",)),
+        ),
+        state_source=base.state_source,
+        video_source=base.video_source,
+        annotation_mode=AnnotationMode.TARGET_ONLY,
+    )
+
+
+def _target_only_plan() -> SemanticPlan:
+    context = _target_only_context()
+    return SemanticPlan(
+        episode=context.episode,
+        role_plans=(_role("target", "orange bottle"),),
+        model="fake-qwen",
+        prompt_sha256=hashlib.sha256(b"prompt").hexdigest(),
+        input_frame_ids=(0, 9),
+        raw_response="{}",
+        annotation_mode=AnnotationMode.TARGET_ONLY,
+    )
+
+
 class FakeSamBackend:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
+        self.tracking_windows: list[tuple[int, int]] = []
         target = np.zeros(FRAME_SHAPE, dtype=bool)
         target[1:3, 1:3] = True
         receiver = np.zeros(FRAME_SHAPE, dtype=bool)
@@ -123,6 +163,7 @@ class FakeSamBackend:
         **_kwargs: Any,
     ) -> np.ndarray:
         self.calls.append(("track", ""))
+        self.tracking_windows.append(tracking_window)
         output = np.zeros((frame_count, *seed_mask.shape), dtype=bool)
         output[tracking_window[0] : tracking_window[1] + 1] = seed_mask
         return output
@@ -271,6 +312,61 @@ def test_sam_stage_uses_only_primary_queries_and_role_windows() -> None:
     assert not result.masks[2:].any()
 
 
+def test_target_only_sam_tracks_target_and_leaves_receiver_channel_zero() -> None:
+    backend = FakeSamBackend()
+    context = _target_only_context()
+
+    result = run_sam_stage(
+        context,
+        _target_only_plan(),
+        backend,
+        Path("/tmp/fake-resource"),
+        frame_shape=FRAME_SHAPE,
+        mask_config=MaskConfig(0, 0),
+    )
+
+    assert tuple(data.role for data in result.role_masks) == ("target",)
+    assert [value for kind, value in backend.calls if kind == "seed"] == [
+        "orange bottle"
+    ]
+    assert result.target.output_window == context.windows.target
+    assert backend.tracking_windows == [(0, 8)]
+    assert not result.target.visible_mask[9:].any()
+    assert not result.masks[1].any()
+    with pytest.raises(KeyError, match="non-applicable"):
+        _ = result.receiver
+
+
+def test_target_only_sam_propagates_the_qwen_qc_selected_candidate() -> None:
+    backend = FakeSamBackend()
+    selected_seed = backend.seed_masks["bottle"].copy()
+    mask_qc = MaskQCResult(
+        role_reports=(
+            _qc_report("target", MaskQCStatus.PASSED, query="bottle"),
+        ),
+        selected_masks={"target": selected_seed},
+        health={"status": "ok"},
+    )
+
+    result = run_sam_stage(
+        _target_only_context(),
+        _target_only_plan(),
+        backend,
+        Path("/tmp/fake-resource"),
+        frame_shape=FRAME_SHAPE,
+        mask_config=MaskConfig(0, 0),
+        mask_qc=mask_qc,
+    )
+
+    assert result.target.qc_status is MaskQCStatus.PASSED
+    assert result.target.primary_query == "bottle"
+    assert not any(kind == "seed" for kind, _value in backend.calls)
+    assert backend.tracking_windows == [(0, 8)]
+    assert result.target.visible_mask[2:9].any()
+    assert not result.target.visible_mask[9:].any()
+    assert not result.masks[1].any()
+
+
 def test_no_clear_seed_skips_target_sam_calls() -> None:
     backend = FakeSamBackend()
     no_target = RoleSemanticPlan(
@@ -319,8 +415,10 @@ def test_sam_stage_uses_qc_selected_query_and_cached_seed_mask() -> None:
     target_seed = backend.seed_masks["bottle"].copy()
     receiver_seed = backend.seed_masks["blue pad"].copy()
     mask_qc = MaskQCResult(
-        target=_qc_report("target", MaskQCStatus.PASSED, query="bottle"),
-        receiver=_qc_report("receiver", MaskQCStatus.PASSED, query="blue pad"),
+        role_reports=(
+            _qc_report("target", MaskQCStatus.PASSED, query="bottle"),
+            _qc_report("receiver", MaskQCStatus.PASSED, query="blue pad"),
+        ),
         selected_masks={"target": target_seed, "receiver": receiver_seed},
         health={"status": "ok"},
     )
@@ -345,8 +443,10 @@ def test_sam_stage_uses_qc_selected_query_and_cached_seed_mask() -> None:
 def test_sam_stage_does_not_propagate_rejected_qc_candidate() -> None:
     backend = FakeSamBackend()
     mask_qc = MaskQCResult(
-        target=_qc_report("target", MaskQCStatus.REJECTED),
-        receiver=_qc_report("receiver", MaskQCStatus.PASSED, query="blue pad"),
+        role_reports=(
+            _qc_report("target", MaskQCStatus.REJECTED),
+            _qc_report("receiver", MaskQCStatus.PASSED, query="blue pad"),
+        ),
         selected_masks={"receiver": backend.seed_masks["blue pad"].copy()},
         health={"status": "ok"},
     )
@@ -419,6 +519,53 @@ def test_save_sam_artifacts_marks_grippers_not_annotated(tmp_path: Path) -> None
     assert not (episode_dir / "target_0/text_observations.npz").exists()
     provenance = json.loads((episode_dir / "frame_provenance.json").read_text())
     assert provenance["gripper_backend"] == "sam"
+
+
+def test_target_only_artifacts_publish_receiver_as_not_applicable(
+    tmp_path: Path,
+) -> None:
+    context = _target_only_context()
+    plan = _target_only_plan()
+    result = run_sam_stage(
+        context,
+        plan,
+        FakeSamBackend(),
+        Path("/tmp/fake-resource"),
+        frame_shape=FRAME_SHAPE,
+        mask_config=MaskConfig(0, 0),
+    )
+    seed_image = Image.fromarray(np.zeros((*FRAME_SHAPE, 3), dtype=np.uint8))
+
+    mask_run = save_sam_artifacts(
+        ArtifactStore(tmp_path),
+        "target-only-test",
+        context,
+        plan,
+        result,
+        seed_images={0: seed_image},
+    )
+
+    episode_dir = Path(mask_run.artifact_dir)
+    with np.load(episode_dir / "masks.npz", allow_pickle=False) as archive:
+        assert not archive["masks"][1].any()
+        assert archive["annotation_status"].tolist()[:2] == [
+            "valid",
+            "not_applicable",
+        ]
+        assert archive["qc_status"].tolist()[:2] == [
+            "not_run",
+            "not_applicable",
+        ]
+    manifest = json.loads((episode_dir / "run_manifest.json").read_text())
+    assert manifest["annotation_mode"] == "target_only"
+    assert manifest["required_object_roles"] == ["target"]
+    receiver = next(item for item in manifest["roles"] if item["role"] == "receiver")
+    assert receiver["status"] == "not_applicable"
+    assert receiver["output_window"] is None
+    assert receiver["native_track_path"] is None
+    assert not (episode_dir / "receiver_0").exists()
+    provenance = json.loads((episode_dir / "frame_provenance.json").read_text())
+    assert provenance["channels"]["receiver_0"]["status"] == "not_applicable"
 
 
 def test_save_sam_artifacts_writes_active_gripper_channel(tmp_path: Path) -> None:

@@ -54,8 +54,18 @@ class MaskCandidate:
 
     @property
     def score(self) -> tuple[int, int, int, int]:
+        applicable_roles = tuple(
+            role
+            for role, status in self.role_status.items()
+            if status != "not_applicable"
+        )
         fully_qc_verified = int(
-            self.valid_role_count == 2 and self.qc_passed_role_count == 2
+            bool(applicable_roles)
+            and all(self.role_status.get(role) == "valid" for role in applicable_roles)
+            and all(
+                self.role_qc_status.get(role) == "passed"
+                for role in applicable_roles
+            )
         )
         return (
             fully_qc_verified,
@@ -542,7 +552,12 @@ def build_sheets(
             role = "gripper" if raw_role.startswith("gripper_") else raw_role
             if role not in {"target", "receiver", "gripper"}:
                 continue
-            start, end = (int(value) for value in role_record["output_window"])
+            if str(role_record.get("status")) == "not_applicable":
+                continue
+            output_window = role_record.get("output_window")
+            if not isinstance(output_window, list) or len(output_window) != 2:
+                continue
+            start, end = (int(value) for value in output_window)
             wanted[f"{role}_early"] = start + (end - start) // 4
             wanted[f"{role}_late"] = end
             statuses[role] = str(role_record["status"])
@@ -695,7 +710,10 @@ def main() -> None:
         "camera": config.dataset.camera,
         "filename_mode": args.filename_mode,
         "episode_count": len(records),
-        "rendered_roles": ["target", "receiver", "gripper"],
+        "rendered_roles": [
+            *config.annotation.spec.required_role_names,
+            "gripper",
+        ],
         "alpha": args.alpha,
         "colors_rgb": {key: list(value) for key, value in ROLE_COLORS.items()},
         "render_style": {

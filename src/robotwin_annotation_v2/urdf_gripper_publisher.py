@@ -17,6 +17,8 @@ from typing import Any
 
 import numpy as np
 
+from .domain import AnnotationMode, ObjectRole, annotation_spec
+
 MASK_FORMAT_VERSION = "robotwin_visible_masks_v2"
 MASK_RUN_FORMAT_VERSION = "robotwin_mask_run_v2"
 PROVENANCE_FORMAT_VERSION = "robotwin_frame_provenance_v2"
@@ -27,7 +29,8 @@ DERIVATION_SOURCE_LINEAGE_FORMAT_VERSION = "robotwin_derivation_source_lineage_v
 DERIVATION_SOURCE_LINEAGE_V2_FORMAT_VERSION = (
     "robotwin_derivation_source_lineage_v2"
 )
-SOURCE_RUN_CONTRACT_FORMAT_VERSION = "robotwin_source_run_contract_v1"
+SOURCE_RUN_CONTRACT_FORMAT_VERSION = "robotwin_source_run_contract_v2"
+LEGACY_SOURCE_RUN_CONTRACT_FORMAT_VERSION = "robotwin_source_run_contract_v1"
 SOURCE_EPISODE_COMPLETION_RECEIPT_FORMAT_VERSION = (
     "robotwin_source_episode_completion_receipt_v1"
 )
@@ -81,10 +84,39 @@ class DerivationSourceEpisode:
     source_algorithm: Mapping[str, Any]
     source_material: Mapping[str, Path]
     lineage: Mapping[str, Any]
+    annotation_mode: AnnotationMode
+    required_object_roles: tuple[ObjectRole, ...]
+    role_windows: Mapping[str, tuple[int, int]]
+    active_arm: str
+    gripper_window: tuple[int, int]
 
     @property
     def frame_count(self) -> int:
         return int(self.source_masks["frame_count"])
+
+
+def _source_annotation_contract(
+    manifest: Mapping[str, Any],
+) -> tuple[AnnotationMode, tuple[ObjectRole, ...]]:
+    """Resolve explicit v2 mode, with strict pick-place compatibility for old runs."""
+
+    raw_mode = manifest.get("annotation_mode", AnnotationMode.PICK_PLACE.value)
+    try:
+        mode = AnnotationMode(raw_mode)
+    except (TypeError, ValueError) as exc:
+        raise UrdfGripperPublishError(f"unsupported source annotation_mode: {raw_mode!r}") from exc
+    spec = annotation_spec(mode)
+    raw_roles = manifest.get("required_object_roles")
+    if raw_roles is None:
+        if mode is not AnnotationMode.PICK_PLACE:
+            raise UrdfGripperPublishError(
+                "target_only source manifest must declare required_object_roles"
+            )
+    elif raw_roles != list(spec.required_role_names):
+        raise UrdfGripperPublishError(
+            "source required_object_roles differ from annotation_mode"
+        )
+    return mode, spec.required_object_roles
 
 
 def _json_clone(value: Any) -> Any:
@@ -276,7 +308,11 @@ def _scalar_int(value: np.ndarray, *, label: str) -> int:
     return int(array.item())
 
 
-def _load_source_masks(path: Path) -> dict[str, Any]:
+def _load_source_masks(
+    path: Path,
+    *,
+    required_roles: tuple[ObjectRole, ...],
+) -> dict[str, Any]:
     try:
         with np.load(path, allow_pickle=False) as archive:
             required = {
@@ -322,10 +358,21 @@ def _load_source_masks(path: Path) -> dict[str, Any]:
         raise UrdfGripperPublishError("source masks and frame_count disagree")
     if names != INSTANCE_NAMES or roles != ROLES:
         raise UrdfGripperPublishError("source mask channel names/roles are not canonical")
-    if statuses[:2] != ("valid", "valid") or qc_statuses[:2] != ("passed", "passed"):
-        raise UrdfGripperPublishError(
-            "source target and receiver must both be valid and QC-passed"
-        )
+    required_names = {role.value for role in required_roles}
+    for index, role in enumerate((ObjectRole.TARGET, ObjectRole.RECEIVER)):
+        if role.value in required_names:
+            if statuses[index] != "valid" or qc_statuses[index] != "passed":
+                raise UrdfGripperPublishError(
+                    f"source {role.value} must be valid and QC-passed"
+                )
+        elif (
+            statuses[index] != "not_applicable"
+            or qc_statuses[index] != "not_applicable"
+            or masks[index].any()
+        ):
+            raise UrdfGripperPublishError(
+                f"source {role.value} must be zero and not_applicable"
+            )
     return {
         "format_version": MASK_FORMAT_VERSION,
         "frame_count": frame_count,
@@ -471,7 +518,11 @@ def _validate_backend_combined_masks(
         raise UrdfGripperPublishError("backend combined gripper channels differ from product")
 
 
-def _source_material_files(source_episode_dir: Path) -> dict[str, Path]:
+def _source_material_files(
+    source_episode_dir: Path,
+    *,
+    required_roles: tuple[ObjectRole, ...],
+) -> dict[str, Path]:
     result: dict[str, Path] = {}
 
     def visit(directory: Path, relative_dir: Path) -> None:
@@ -493,8 +544,14 @@ def _source_material_files(source_episode_dir: Path) -> dict[str, Path]:
     visit(source_episode_dir, Path())
     if not any(path.startswith("target_0/") for path in result):
         raise UrdfGripperPublishError("source episode has no target_0 artifacts")
-    if not any(path.startswith("receiver_0/") for path in result):
+    has_receiver_artifacts = any(path.startswith("receiver_0/") for path in result)
+    requires_receiver = ObjectRole.RECEIVER in required_roles
+    if requires_receiver and not has_receiver_artifacts:
         raise UrdfGripperPublishError("source episode has no receiver_0 artifacts")
+    if not requires_receiver and has_receiver_artifacts:
+        raise UrdfGripperPublishError(
+            "target_only source episode must not contain receiver_0 artifacts"
+        )
     return result
 
 
@@ -534,6 +591,7 @@ def _validate_source_manifest(
     source_episode_dir: Path,
     source_run_id: str,
     role_windows: Mapping[str, tuple[int, int]],
+    required_roles: tuple[ObjectRole, ...],
 ) -> tuple[
     list[dict[str, Any]],
     dict[str, Any],
@@ -571,11 +629,27 @@ def _validate_source_manifest(
         if role in role_map:
             raise UrdfGripperPublishError(f"source manifest repeats role {role}")
         role_map[str(role)] = _json_clone(raw)
+    required_names = {role.value for role in required_roles}
     if set(role_map) != {"target", "receiver"}:
-        raise UrdfGripperPublishError("source manifest lacks target or receiver")
+        raise UrdfGripperPublishError(
+            "source manifest must contain canonical target and receiver role records"
+        )
     role_artifacts: dict[str, dict[str, Path]] = {}
     for role in ("target", "receiver"):
         record = role_map[role]
+        if role not in required_names:
+            if (
+                record.get("status") != "not_applicable"
+                or record.get("qc_status") != "not_applicable"
+                or record.get("output_window") is not None
+                or record.get("nonempty_frames") != 0
+                or any(record.get(key) is not None for key in ROLE_ARTIFACT_PATH_KEYS)
+            ):
+                raise UrdfGripperPublishError(
+                    f"source non-applicable {role} record contains annotation data"
+                )
+            role_artifacts[role] = {}
+            continue
         if record.get("status") != "ok" or record.get("qc_status") != "passed":
             raise UrdfGripperPublishError(f"source {role} is not status=ok/qc_status=passed")
         output_window = _parse_window(
@@ -613,7 +687,7 @@ def _validate_source_run_contract(
     episode_index: int,
     expected_dataset_root: Path | None,
 ) -> Path:
-    expected_keys = {
+    common_keys = {
         "format_version",
         "run_id",
         "dataset_root",
@@ -623,12 +697,37 @@ def _validate_source_run_contract(
         "requested_episode_ids",
         "contract_sha256",
     }
+    format_version = contract.get("format_version")
+    expected_keys = (
+        common_keys
+        if format_version == LEGACY_SOURCE_RUN_CONTRACT_FORMAT_VERSION
+        else common_keys | {"annotation_mode", "required_object_roles"}
+    )
     if set(contract) != expected_keys:
         raise UrdfGripperPublishError(
             "source run contract keys differ from the immutable schema"
         )
-    if contract.get("format_version") != SOURCE_RUN_CONTRACT_FORMAT_VERSION:
+    if format_version not in {
+        LEGACY_SOURCE_RUN_CONTRACT_FORMAT_VERSION,
+        SOURCE_RUN_CONTRACT_FORMAT_VERSION,
+    }:
         raise UrdfGripperPublishError("source run contract format is unsupported")
+    if format_version == LEGACY_SOURCE_RUN_CONTRACT_FORMAT_VERSION:
+        source_mode = AnnotationMode.PICK_PLACE
+        source_roles = annotation_spec(source_mode).required_role_names
+    else:
+        raw_mode = contract.get("annotation_mode")
+        try:
+            source_mode = AnnotationMode(raw_mode)
+        except (TypeError, ValueError) as exc:
+            raise UrdfGripperPublishError(
+                f"source run contract has unsupported annotation_mode: {raw_mode!r}"
+            ) from exc
+        source_roles = annotation_spec(source_mode).required_role_names
+        if contract.get("required_object_roles") != list(source_roles):
+            raise UrdfGripperPublishError(
+                "source run contract required_object_roles differ from annotation_mode"
+            )
     _validate_self_hash(
         contract,
         hash_key="contract_sha256",
@@ -701,6 +800,8 @@ def write_source_run_contract(
     camera: str,
     dynamic_manifest: Mapping[str, Any],
     requested_episode_ids: Sequence[int],
+    annotation_mode: AnnotationMode | str = AnnotationMode.PICK_PLACE,
+    required_object_roles: Sequence[ObjectRole | str] | None = None,
 ) -> dict[str, Any]:
     """Atomically create the immutable metadata anchor for a streaming source run."""
 
@@ -729,8 +830,26 @@ def write_source_run_contract(
         )
     if not requested:
         raise UrdfGripperPublishError("requested_episode_ids must not be empty")
+    try:
+        resolved_mode = AnnotationMode(annotation_mode)
+    except (TypeError, ValueError) as exc:
+        raise UrdfGripperPublishError(
+            f"unsupported source annotation_mode: {annotation_mode!r}"
+        ) from exc
+    expected_roles = annotation_spec(resolved_mode).required_role_names
+    resolved_roles = (
+        expected_roles
+        if required_object_roles is None
+        else tuple(ObjectRole(role).value for role in required_object_roles)
+    )
+    if resolved_roles != expected_roles:
+        raise UrdfGripperPublishError(
+            "required_object_roles differ from source annotation_mode"
+        )
     contract: dict[str, Any] = {
         "format_version": SOURCE_RUN_CONTRACT_FORMAT_VERSION,
+        "annotation_mode": resolved_mode.value,
+        "required_object_roles": list(resolved_roles),
         "run_id": run_id,
         "dataset_root": str(dataset_root.expanduser().resolve()),
         "task": task,
@@ -897,7 +1016,12 @@ def _validate_source_loop(
     camera: str,
     episode_index: int,
     frame_count: int,
-) -> tuple[dict[str, Any], dict[str, tuple[int, int]]]:
+) -> tuple[
+    dict[str, Any],
+    dict[str, tuple[int, int]],
+    str,
+    tuple[int, int],
+]:
     from robotwin_annotation_v2.urdf_gripper_data import (
         UrdfGripperDataError,
         load_authoritative_loop_context,
@@ -938,28 +1062,45 @@ def _validate_source_loop(
             raise UrdfGripperPublishError(
                 f"source loop {key} path differs from the source dataset"
             )
-    return loop, {
-        "target": (context.events.t_move_start, context.events.t_close_done),
-        "receiver": (context.events.t_close_done, context.events.t_open_done),
+    role_windows = {
+        "target": (context.windows.target.start, context.windows.target.end),
     }
+    if context.windows.receiver is not None:
+        role_windows["receiver"] = (
+            context.windows.receiver.start,
+            context.windows.receiver.end,
+        )
+    return loop, role_windows, context.active_arm, context.gripper_window
 
 
 def _validate_source_provenance(
     provenance: Mapping[str, Any],
     *,
     role_windows: Mapping[str, tuple[int, int]],
+    required_roles: tuple[ObjectRole, ...],
 ) -> None:
     if provenance.get("format_version") != PROVENANCE_FORMAT_VERSION:
         raise UrdfGripperPublishError("source frame provenance format is unsupported")
     channels = provenance.get("channels")
     if not isinstance(channels, Mapping):
         raise UrdfGripperPublishError("source frame provenance has no channel map")
+    required_names = {role.value for role in required_roles}
     for role, channel_name in (("target", "target_0"), ("receiver", "receiver_0")):
         channel = channels.get(channel_name)
         if not isinstance(channel, Mapping):
             raise UrdfGripperPublishError(
                 f"source frame provenance lacks {channel_name}"
             )
+        if role not in required_names:
+            if (
+                channel.get("status") != "not_applicable"
+                or channel.get("qc_status") != "not_applicable"
+                or channel.get("nonempty_frame_ids") != []
+            ):
+                raise UrdfGripperPublishError(
+                    f"source frame provenance {channel_name} is not not_applicable"
+                )
+            continue
         if channel.get("status") != "ok" or channel.get("qc_status") != "passed":
             raise UrdfGripperPublishError(
                 f"source frame provenance {channel_name} is not QC-passed"
@@ -1132,14 +1273,22 @@ def _validate_derivation_source_episode(
             episode_index=episode_index,
             expected_dataset_root=expected_dataset_root,
         )
-    source = _load_source_masks(episode_dir / "masks.npz")
+    manifest = _read_json_object(
+        episode_dir / "run_manifest.json",
+        description="source episode manifest",
+    )
+    annotation_mode, required_roles = _source_annotation_contract(manifest)
+    source = _load_source_masks(
+        episode_dir / "masks.npz",
+        required_roles=required_roles,
+    )
     frame_count = int(source["frame_count"])
     if expected_frame_count is not None and frame_count != expected_frame_count:
         raise UrdfGripperPublishError(
             "source masks frame_count differs from the expected dataset frame count"
         )
 
-    loop, role_windows = _validate_source_loop(
+    loop, role_windows, active_arm, gripper_window = _validate_source_loop(
         episode_dir / "loop.json",
         dataset_root=dataset_root,
         task=task,
@@ -1147,10 +1296,16 @@ def _validate_derivation_source_episode(
         episode_index=episode_index,
         frame_count=frame_count,
     )
-    manifest = _read_json_object(
-        episode_dir / "run_manifest.json",
-        description="source episode manifest",
-    )
+    loop_mode = loop.get("annotation_mode", AnnotationMode.PICK_PLACE.value)
+    if loop_mode != annotation_mode.value:
+        raise UrdfGripperPublishError(
+            "source loop and manifest annotation modes differ"
+        )
+    loop_roles = loop.get("required_object_roles")
+    if loop_roles is not None and loop_roles != [role.value for role in required_roles]:
+        raise UrdfGripperPublishError(
+            "source loop required_object_roles differ from manifest"
+        )
     source_roles, source_algorithm, role_artifacts = _validate_source_manifest(
         manifest,
         task=task,
@@ -1160,12 +1315,17 @@ def _validate_derivation_source_episode(
         source_episode_dir=episode_dir,
         source_run_id=str(source_metadata["run_id"]),
         role_windows=role_windows,
+        required_roles=required_roles,
     )
     provenance = _read_json_object(
         episode_dir / "frame_provenance.json",
         description="source frame provenance",
     )
-    _validate_source_provenance(provenance, role_windows=role_windows)
+    _validate_source_provenance(
+        provenance,
+        role_windows=role_windows,
+        required_roles=required_roles,
+    )
 
     dynamic = source_metadata["dynamic_manifest"]
     raw_shape = dynamic.get("frame_shape_hw")
@@ -1180,7 +1340,10 @@ def _validate_derivation_source_episode(
             "source dynamic manifest frame shape differs from source masks"
         )
 
-    source_material = _source_material_files(episode_dir)
+    source_material = _source_material_files(
+        episode_dir,
+        required_roles=required_roles,
+    )
     role_identities = {
         role: {
             key: _source_file_identity(path, source_run_dir=source_run_dir)
@@ -1283,6 +1446,11 @@ def _validate_derivation_source_episode(
         source_algorithm=source_algorithm,
         source_material=source_material,
         lineage=lineage,
+        annotation_mode=annotation_mode,
+        required_object_roles=required_roles,
+        role_windows=dict(role_windows),
+        active_arm=active_arm,
+        gripper_window=gripper_window,
     )
 
 
@@ -1563,10 +1731,16 @@ def _build_public_payloads(
     masks[:2] = np.asarray(source["masks"], dtype=bool)[:2]
     masks[active_index] = visible
     annotation_status = np.asarray(
-        ["valid", "valid", "not_annotated", "not_annotated"]
+        [
+            *source["annotation_status"][:2],
+            "not_annotated",
+            "not_annotated",
+        ]
     )
     annotation_status[active_index] = "valid"
-    qc_status = np.asarray(["passed", "passed", "not_run", "not_run"])
+    qc_status = np.asarray(
+        [*source["qc_status"][:2], "not_run", "not_run"]
+    )
     qc_status[active_index] = "passed"
     masks_payload = {
         "format_version": np.asarray(MASK_FORMAT_VERSION),
@@ -1655,6 +1829,10 @@ def _build_public_payloads(
     }
     run_manifest = {
         "format_version": MASK_RUN_FORMAT_VERSION,
+        "annotation_mode": validated_source.annotation_mode.value,
+        "required_object_roles": [
+            role.value for role in validated_source.required_object_roles
+        ],
         "gripper_backend": "urdf",
         "run_id": run_id,
         "episode": {
@@ -1729,10 +1907,14 @@ def _build_public_payloads(
     }
     frame_provenance = {
         "format_version": PROVENANCE_FORMAT_VERSION,
+        "annotation_mode": validated_source.annotation_mode.value,
+        "required_object_roles": [
+            role.value for role in validated_source.required_object_roles
+        ],
         "gripper_backend": "urdf",
         "derivation": _json_clone(derivation),
         "composition": (
-            "target/receiver source native tracks clipped to role output windows; "
+            "applicable object source tracks clipped to role output windows; "
             "gripper from URDF visual geometry clipped by recorded scene depth"
         ),
         "channels": provenance_channels,
@@ -1832,17 +2014,19 @@ def _prepare_contract(
     source_events = validated_source.loop.get("events")
     if not isinstance(source_events, Mapping):
         raise UrdfGripperPublishError("source loop has no event map")
-    if active_arm != source_events.get("active_arm"):
+    if active_arm != validated_source.active_arm:
         raise UrdfGripperPublishError(
             "backend active arm differs from the authoritative source loop"
         )
-    expected_active_window = (
-        source_events.get("t_move_start"),
-        source_events.get("t_open_done"),
-    )
-    if active_window != expected_active_window:
+    if active_window != validated_source.gripper_window:
         raise UrdfGripperPublishError(
             "backend active window differs from the authoritative source loop"
+        )
+    if _json_clone(backend_episode_record.get("events")) != _json_clone(
+        source_events
+    ):
+        raise UrdfGripperPublishError(
+            "backend events differ from the authoritative source loop"
         )
     product_path, product_identity = _artifact_from_record(
         backend_episode_dir, backend_episode_record, "gripper_masks"

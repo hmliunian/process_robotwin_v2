@@ -120,8 +120,26 @@ class RoleMaskData:
 class SamStageResult:
     frame_count: int
     frame_shape: tuple[int, int]
-    target: RoleMaskData
-    receiver: RoleMaskData
+    role_masks: tuple[RoleMaskData, ...]
+
+    def __post_init__(self) -> None:
+        roles = tuple(data.role for data in self.role_masks)
+        if not roles or roles[0] != "target" or len(set(roles)) != len(roles):
+            raise ValueError("SamStageResult requires unique roles beginning with target")
+
+    def for_role(self, role: Literal["target", "receiver"]) -> RoleMaskData:
+        for data in self.role_masks:
+            if data.role == role:
+                return data
+        raise KeyError(f"SAM result has no mask for non-applicable role {role!r}")
+
+    @property
+    def target(self) -> RoleMaskData:
+        return self.for_role("target")
+
+    @property
+    def receiver(self) -> RoleMaskData:
+        return self.for_role("receiver")
 
     @property
     def masks(self) -> np.ndarray:
@@ -129,8 +147,9 @@ class SamStageResult:
             (len(INSTANCE_NAMES), self.frame_count, *self.frame_shape),
             dtype=bool,
         )
-        output[0] = self.target.visible_mask
-        output[1] = self.receiver.visible_mask
+        channel_index = {"target": 0, "receiver": 1}
+        for data in self.role_masks:
+            output[channel_index[data.role]] = data.visible_mask
         return output
 
 
@@ -477,37 +496,50 @@ def run_sam_stage(
 
     if semantic_plan.episode != context.episode:
         raise SamStageError("SemanticPlan and LoopContext refer to different episodes")
-    target = _run_role(
-        "target",
-        semantic=semantic_plan.target,
-        output_window=context.events.target_window,
-        padding=mask_config.target_envelope_padding_px,
-        mask_config=mask_config,
-        context=context,
-        backend=backend,
-        resource_path=resource_path,
-        frame_shape=frame_shape,
-        qc_report=None if mask_qc is None else mask_qc.target,
-        qc_seed_mask=None if mask_qc is None else mask_qc.selected_masks.get("target"),
-    )
-    receiver = _run_role(
-        "receiver",
-        semantic=semantic_plan.receiver,
-        output_window=context.events.receiver_window,
-        padding=mask_config.receiver_envelope_padding_px,
-        mask_config=mask_config,
-        context=context,
-        backend=backend,
-        resource_path=resource_path,
-        frame_shape=frame_shape,
-        qc_report=None if mask_qc is None else mask_qc.receiver,
-        qc_seed_mask=None if mask_qc is None else mask_qc.selected_masks.get("receiver"),
-    )
+    if semantic_plan.annotation_mode is not context.annotation_mode:
+        raise SamStageError("SemanticPlan and LoopContext use different annotation modes")
+    if mask_qc is not None and tuple(
+        report.role for report in mask_qc.role_reports
+    ) != tuple(plan.role for plan in semantic_plan.role_plans):
+        raise SamStageError("MaskQCResult roles do not match SemanticPlan")
+
+    role_masks: list[RoleMaskData] = []
+    padding_by_role = {
+        "target": mask_config.target_envelope_padding_px,
+        "receiver": mask_config.receiver_envelope_padding_px,
+    }
+    for semantic in semantic_plan.role_plans:
+        role = semantic.role
+        output_window = (
+            context.windows.target
+            if role == "target"
+            else context.windows.receiver
+        )
+        if output_window is None:
+            raise SamStageError(
+                f"{role} has no output window in {context.annotation_mode.value} mode"
+            )
+        role_masks.append(
+            _run_role(
+                role,
+                semantic=semantic,
+                output_window=output_window,
+                padding=padding_by_role[role],
+                mask_config=mask_config,
+                context=context,
+                backend=backend,
+                resource_path=resource_path,
+                frame_shape=frame_shape,
+                qc_report=None if mask_qc is None else mask_qc.for_role(role),
+                qc_seed_mask=(
+                    None if mask_qc is None else mask_qc.selected_masks.get(role)
+                ),
+            )
+        )
     return SamStageResult(
         frame_count=context.frame_count,
         frame_shape=frame_shape,
-        target=target,
-        receiver=receiver,
+        role_masks=tuple(role_masks),
     )
 
 
@@ -525,9 +557,9 @@ def save_sam_artifacts(
 
     episode_dir = store.episode_dir(run_id, context.episode)
     role_results: list[RoleMaskResult] = []
-    role_data = (result.target, result.receiver)
-    for index, data in enumerate(role_data):
-        role_name = INSTANCE_NAMES[index]
+    role_data = result.role_masks
+    for data in role_data:
+        role_name = f"{data.role}_0"
         role_dir = episode_dir / role_name
         seed_rgb_path: str | None = None
         seed_mask_path: str | None = None
@@ -584,6 +616,29 @@ def save_sam_artifacts(
                 qc_reason=data.qc_reason,
             )
         )
+
+    applicable = {data.role for data in role_data}
+    for role in ("target", "receiver"):
+        if role in applicable:
+            continue
+        role_results.append(
+            RoleMaskResult(
+                role=role,  # type: ignore[arg-type]
+                status=MaskStatus.NOT_APPLICABLE,
+                seed_frame_id=None,
+                primary_query=None,
+                output_window=None,
+                seed_rgb_path=None,
+                seed_mask_path=None,
+                canonical_envelope_path=None,
+                native_track_path=None,
+                temporal_qc_path=None,
+                nonempty_frames=0,
+                qc_status=MaskQCStatus.NOT_APPLICABLE,
+            )
+        )
+    role_order = {"target": 0, "receiver": 1}
+    role_results.sort(key=lambda item: role_order.get(item.role, 2))
 
     gripper_role_name: str | None = None
     gripper_seed_mask_path: str | None = None
@@ -672,15 +727,23 @@ def save_sam_artifacts(
 
     annotation_statuses = np.asarray(
         [
-            annotation_status(result.target),
-            annotation_status(result.receiver),
+            *(
+                annotation_status(result.for_role(role))
+                if role in applicable
+                else "not_applicable"
+                for role in ("target", "receiver")
+            ),
             *gripper_annotation,
         ]
     )
     qc_status = np.asarray(
         [
-            result.target.qc_status.value,
-            result.receiver.qc_status.value,
+            *(
+                result.for_role(role).qc_status.value
+                if role in applicable
+                else "not_applicable"
+                for role in ("target", "receiver")
+            ),
             *gripper_qc,
         ]
     )
@@ -694,46 +757,42 @@ def save_sam_artifacts(
         annotation_status=annotation_statuses,
         qc_status=qc_status,
     )
+    provenance_channels: dict[str, Any] = {
+        "gripper_left": {"status": "not_annotated"},
+        "gripper_right": {"status": "not_annotated"},
+    }
+    for role in ("target", "receiver"):
+        channel_name = f"{role}_0"
+        if role not in applicable:
+            provenance_channels[channel_name] = {
+                "status": "not_applicable",
+                "qc_status": "not_applicable",
+                "reason": f"{role} is not required in {context.annotation_mode.value} mode",
+                "nonempty_frame_ids": [],
+            }
+            continue
+        data = result.for_role(role)
+        provenance_channels[channel_name] = {
+            "status": data.status.value,
+            "seed_frame_id": data.seed_frame_id,
+            "primary_query": data.primary_query,
+            "failure": data.failure,
+            "qc_status": data.qc_status.value,
+            "qc_selected_candidate": data.qc_selected_candidate,
+            "qc_reason": data.qc_reason,
+            "output_window": data.output_window.to_json(),
+            "nonempty_frame_ids": list(data.nonempty_frame_ids),
+            "temporal_qc": (
+                None if data.temporal_qc is None else data.temporal_qc.to_json()
+            ),
+        }
     provenance = {
         "format_version": "robotwin_frame_provenance_v2",
+        "annotation_mode": context.annotation_mode.value,
+        "required_object_roles": list(context.annotation_spec.required_role_names),
         "gripper_backend": "sam",
         "composition": "native_track clipped_to role_output_window",
-        "channels": {
-            "target_0": {
-                "status": result.target.status.value,
-                "seed_frame_id": result.target.seed_frame_id,
-                "primary_query": result.target.primary_query,
-                "failure": result.target.failure,
-                "qc_status": result.target.qc_status.value,
-                "qc_selected_candidate": result.target.qc_selected_candidate,
-                "qc_reason": result.target.qc_reason,
-                "output_window": result.target.output_window.to_json(),
-                "nonempty_frame_ids": list(result.target.nonempty_frame_ids),
-                "temporal_qc": (
-                    None
-                    if result.target.temporal_qc is None
-                    else result.target.temporal_qc.to_json()
-                ),
-            },
-            "receiver_0": {
-                "status": result.receiver.status.value,
-                "seed_frame_id": result.receiver.seed_frame_id,
-                "primary_query": result.receiver.primary_query,
-                "failure": result.receiver.failure,
-                "qc_status": result.receiver.qc_status.value,
-                "qc_selected_candidate": result.receiver.qc_selected_candidate,
-                "qc_reason": result.receiver.qc_reason,
-                "output_window": result.receiver.output_window.to_json(),
-                "nonempty_frame_ids": list(result.receiver.nonempty_frame_ids),
-                "temporal_qc": (
-                    None
-                    if result.receiver.temporal_qc is None
-                    else result.receiver.temporal_qc.to_json()
-                ),
-            },
-            "gripper_left": {"status": "not_annotated"},
-            "gripper_right": {"status": "not_annotated"},
-        },
+        "channels": provenance_channels,
     }
     if gripper_result is not None and gripper_role_name is not None:
         provenance["composition"] = (
@@ -775,6 +834,8 @@ def save_sam_artifacts(
         )
     manifest.update(
         {
+            "annotation_mode": context.annotation_mode.value,
+            "required_object_roles": list(context.annotation_spec.required_role_names),
             "gripper_backend": "sam",
             "semantic_prompt_sha256": semantic_plan.prompt_sha256,
             "algorithm": {

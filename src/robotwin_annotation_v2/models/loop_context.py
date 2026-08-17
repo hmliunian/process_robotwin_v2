@@ -1,11 +1,19 @@
-"""Stage-1 contracts for one RoboTwin pick-and-place loop."""
+"""Stage-1 context shared by pick/place and close-and-hold episodes."""
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Literal
 
+from ..domain import AnnotationMode, AnnotationSpec, ObjectRole, annotation_spec
+from .timeline import (
+    EpisodeWindows,
+    PickPlaceEvents,
+    TargetOnlyEvents,
+    TimelineEvents,
+    derive_episode_windows,
+)
 
 RoleName = Literal["target", "receiver"]
 
@@ -48,72 +56,6 @@ class EpisodeRef:
 
 
 @dataclass(frozen=True)
-class FrameWindow:
-    """Inclusive frame window ``[start, end]``."""
-
-    start: int
-    end: int
-
-    def __post_init__(self) -> None:
-        if self.start < 0 or self.end < self.start:
-            raise ValueError(f"invalid frame window [{self.start}, {self.end}]")
-
-    def __contains__(self, frame_id: int) -> bool:
-        return self.start <= frame_id <= self.end
-
-    def __len__(self) -> int:
-        return self.end - self.start + 1
-
-    def to_json(self) -> list[int]:
-        return [self.start, self.end]
-
-
-@dataclass(frozen=True)
-class LoopEvents:
-    """Five ordered state-derived event boundaries for one arm loop."""
-
-    active_arm: Literal["left", "right"]
-    t_move_start: int
-    t_close_start: int
-    t_close_done: int
-    t_open_start: int
-    t_open_done: int
-
-    def __post_init__(self) -> None:
-        values = (
-            self.t_move_start,
-            self.t_close_start,
-            self.t_close_done,
-            self.t_open_start,
-            self.t_open_done,
-        )
-        if min(values) < 0:
-            raise ValueError("loop event frames must be non-negative")
-        if not (
-            self.t_move_start <= self.t_close_start
-            < self.t_close_done
-            < self.t_open_start
-            < self.t_open_done
-        ):
-            raise ValueError(f"loop events are not ordered: {values}")
-
-    @property
-    def loop_window(self) -> FrameWindow:
-        return FrameWindow(self.t_move_start, self.t_open_done)
-
-    @property
-    def target_window(self) -> FrameWindow:
-        return FrameWindow(self.t_move_start, self.t_close_done)
-
-    @property
-    def receiver_window(self) -> FrameWindow:
-        return FrameWindow(self.t_close_done, self.t_open_done)
-
-    def to_json(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass(frozen=True)
 class SemanticFrame:
     """One sparse RGB frame and its semantic purpose."""
 
@@ -143,23 +85,45 @@ class SemanticFrame:
 
 @dataclass(frozen=True)
 class LoopContext:
-    """Complete Stage-1 output consumed by the Qwen stage."""
+    """Complete, mode-validated Stage-1 output consumed by later stages.
+
+    Event detection is mode-specific, while every downstream stage receives
+    the same derived ``windows`` contract.  This is the only place where an
+    annotation mode is paired with its concrete timeline type.
+    """
 
     episode: EpisodeRef
     task_text: str
     frame_count: int
-    events: LoopEvents
+    events: TimelineEvents
     semantic_frames: tuple[SemanticFrame, ...]
     state_source: str
     video_source: str
+    annotation_mode: AnnotationMode = AnnotationMode.PICK_PLACE
+    windows: EpisodeWindows = field(init=False)
 
     def __post_init__(self) -> None:
+        if not isinstance(self.annotation_mode, AnnotationMode):
+            raise TypeError("annotation_mode must be an AnnotationMode")
         if not self.task_text.strip():
             raise ValueError("task_text must be non-empty")
         if self.frame_count < 1:
             raise ValueError("frame_count must be positive")
-        if self.events.t_open_done >= self.frame_count:
-            raise ValueError("loop extends beyond the episode")
+        expected_type = (
+            PickPlaceEvents
+            if self.annotation_mode is AnnotationMode.PICK_PLACE
+            else TargetOnlyEvents
+        )
+        if not isinstance(self.events, expected_type):
+            raise TypeError(
+                f"annotation mode {self.annotation_mode.value} requires "
+                f"{expected_type.__name__}, got {type(self.events).__name__}"
+            )
+        object.__setattr__(
+            self,
+            "windows",
+            derive_episode_windows(self.events, frame_count=self.frame_count),
+        )
         if not self.semantic_frames:
             raise ValueError("semantic_frames must not be empty")
         frame_ids = [frame.frame_id for frame in self.semantic_frames]
@@ -169,8 +133,29 @@ class LoopContext:
             raise ValueError("semantic frame id is outside the episode")
         if not any(frame.seed_eligible for frame in self.semantic_frames):
             raise ValueError("at least one seed candidate is required")
+        required = set(self.annotation_spec.required_role_names)
+        supplied = {role for frame in self.semantic_frames for role in frame.eligible_roles}
+        if not supplied <= required:
+            raise ValueError(
+                "semantic frames contain roles not required by annotation mode: "
+                f"{sorted(supplied - required)}"
+            )
+
+    @property
+    def annotation_spec(self) -> AnnotationSpec:
+        return annotation_spec(self.annotation_mode)
+
+    @property
+    def timeline_kind(self) -> Literal["pick_place", "close_hold"]:
+        """Stable JSON discriminator for the concrete event state machine."""
+
+        if isinstance(self.events, PickPlaceEvents):
+            return "pick_place"
+        return "close_hold"
 
     def seed_candidates(self, role: RoleName) -> tuple[int, ...]:
+        if not self.annotation_spec.requires(ObjectRole(role)):
+            return ()
         return tuple(
             frame.frame_id
             for frame in self.semantic_frames
@@ -179,16 +164,15 @@ class LoopContext:
 
     def to_json(self) -> dict[str, Any]:
         return {
-            "format_version": "robotwin_loop_context_v1",
+            "format_version": "robotwin_loop_context_v2",
+            "annotation_mode": self.annotation_mode.value,
+            "timeline_kind": self.timeline_kind,
+            "required_object_roles": list(self.annotation_spec.required_role_names),
             "episode": self.episode.to_json(),
             "task_text": self.task_text,
             "frame_count": self.frame_count,
             "events": self.events.to_json(),
-            "windows": {
-                "loop": self.events.loop_window.to_json(),
-                "target_0": self.events.target_window.to_json(),
-                "receiver_0": self.events.receiver_window.to_json(),
-            },
+            "windows": self.windows.to_json(),
             "semantic_frames": [frame.to_json() for frame in self.semantic_frames],
             "sources": {
                 "state": self.state_source,

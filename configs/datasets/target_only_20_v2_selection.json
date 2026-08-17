@@ -1,0 +1,5639 @@
+{
+  "format": "robotwin_target_only_20_selection_v2",
+  "source_dataset_root": "/DATA/disk8/xuran/robotwin2.0_full_aloha_rgbd_320_rgb_correct_v1",
+  "output_dataset_root": "/DATA/disk8/xuran/add_mask_robotwin/dataset/target_only_20_v2",
+  "camera": "cam_high",
+  "content_policy": "global episode ids; geometry-valid byte-identical parquet, HDF5, cam_high RGB and cam_high depth; per-task filtered metadata",
+  "scope": {
+    "strict_single_movable_source_episode_count": 14994,
+    "strict_single_movable_source_fraction": 0.5452,
+    "strict_task_slice_count": 28,
+    "articulated_action_site_task_slice_count": 3,
+    "task_count": 31,
+    "episode_count": 620
+  },
+  "sampling_policy": {
+    "default_domain_counts": {
+      "clean": 10,
+      "randomized": 10
+    },
+    "place_bread_basket_domain_counts": {
+      "clean": 9,
+      "randomized": 11
+    },
+    "arm_policy": "balance left/right overall when state-derived arm pools permit; otherwise spread deterministically across global episode ids",
+    "spread_policy": "inclusive evenly spaced order statistics by global episode id"
+  },
+  "reuse_task_slice_count": 17,
+  "reuse_episode_count": 340,
+  "source_copy_task_slice_count": 14,
+  "source_copy_episode_count": 280,
+  "tasks": [
+    {
+      "task": "adjust_bottle",
+      "task_kind": "single_movable_target",
+      "episode_count": 20,
+      "episode_indices": [
+        0,
+        6,
+        10,
+        18,
+        21,
+        30,
+        34,
+        42,
+        48,
+        49,
+        50,
+        51,
+        171,
+        176,
+        287,
+        313,
+        415,
+        431,
+        547,
+        549
+      ],
+      "domain_counts": {
+        "clean": 10,
+        "randomized": 10
+      },
+      "arm_counts": {
+        "left": 10,
+        "right": 10
+      },
+      "candidate_pool_count": 548,
+      "single_loop_candidate_pool_count": null,
+      "materialization": "reuse_existing_extract",
+      "reuse_dataset_root": "/DATA/disk8/xuran/add_mask_robotwin/dataset/target_only_20/adjust_bottle",
+      "episodes": [
+        {
+          "episode_index": 0,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "adjust_bottle_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 6,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "adjust_bottle_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 10,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "adjust_bottle_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 18,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "adjust_bottle_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 21,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "adjust_bottle_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 30,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "adjust_bottle_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 34,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "adjust_bottle_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 42,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "adjust_bottle_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 48,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "adjust_bottle_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 49,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "adjust_bottle_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 50,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "adjust_bottle_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 51,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "adjust_bottle_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 171,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "adjust_bottle_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 176,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "adjust_bottle_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 287,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "adjust_bottle_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 313,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "adjust_bottle_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 415,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "adjust_bottle_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 431,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "adjust_bottle_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 547,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "adjust_bottle_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 549,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "adjust_bottle_aloha-agilex_randomized_500"
+        }
+      ]
+    },
+    {
+      "task": "beat_block_hammer",
+      "task_kind": "single_movable_target",
+      "episode_count": 20,
+      "episode_indices": [
+        550,
+        551,
+        562,
+        565,
+        574,
+        577,
+        584,
+        585,
+        598,
+        599,
+        600,
+        605,
+        713,
+        756,
+        844,
+        863,
+        970,
+        973,
+        1096,
+        1098
+      ],
+      "domain_counts": {
+        "clean": 10,
+        "randomized": 10
+      },
+      "arm_counts": {
+        "left": 10,
+        "right": 10
+      },
+      "candidate_pool_count": 438,
+      "single_loop_candidate_pool_count": null,
+      "materialization": "copy_from_source_dataset",
+      "reuse_dataset_root": null,
+      "episodes": [
+        {
+          "episode_index": 550,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "beat_block_hammer_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 551,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "beat_block_hammer_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 562,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "beat_block_hammer_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 565,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "beat_block_hammer_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 574,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "beat_block_hammer_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 577,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "beat_block_hammer_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 584,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "beat_block_hammer_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 585,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "beat_block_hammer_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 598,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "beat_block_hammer_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 599,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "beat_block_hammer_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 600,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "beat_block_hammer_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 605,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "beat_block_hammer_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 713,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "beat_block_hammer_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 756,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "beat_block_hammer_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 844,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "beat_block_hammer_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 863,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "beat_block_hammer_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 970,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "beat_block_hammer_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 973,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "beat_block_hammer_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 1096,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "beat_block_hammer_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 1098,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "beat_block_hammer_aloha-agilex_randomized_500"
+        }
+      ]
+    },
+    {
+      "task": "dump_bin_bigbin",
+      "task_kind": "single_movable_target",
+      "episode_count": 20,
+      "episode_indices": [
+        3300,
+        3301,
+        3308,
+        3316,
+        3318,
+        3330,
+        3331,
+        3339,
+        3348,
+        3349,
+        3350,
+        3352,
+        3469,
+        3478,
+        3587,
+        3605,
+        3695,
+        3737,
+        3846,
+        3849
+      ],
+      "domain_counts": {
+        "clean": 10,
+        "randomized": 10
+      },
+      "arm_counts": {
+        "left": 10,
+        "right": 10
+      },
+      "candidate_pool_count": 534,
+      "single_loop_candidate_pool_count": null,
+      "materialization": "copy_from_source_dataset",
+      "reuse_dataset_root": null,
+      "episodes": [
+        {
+          "episode_index": 3300,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "dump_bin_bigbin_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 3301,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "dump_bin_bigbin_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 3308,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "dump_bin_bigbin_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 3316,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "dump_bin_bigbin_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 3318,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "dump_bin_bigbin_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 3330,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "dump_bin_bigbin_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 3331,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "dump_bin_bigbin_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 3339,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "dump_bin_bigbin_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 3348,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "dump_bin_bigbin_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 3349,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "dump_bin_bigbin_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 3350,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "dump_bin_bigbin_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 3352,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "dump_bin_bigbin_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 3469,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "dump_bin_bigbin_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 3478,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "dump_bin_bigbin_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 3587,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "dump_bin_bigbin_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 3605,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "dump_bin_bigbin_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 3695,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "dump_bin_bigbin_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 3737,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "dump_bin_bigbin_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 3846,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "dump_bin_bigbin_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 3849,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "dump_bin_bigbin_aloha-agilex_randomized_500"
+        }
+      ]
+    },
+    {
+      "task": "grab_roller",
+      "task_kind": "single_movable_target",
+      "episode_count": 20,
+      "episode_indices": [
+        3850,
+        3855,
+        3861,
+        3866,
+        3872,
+        3877,
+        3883,
+        3888,
+        3894,
+        3899,
+        3900,
+        3955,
+        4011,
+        4066,
+        4122,
+        4177,
+        4233,
+        4288,
+        4344,
+        4399
+      ],
+      "domain_counts": {
+        "clean": 10,
+        "randomized": 10
+      },
+      "arm_counts": {
+        "both": 20
+      },
+      "candidate_pool_count": 550,
+      "single_loop_candidate_pool_count": null,
+      "materialization": "copy_from_source_dataset",
+      "reuse_dataset_root": null,
+      "episodes": [
+        {
+          "episode_index": 3850,
+          "domain": "clean",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "grab_roller_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 3855,
+          "domain": "clean",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "grab_roller_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 3861,
+          "domain": "clean",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "grab_roller_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 3866,
+          "domain": "clean",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "grab_roller_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 3872,
+          "domain": "clean",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "grab_roller_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 3877,
+          "domain": "clean",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "grab_roller_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 3883,
+          "domain": "clean",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "grab_roller_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 3888,
+          "domain": "clean",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "grab_roller_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 3894,
+          "domain": "clean",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "grab_roller_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 3899,
+          "domain": "clean",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "grab_roller_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 3900,
+          "domain": "randomized",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "grab_roller_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 3955,
+          "domain": "randomized",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "grab_roller_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 4011,
+          "domain": "randomized",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "grab_roller_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 4066,
+          "domain": "randomized",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "grab_roller_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 4122,
+          "domain": "randomized",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "grab_roller_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 4177,
+          "domain": "randomized",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "grab_roller_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 4233,
+          "domain": "randomized",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "grab_roller_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 4288,
+          "domain": "randomized",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "grab_roller_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 4344,
+          "domain": "randomized",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "grab_roller_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 4399,
+          "domain": "randomized",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "grab_roller_aloha-agilex_randomized_500"
+        }
+      ]
+    },
+    {
+      "task": "handover_block",
+      "task_kind": "single_movable_target",
+      "episode_count": 20,
+      "episode_indices": [
+        4400,
+        4405,
+        4411,
+        4416,
+        4422,
+        4427,
+        4433,
+        4438,
+        4444,
+        4449,
+        4450,
+        4505,
+        4560,
+        4615,
+        4670,
+        4725,
+        4778,
+        4834,
+        4892,
+        4949
+      ],
+      "domain_counts": {
+        "clean": 10,
+        "randomized": 10
+      },
+      "arm_counts": {
+        "left": 20
+      },
+      "candidate_pool_count": 533,
+      "single_loop_candidate_pool_count": null,
+      "materialization": "copy_from_source_dataset",
+      "reuse_dataset_root": null,
+      "episodes": [
+        {
+          "episode_index": 4400,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "handover_block_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 4405,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "handover_block_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 4411,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "handover_block_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 4416,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "handover_block_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 4422,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "handover_block_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 4427,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "handover_block_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 4433,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "handover_block_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 4438,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "handover_block_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 4444,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "handover_block_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 4449,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "handover_block_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 4450,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "handover_block_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 4505,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "handover_block_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 4560,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "handover_block_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 4615,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "handover_block_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 4670,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "handover_block_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 4725,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "handover_block_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 4778,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "handover_block_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 4834,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "handover_block_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 4892,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "handover_block_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 4949,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "handover_block_aloha-agilex_randomized_500"
+        }
+      ]
+    },
+    {
+      "task": "handover_mic",
+      "task_kind": "single_movable_target",
+      "episode_count": 20,
+      "episode_indices": [
+        4950,
+        4951,
+        4960,
+        4964,
+        4973,
+        4981,
+        4982,
+        4993,
+        4994,
+        4999,
+        5000,
+        5001,
+        5104,
+        5145,
+        5236,
+        5256,
+        5358,
+        5395,
+        5498,
+        5499
+      ],
+      "domain_counts": {
+        "clean": 10,
+        "randomized": 10
+      },
+      "arm_counts": {
+        "left": 10,
+        "right": 10
+      },
+      "candidate_pool_count": 543,
+      "single_loop_candidate_pool_count": null,
+      "materialization": "copy_from_source_dataset",
+      "reuse_dataset_root": null,
+      "episodes": [
+        {
+          "episode_index": 4950,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "handover_mic_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 4951,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "handover_mic_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 4960,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "handover_mic_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 4964,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "handover_mic_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 4973,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "handover_mic_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 4981,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "handover_mic_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 4982,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "handover_mic_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 4993,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "handover_mic_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 4994,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "handover_mic_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 4999,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "handover_mic_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 5000,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "handover_mic_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 5001,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "handover_mic_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 5104,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "handover_mic_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 5145,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "handover_mic_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 5236,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "handover_mic_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 5256,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "handover_mic_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 5358,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "handover_mic_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 5395,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "handover_mic_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 5498,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "handover_mic_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 5499,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "handover_mic_aloha-agilex_randomized_500"
+        }
+      ]
+    },
+    {
+      "task": "hanging_mug",
+      "task_kind": "single_movable_target",
+      "episode_count": 20,
+      "episode_indices": [
+        5500,
+        5508,
+        5513,
+        5518,
+        5524,
+        5528,
+        5533,
+        5539,
+        5544,
+        5549,
+        5551,
+        5603,
+        5659,
+        5718,
+        5773,
+        5825,
+        5884,
+        5937,
+        5992,
+        6049
+      ],
+      "domain_counts": {
+        "clean": 10,
+        "randomized": 10
+      },
+      "arm_counts": {
+        "left": 20
+      },
+      "candidate_pool_count": 429,
+      "single_loop_candidate_pool_count": null,
+      "materialization": "copy_from_source_dataset",
+      "reuse_dataset_root": null,
+      "episodes": [
+        {
+          "episode_index": 5500,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "hanging_mug_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 5508,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "hanging_mug_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 5513,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "hanging_mug_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 5518,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "hanging_mug_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 5524,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "hanging_mug_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 5528,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "hanging_mug_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 5533,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "hanging_mug_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 5539,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "hanging_mug_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 5544,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "hanging_mug_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 5549,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "hanging_mug_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 5551,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "hanging_mug_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 5603,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "hanging_mug_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 5659,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "hanging_mug_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 5718,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "hanging_mug_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 5773,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "hanging_mug_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 5825,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "hanging_mug_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 5884,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "hanging_mug_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 5937,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "hanging_mug_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 5992,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "hanging_mug_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 6049,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "other",
+          "source_dataset_variant": "hanging_mug_aloha-agilex_randomized_500"
+        }
+      ]
+    },
+    {
+      "task": "lift_pot",
+      "task_kind": "single_movable_target",
+      "episode_count": 20,
+      "episode_indices": [
+        6050,
+        6055,
+        6061,
+        6066,
+        6072,
+        6077,
+        6083,
+        6088,
+        6094,
+        6099,
+        6100,
+        6155,
+        6211,
+        6267,
+        6322,
+        6377,
+        6432,
+        6488,
+        6544,
+        6599
+      ],
+      "domain_counts": {
+        "clean": 10,
+        "randomized": 10
+      },
+      "arm_counts": {
+        "both": 20
+      },
+      "candidate_pool_count": 548,
+      "single_loop_candidate_pool_count": null,
+      "materialization": "copy_from_source_dataset",
+      "reuse_dataset_root": null,
+      "episodes": [
+        {
+          "episode_index": 6050,
+          "domain": "clean",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "lift_pot_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 6055,
+          "domain": "clean",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "lift_pot_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 6061,
+          "domain": "clean",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "lift_pot_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 6066,
+          "domain": "clean",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "lift_pot_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 6072,
+          "domain": "clean",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "lift_pot_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 6077,
+          "domain": "clean",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "lift_pot_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 6083,
+          "domain": "clean",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "lift_pot_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 6088,
+          "domain": "clean",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "lift_pot_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 6094,
+          "domain": "clean",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "lift_pot_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 6099,
+          "domain": "clean",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "lift_pot_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 6100,
+          "domain": "randomized",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "lift_pot_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 6155,
+          "domain": "randomized",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "lift_pot_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 6211,
+          "domain": "randomized",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "lift_pot_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 6267,
+          "domain": "randomized",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "lift_pot_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 6322,
+          "domain": "randomized",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "lift_pot_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 6377,
+          "domain": "randomized",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "lift_pot_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 6432,
+          "domain": "randomized",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "lift_pot_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 6488,
+          "domain": "randomized",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "lift_pot_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 6544,
+          "domain": "randomized",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "lift_pot_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 6599,
+          "domain": "randomized",
+          "arm": "both",
+          "timeline_shape": "other",
+          "source_dataset_variant": "lift_pot_aloha-agilex_randomized_500"
+        }
+      ]
+    },
+    {
+      "task": "move_can_pot",
+      "task_kind": "single_movable_target",
+      "episode_count": 20,
+      "episode_indices": [
+        6600,
+        6601,
+        6611,
+        6614,
+        6624,
+        6626,
+        6636,
+        6637,
+        6645,
+        6649,
+        6650,
+        6651,
+        6771,
+        6779,
+        6896,
+        6906,
+        7003,
+        7036,
+        7143,
+        7149
+      ],
+      "domain_counts": {
+        "clean": 10,
+        "randomized": 10
+      },
+      "arm_counts": {
+        "left": 10,
+        "right": 10
+      },
+      "candidate_pool_count": 544,
+      "single_loop_candidate_pool_count": null,
+      "materialization": "reuse_existing_extract",
+      "reuse_dataset_root": "/DATA/disk8/xuran/add_mask_robotwin/dataset/profile_compat_20/target_only_release/move_can_pot",
+      "episodes": [
+        {
+          "episode_index": 6600,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_can_pot_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 6601,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_can_pot_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 6611,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_can_pot_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 6614,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_can_pot_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 6624,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_can_pot_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 6626,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_can_pot_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 6636,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_can_pot_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 6637,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_can_pot_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 6645,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_can_pot_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 6649,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_can_pot_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 6650,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_can_pot_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 6651,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_can_pot_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 6771,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_can_pot_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 6779,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_can_pot_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 6896,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_can_pot_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 6906,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_can_pot_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 7003,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_can_pot_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 7036,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_can_pot_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 7143,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_can_pot_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 7149,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_can_pot_aloha-agilex_randomized_500"
+        }
+      ]
+    },
+    {
+      "task": "move_pillbottle_pad",
+      "task_kind": "single_movable_target",
+      "episode_count": 20,
+      "episode_indices": [
+        7150,
+        7152,
+        7161,
+        7165,
+        7172,
+        7179,
+        7185,
+        7188,
+        7198,
+        7199,
+        7200,
+        7202,
+        7318,
+        7330,
+        7447,
+        7448,
+        7570,
+        7578,
+        7697,
+        7699
+      ],
+      "domain_counts": {
+        "clean": 10,
+        "randomized": 10
+      },
+      "arm_counts": {
+        "left": 10,
+        "right": 10
+      },
+      "candidate_pool_count": 546,
+      "single_loop_candidate_pool_count": null,
+      "materialization": "reuse_existing_extract",
+      "reuse_dataset_root": "/DATA/disk8/xuran/add_mask_robotwin/dataset/profile_compat_20/pick_place/move_pillbottle_pad",
+      "episodes": [
+        {
+          "episode_index": 7150,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_pillbottle_pad_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 7152,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_pillbottle_pad_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 7161,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_pillbottle_pad_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 7165,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_pillbottle_pad_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 7172,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_pillbottle_pad_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 7179,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_pillbottle_pad_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 7185,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_pillbottle_pad_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 7188,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_pillbottle_pad_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 7198,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_pillbottle_pad_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 7199,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_pillbottle_pad_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 7200,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_pillbottle_pad_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 7202,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_pillbottle_pad_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 7318,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_pillbottle_pad_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 7330,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_pillbottle_pad_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 7447,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_pillbottle_pad_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 7448,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_pillbottle_pad_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 7570,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_pillbottle_pad_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 7578,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_pillbottle_pad_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 7697,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_pillbottle_pad_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 7699,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_pillbottle_pad_aloha-agilex_randomized_500"
+        }
+      ]
+    },
+    {
+      "task": "move_playingcard_away",
+      "task_kind": "single_movable_target",
+      "episode_count": 20,
+      "episode_indices": [
+        7700,
+        7701,
+        7710,
+        7713,
+        7724,
+        7726,
+        7734,
+        7740,
+        7748,
+        7749,
+        7750,
+        7757,
+        7847,
+        7897,
+        7972,
+        8012,
+        8106,
+        8137,
+        8248,
+        8249
+      ],
+      "domain_counts": {
+        "clean": 10,
+        "randomized": 10
+      },
+      "arm_counts": {
+        "left": 10,
+        "right": 10
+      },
+      "candidate_pool_count": 550,
+      "single_loop_candidate_pool_count": null,
+      "materialization": "reuse_existing_extract",
+      "reuse_dataset_root": "/DATA/disk8/xuran/add_mask_robotwin/dataset/profile_compat_20/target_only_release/move_playingcard_away",
+      "episodes": [
+        {
+          "episode_index": 7700,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_playingcard_away_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 7701,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_playingcard_away_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 7710,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_playingcard_away_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 7713,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_playingcard_away_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 7724,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_playingcard_away_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 7726,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_playingcard_away_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 7734,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_playingcard_away_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 7740,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_playingcard_away_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 7748,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_playingcard_away_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 7749,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_playingcard_away_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 7750,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_playingcard_away_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 7757,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_playingcard_away_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 7847,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_playingcard_away_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 7897,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_playingcard_away_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 7972,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_playingcard_away_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 8012,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_playingcard_away_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 8106,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_playingcard_away_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 8137,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_playingcard_away_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 8248,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_playingcard_away_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 8249,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_playingcard_away_aloha-agilex_randomized_500"
+        }
+      ]
+    },
+    {
+      "task": "move_stapler_pad",
+      "task_kind": "single_movable_target",
+      "episode_count": 20,
+      "episode_indices": [
+        8250,
+        8251,
+        8262,
+        8266,
+        8272,
+        8275,
+        8284,
+        8292,
+        8297,
+        8299,
+        8301,
+        8308,
+        8417,
+        8436,
+        8532,
+        8561,
+        8665,
+        8675,
+        8798,
+        8799
+      ],
+      "domain_counts": {
+        "clean": 10,
+        "randomized": 10
+      },
+      "arm_counts": {
+        "left": 10,
+        "right": 10
+      },
+      "candidate_pool_count": 512,
+      "single_loop_candidate_pool_count": null,
+      "materialization": "reuse_existing_extract",
+      "reuse_dataset_root": "/DATA/disk8/xuran/add_mask_robotwin/dataset/profile_compat_20/pick_place/move_stapler_pad",
+      "episodes": [
+        {
+          "episode_index": 8250,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_stapler_pad_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 8251,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_stapler_pad_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 8262,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_stapler_pad_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 8266,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_stapler_pad_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 8272,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_stapler_pad_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 8275,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_stapler_pad_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 8284,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_stapler_pad_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 8292,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_stapler_pad_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 8297,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_stapler_pad_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 8299,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_stapler_pad_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 8301,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_stapler_pad_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 8308,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_stapler_pad_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 8417,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_stapler_pad_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 8436,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_stapler_pad_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 8532,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_stapler_pad_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 8561,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_stapler_pad_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 8665,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_stapler_pad_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 8675,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_stapler_pad_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 8798,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_stapler_pad_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 8799,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "move_stapler_pad_aloha-agilex_randomized_500"
+        }
+      ]
+    },
+    {
+      "task": "place_a2b_left",
+      "task_kind": "single_movable_target",
+      "episode_count": 20,
+      "episode_indices": [
+        11000,
+        11001,
+        11009,
+        11013,
+        11023,
+        11026,
+        11033,
+        11038,
+        11048,
+        11049,
+        11050,
+        11057,
+        11165,
+        11184,
+        11294,
+        11302,
+        11417,
+        11438,
+        11547,
+        11549
+      ],
+      "domain_counts": {
+        "clean": 10,
+        "randomized": 10
+      },
+      "arm_counts": {
+        "left": 10,
+        "right": 10
+      },
+      "candidate_pool_count": 546,
+      "single_loop_candidate_pool_count": null,
+      "materialization": "reuse_existing_extract",
+      "reuse_dataset_root": "/DATA/disk8/xuran/add_mask_robotwin/dataset/profile_compat_20/target_only_release/place_a2b_left",
+      "episodes": [
+        {
+          "episode_index": 11000,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_left_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 11001,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_left_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 11009,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_left_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 11013,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_left_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 11023,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_left_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 11026,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_left_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 11033,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_left_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 11038,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_left_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 11048,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_left_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 11049,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_left_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 11050,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_left_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 11057,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_left_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 11165,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_left_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 11184,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_left_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 11294,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_left_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 11302,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_left_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 11417,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_left_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 11438,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_left_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 11547,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_left_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 11549,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_left_aloha-agilex_randomized_500"
+        }
+      ]
+    },
+    {
+      "task": "place_a2b_right",
+      "task_kind": "single_movable_target",
+      "episode_count": 20,
+      "episode_indices": [
+        11550,
+        11551,
+        11559,
+        11570,
+        11571,
+        11580,
+        11583,
+        11588,
+        11597,
+        11599,
+        11600,
+        11601,
+        11714,
+        11731,
+        11845,
+        11858,
+        11967,
+        11977,
+        12095,
+        12099
+      ],
+      "domain_counts": {
+        "clean": 10,
+        "randomized": 10
+      },
+      "arm_counts": {
+        "left": 10,
+        "right": 10
+      },
+      "candidate_pool_count": 548,
+      "single_loop_candidate_pool_count": null,
+      "materialization": "reuse_existing_extract",
+      "reuse_dataset_root": "/DATA/disk8/xuran/add_mask_robotwin/dataset/profile_compat_20/target_only_release/place_a2b_right",
+      "episodes": [
+        {
+          "episode_index": 11550,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_right_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 11551,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_right_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 11559,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_right_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 11570,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_right_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 11571,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_right_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 11580,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_right_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 11583,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_right_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 11588,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_right_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 11597,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_right_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 11599,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_right_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 11600,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_right_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 11601,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_right_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 11714,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_right_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 11731,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_right_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 11845,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_right_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 11858,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_right_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 11967,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_right_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 11977,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_right_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 12095,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_right_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 12099,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_a2b_right_aloha-agilex_randomized_500"
+        }
+      ]
+    },
+    {
+      "task": "place_container_plate",
+      "task_kind": "single_movable_target",
+      "episode_count": 20,
+      "episode_indices": [
+        14850,
+        14851,
+        14859,
+        14866,
+        14872,
+        14881,
+        14882,
+        14890,
+        14897,
+        14899,
+        14900,
+        14902,
+        15011,
+        15050,
+        15129,
+        15164,
+        15252,
+        15294,
+        15397,
+        15399
+      ],
+      "domain_counts": {
+        "clean": 10,
+        "randomized": 10
+      },
+      "arm_counts": {
+        "left": 10,
+        "right": 10
+      },
+      "candidate_pool_count": 547,
+      "single_loop_candidate_pool_count": null,
+      "materialization": "reuse_existing_extract",
+      "reuse_dataset_root": "/DATA/disk8/xuran/add_mask_robotwin/dataset/profile_compat_20/pick_place/place_container_plate",
+      "episodes": [
+        {
+          "episode_index": 14850,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_container_plate_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 14851,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_container_plate_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 14859,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_container_plate_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 14866,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_container_plate_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 14872,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_container_plate_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 14881,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_container_plate_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 14882,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_container_plate_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 14890,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_container_plate_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 14897,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_container_plate_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 14899,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_container_plate_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 14900,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_container_plate_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 14902,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_container_plate_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 15011,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_container_plate_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 15050,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_container_plate_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 15129,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_container_plate_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 15164,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_container_plate_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 15252,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_container_plate_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 15294,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_container_plate_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 15397,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_container_plate_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 15399,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_container_plate_aloha-agilex_randomized_500"
+        }
+      ]
+    },
+    {
+      "task": "place_empty_cup",
+      "task_kind": "single_movable_target",
+      "episode_count": 20,
+      "episode_indices": [
+        15950,
+        15955,
+        15959,
+        15967,
+        15974,
+        15975,
+        15985,
+        15990,
+        15998,
+        15999,
+        16000,
+        16001,
+        16115,
+        16130,
+        16246,
+        16255,
+        16371,
+        16380,
+        16498,
+        16499
+      ],
+      "domain_counts": {
+        "clean": 10,
+        "randomized": 10
+      },
+      "arm_counts": {
+        "left": 10,
+        "right": 10
+      },
+      "candidate_pool_count": 550,
+      "single_loop_candidate_pool_count": null,
+      "materialization": "reuse_existing_extract",
+      "reuse_dataset_root": "/DATA/disk8/xuran/add_mask_robotwin/dataset/profile_compat_20/pick_place/place_empty_cup",
+      "episodes": [
+        {
+          "episode_index": 15950,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_empty_cup_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 15955,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_empty_cup_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 15959,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_empty_cup_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 15967,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_empty_cup_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 15974,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_empty_cup_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 15975,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_empty_cup_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 15985,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_empty_cup_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 15990,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_empty_cup_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 15998,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_empty_cup_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 15999,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_empty_cup_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 16000,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_empty_cup_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 16001,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_empty_cup_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 16115,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_empty_cup_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 16130,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_empty_cup_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 16246,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_empty_cup_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 16255,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_empty_cup_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 16371,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_empty_cup_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 16380,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_empty_cup_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 16498,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_empty_cup_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 16499,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_empty_cup_aloha-agilex_randomized_500"
+        }
+      ]
+    },
+    {
+      "task": "place_fan",
+      "task_kind": "single_movable_target",
+      "episode_count": 20,
+      "episode_indices": [
+        16500,
+        16501,
+        16511,
+        16512,
+        16521,
+        16529,
+        16534,
+        16542,
+        16548,
+        16549,
+        16550,
+        16557,
+        16670,
+        16683,
+        16781,
+        16815,
+        16919,
+        16930,
+        17046,
+        17049
+      ],
+      "domain_counts": {
+        "clean": 10,
+        "randomized": 10
+      },
+      "arm_counts": {
+        "left": 10,
+        "right": 10
+      },
+      "candidate_pool_count": 521,
+      "single_loop_candidate_pool_count": null,
+      "materialization": "reuse_existing_extract",
+      "reuse_dataset_root": "/DATA/disk8/xuran/add_mask_robotwin/dataset/profile_compat_20/pick_place/place_fan",
+      "episodes": [
+        {
+          "episode_index": 16500,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_fan_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 16501,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_fan_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 16511,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_fan_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 16512,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_fan_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 16521,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_fan_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 16529,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_fan_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 16534,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_fan_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 16542,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_fan_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 16548,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_fan_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 16549,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_fan_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 16550,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_fan_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 16557,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_fan_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 16670,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_fan_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 16683,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_fan_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 16781,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_fan_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 16815,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_fan_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 16919,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_fan_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 16930,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_fan_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 17046,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_fan_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 17049,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_fan_aloha-agilex_randomized_500"
+        }
+      ]
+    },
+    {
+      "task": "place_mouse_pad",
+      "task_kind": "single_movable_target",
+      "episode_count": 20,
+      "episode_indices": [
+        17050,
+        17051,
+        17060,
+        17062,
+        17068,
+        17077,
+        17087,
+        17091,
+        17098,
+        17099,
+        17100,
+        17110,
+        17213,
+        17239,
+        17334,
+        17365,
+        17461,
+        17483,
+        17597,
+        17599
+      ],
+      "domain_counts": {
+        "clean": 10,
+        "randomized": 10
+      },
+      "arm_counts": {
+        "left": 10,
+        "right": 10
+      },
+      "candidate_pool_count": 548,
+      "single_loop_candidate_pool_count": null,
+      "materialization": "reuse_existing_extract",
+      "reuse_dataset_root": "/DATA/disk8/xuran/add_mask_robotwin/dataset/profile_compat_20/pick_place/place_mouse_pad",
+      "episodes": [
+        {
+          "episode_index": 17050,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_mouse_pad_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 17051,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_mouse_pad_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 17060,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_mouse_pad_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 17062,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_mouse_pad_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 17068,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_mouse_pad_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 17077,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_mouse_pad_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 17087,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_mouse_pad_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 17091,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_mouse_pad_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 17098,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_mouse_pad_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 17099,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_mouse_pad_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 17100,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_mouse_pad_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 17110,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_mouse_pad_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 17213,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_mouse_pad_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 17239,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_mouse_pad_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 17334,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_mouse_pad_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 17365,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_mouse_pad_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 17461,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_mouse_pad_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 17483,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_mouse_pad_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 17597,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_mouse_pad_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 17599,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_mouse_pad_aloha-agilex_randomized_500"
+        }
+      ]
+    },
+    {
+      "task": "place_object_scale",
+      "task_kind": "single_movable_target",
+      "episode_count": 20,
+      "episode_indices": [
+        18150,
+        18151,
+        18161,
+        18166,
+        18172,
+        18176,
+        18184,
+        18186,
+        18198,
+        18199,
+        18200,
+        18209,
+        18316,
+        18330,
+        18443,
+        18464,
+        18569,
+        18578,
+        18698,
+        18699
+      ],
+      "domain_counts": {
+        "clean": 10,
+        "randomized": 10
+      },
+      "arm_counts": {
+        "left": 10,
+        "right": 10
+      },
+      "candidate_pool_count": 545,
+      "single_loop_candidate_pool_count": null,
+      "materialization": "reuse_existing_extract",
+      "reuse_dataset_root": "/DATA/disk8/xuran/add_mask_robotwin/dataset/profile_compat_20/pick_place/place_object_scale",
+      "episodes": [
+        {
+          "episode_index": 18150,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_scale_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 18151,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_scale_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 18161,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_scale_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 18166,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_scale_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 18172,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_scale_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 18176,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_scale_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 18184,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_scale_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 18186,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_scale_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 18198,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_scale_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 18199,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_scale_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 18200,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_scale_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 18209,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_scale_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 18316,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_scale_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 18330,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_scale_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 18443,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_scale_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 18464,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_scale_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 18569,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_scale_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 18578,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_scale_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 18698,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_scale_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 18699,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_scale_aloha-agilex_randomized_500"
+        }
+      ]
+    },
+    {
+      "task": "place_object_stand",
+      "task_kind": "single_movable_target",
+      "episode_count": 20,
+      "episode_indices": [
+        18700,
+        18701,
+        18710,
+        18715,
+        18722,
+        18731,
+        18733,
+        18743,
+        18746,
+        18749,
+        18750,
+        18751,
+        18855,
+        18892,
+        18982,
+        19013,
+        19109,
+        19135,
+        19248,
+        19249
+      ],
+      "domain_counts": {
+        "clean": 10,
+        "randomized": 10
+      },
+      "arm_counts": {
+        "left": 10,
+        "right": 10
+      },
+      "candidate_pool_count": 544,
+      "single_loop_candidate_pool_count": null,
+      "materialization": "reuse_existing_extract",
+      "reuse_dataset_root": "/DATA/disk8/xuran/add_mask_robotwin/dataset/profile_compat_20/pick_place/place_object_stand",
+      "episodes": [
+        {
+          "episode_index": 18700,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_stand_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 18701,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_stand_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 18710,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_stand_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 18715,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_stand_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 18722,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_stand_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 18731,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_stand_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 18733,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_stand_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 18743,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_stand_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 18746,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_stand_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 18749,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_stand_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 18750,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_stand_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 18751,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_stand_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 18855,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_stand_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 18892,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_stand_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 18982,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_stand_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 19013,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_stand_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 19109,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_stand_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 19135,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_stand_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 19248,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_stand_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 19249,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_object_stand_aloha-agilex_randomized_500"
+        }
+      ]
+    },
+    {
+      "task": "place_phone_stand",
+      "task_kind": "single_movable_target",
+      "episode_count": 20,
+      "episode_indices": [
+        19250,
+        19258,
+        19259,
+        19268,
+        19273,
+        19277,
+        19285,
+        19288,
+        19298,
+        19299,
+        19300,
+        19301,
+        19424,
+        19425,
+        19545,
+        19551,
+        19668,
+        19675,
+        19798,
+        19799
+      ],
+      "domain_counts": {
+        "clean": 10,
+        "randomized": 10
+      },
+      "arm_counts": {
+        "left": 10,
+        "right": 10
+      },
+      "candidate_pool_count": 543,
+      "single_loop_candidate_pool_count": null,
+      "materialization": "reuse_existing_extract",
+      "reuse_dataset_root": "/DATA/disk8/xuran/add_mask_robotwin/dataset/profile_compat_20/pick_place/place_phone_stand",
+      "episodes": [
+        {
+          "episode_index": 19250,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_phone_stand_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 19258,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_phone_stand_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 19259,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_phone_stand_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 19268,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_phone_stand_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 19273,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_phone_stand_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 19277,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_phone_stand_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 19285,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_phone_stand_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 19288,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_phone_stand_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 19298,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_phone_stand_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 19299,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_phone_stand_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 19300,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_phone_stand_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 19301,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_phone_stand_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 19424,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_phone_stand_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 19425,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_phone_stand_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 19545,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_phone_stand_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 19551,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_phone_stand_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 19668,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_phone_stand_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 19675,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_phone_stand_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 19798,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_phone_stand_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 19799,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_phone_stand_aloha-agilex_randomized_500"
+        }
+      ]
+    },
+    {
+      "task": "place_shoe",
+      "task_kind": "single_movable_target",
+      "episode_count": 20,
+      "episode_indices": [
+        19800,
+        19801,
+        19812,
+        19813,
+        19822,
+        19825,
+        19830,
+        19838,
+        19842,
+        19849,
+        19850,
+        19855,
+        19956,
+        20006,
+        20079,
+        20121,
+        20216,
+        20236,
+        20347,
+        20349
+      ],
+      "domain_counts": {
+        "clean": 10,
+        "randomized": 10
+      },
+      "arm_counts": {
+        "left": 10,
+        "right": 10
+      },
+      "candidate_pool_count": 545,
+      "single_loop_candidate_pool_count": null,
+      "materialization": "reuse_existing_extract",
+      "reuse_dataset_root": "/DATA/disk8/xuran/add_mask_robotwin/dataset/profile_compat_20/pick_place/place_shoe",
+      "episodes": [
+        {
+          "episode_index": 19800,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_shoe_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 19801,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_shoe_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 19812,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_shoe_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 19813,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_shoe_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 19822,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_shoe_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 19825,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_shoe_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 19830,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_shoe_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 19838,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_shoe_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 19842,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_shoe_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 19849,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_shoe_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 19850,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_shoe_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 19855,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_shoe_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 19956,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_shoe_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 20006,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_shoe_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 20079,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_shoe_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 20121,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_shoe_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 20216,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_shoe_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 20236,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_shoe_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 20347,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_shoe_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 20349,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_shoe_aloha-agilex_randomized_500"
+        }
+      ]
+    },
+    {
+      "task": "put_object_cabinet",
+      "task_kind": "single_movable_target",
+      "episode_count": 20,
+      "episode_indices": [
+        21450,
+        21455,
+        21461,
+        21466,
+        21472,
+        21477,
+        21483,
+        21488,
+        21494,
+        21499,
+        21501,
+        21561,
+        21622,
+        21672,
+        21717,
+        21784,
+        21853,
+        21898,
+        21944,
+        21999
+      ],
+      "domain_counts": {
+        "clean": 10,
+        "randomized": 10
+      },
+      "arm_counts": {
+        "left": 10,
+        "right": 10
+      },
+      "candidate_pool_count": 451,
+      "single_loop_candidate_pool_count": null,
+      "materialization": "copy_from_source_dataset",
+      "reuse_dataset_root": null,
+      "episodes": [
+        {
+          "episode_index": 21450,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "put_object_cabinet_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 21455,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "put_object_cabinet_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 21461,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "put_object_cabinet_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 21466,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "put_object_cabinet_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 21472,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "put_object_cabinet_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 21477,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "put_object_cabinet_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 21483,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "put_object_cabinet_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 21488,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "put_object_cabinet_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 21494,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "put_object_cabinet_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 21499,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "put_object_cabinet_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 21501,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "put_object_cabinet_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 21561,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "put_object_cabinet_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 21622,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "put_object_cabinet_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 21672,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "put_object_cabinet_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 21717,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "put_object_cabinet_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 21784,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "put_object_cabinet_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 21853,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "put_object_cabinet_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 21898,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "put_object_cabinet_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 21944,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "put_object_cabinet_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 21999,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "put_object_cabinet_aloha-agilex_randomized_500"
+        }
+      ]
+    },
+    {
+      "task": "rotate_qrcode",
+      "task_kind": "single_movable_target",
+      "episode_count": 20,
+      "episode_indices": [
+        22000,
+        22001,
+        22010,
+        22011,
+        22020,
+        22023,
+        22035,
+        22039,
+        22046,
+        22049,
+        22050,
+        22057,
+        22169,
+        22185,
+        22296,
+        22303,
+        22418,
+        22431,
+        22548,
+        22549
+      ],
+      "domain_counts": {
+        "clean": 10,
+        "randomized": 10
+      },
+      "arm_counts": {
+        "left": 10,
+        "right": 10
+      },
+      "candidate_pool_count": 497,
+      "single_loop_candidate_pool_count": null,
+      "materialization": "reuse_existing_extract",
+      "reuse_dataset_root": "/DATA/disk8/xuran/add_mask_robotwin/dataset/profile_compat_20/target_only_release/rotate_qrcode",
+      "episodes": [
+        {
+          "episode_index": 22000,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "rotate_qrcode_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 22001,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "rotate_qrcode_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 22010,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "rotate_qrcode_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 22011,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "rotate_qrcode_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 22020,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "rotate_qrcode_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 22023,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "rotate_qrcode_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 22035,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "rotate_qrcode_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 22039,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "rotate_qrcode_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 22046,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "rotate_qrcode_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 22049,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "rotate_qrcode_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 22050,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "rotate_qrcode_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 22057,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "rotate_qrcode_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 22169,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "rotate_qrcode_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 22185,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "rotate_qrcode_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 22296,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "rotate_qrcode_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 22303,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "rotate_qrcode_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 22418,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "rotate_qrcode_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 22431,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "rotate_qrcode_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 22548,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "rotate_qrcode_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 22549,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "rotate_qrcode_aloha-agilex_randomized_500"
+        }
+      ]
+    },
+    {
+      "task": "shake_bottle",
+      "task_kind": "single_movable_target",
+      "episode_count": 20,
+      "episode_indices": [
+        23100,
+        23101,
+        23109,
+        23117,
+        23119,
+        23126,
+        23134,
+        23138,
+        23146,
+        23149,
+        23150,
+        23155,
+        23262,
+        23291,
+        23395,
+        23406,
+        23517,
+        23531,
+        23648,
+        23649
+      ],
+      "domain_counts": {
+        "clean": 10,
+        "randomized": 10
+      },
+      "arm_counts": {
+        "left": 10,
+        "right": 10
+      },
+      "candidate_pool_count": 523,
+      "single_loop_candidate_pool_count": null,
+      "materialization": "copy_from_source_dataset",
+      "reuse_dataset_root": null,
+      "episodes": [
+        {
+          "episode_index": 23100,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 23101,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 23109,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 23117,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 23119,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 23126,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 23134,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 23138,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 23146,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 23149,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 23150,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 23155,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 23262,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 23291,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 23395,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 23406,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 23517,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 23531,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 23648,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 23649,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_aloha-agilex_randomized_500"
+        }
+      ]
+    },
+    {
+      "task": "shake_bottle_horizontally",
+      "task_kind": "single_movable_target",
+      "episode_count": 20,
+      "episode_indices": [
+        23650,
+        23651,
+        23659,
+        23667,
+        23669,
+        23676,
+        23684,
+        23688,
+        23696,
+        23699,
+        23700,
+        23705,
+        23812,
+        23841,
+        23945,
+        23956,
+        24070,
+        24081,
+        24197,
+        24199
+      ],
+      "domain_counts": {
+        "clean": 10,
+        "randomized": 10
+      },
+      "arm_counts": {
+        "left": 10,
+        "right": 10
+      },
+      "candidate_pool_count": 524,
+      "single_loop_candidate_pool_count": null,
+      "materialization": "copy_from_source_dataset",
+      "reuse_dataset_root": null,
+      "episodes": [
+        {
+          "episode_index": 23650,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_horizontally_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 23651,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_horizontally_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 23659,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_horizontally_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 23667,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_horizontally_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 23669,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_horizontally_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 23676,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_horizontally_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 23684,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_horizontally_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 23688,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_horizontally_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 23696,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_horizontally_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 23699,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_horizontally_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 23700,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_horizontally_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 23705,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_horizontally_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 23812,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_horizontally_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 23841,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_horizontally_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 23945,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_horizontally_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 23956,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_horizontally_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 24070,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_horizontally_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 24081,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_horizontally_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 24197,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_horizontally_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 24199,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "shake_bottle_horizontally_aloha-agilex_randomized_500"
+        }
+      ]
+    },
+    {
+      "task": "stamp_seal",
+      "task_kind": "single_movable_target",
+      "episode_count": 20,
+      "episode_indices": [
+        26400,
+        26401,
+        26410,
+        26414,
+        26423,
+        26431,
+        26432,
+        26442,
+        26446,
+        26449,
+        26450,
+        26451,
+        26572,
+        26582,
+        26698,
+        26701,
+        26823,
+        26827,
+        26948,
+        26949
+      ],
+      "domain_counts": {
+        "clean": 10,
+        "randomized": 10
+      },
+      "arm_counts": {
+        "left": 10,
+        "right": 10
+      },
+      "candidate_pool_count": 546,
+      "single_loop_candidate_pool_count": null,
+      "materialization": "reuse_existing_extract",
+      "reuse_dataset_root": "/DATA/disk8/xuran/add_mask_robotwin/dataset/profile_compat_20/target_only_release/stamp_seal",
+      "episodes": [
+        {
+          "episode_index": 26400,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "stamp_seal_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 26401,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "stamp_seal_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 26410,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "stamp_seal_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 26414,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "stamp_seal_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 26423,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "stamp_seal_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 26431,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "stamp_seal_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 26432,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "stamp_seal_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 26442,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "stamp_seal_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 26446,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "stamp_seal_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 26449,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "stamp_seal_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 26450,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "stamp_seal_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 26451,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "stamp_seal_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 26572,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "stamp_seal_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 26582,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "stamp_seal_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 26698,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "stamp_seal_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 26701,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "stamp_seal_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 26823,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "stamp_seal_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 26827,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "stamp_seal_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 26948,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "stamp_seal_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 26949,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "stamp_seal_aloha-agilex_randomized_500"
+        }
+      ]
+    },
+    {
+      "task": "place_bread_basket",
+      "task_kind": "single_movable_target_conditional",
+      "episode_count": 20,
+      "episode_indices": [
+        12106,
+        12109,
+        12111,
+        12125,
+        12126,
+        12130,
+        12132,
+        12137,
+        12140,
+        12151,
+        12156,
+        12211,
+        12257,
+        12299,
+        12360,
+        12434,
+        12472,
+        12572,
+        12642,
+        12649
+      ],
+      "domain_counts": {
+        "clean": 9,
+        "randomized": 11
+      },
+      "arm_counts": {
+        "left": 10,
+        "right": 10
+      },
+      "candidate_pool_count": 540,
+      "single_loop_candidate_pool_count": 144,
+      "materialization": "copy_from_source_dataset",
+      "reuse_dataset_root": null,
+      "episodes": [
+        {
+          "episode_index": 12106,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_bread_basket_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 12109,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_bread_basket_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 12111,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_bread_basket_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 12125,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_bread_basket_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 12126,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_bread_basket_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 12130,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_bread_basket_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 12132,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_bread_basket_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 12137,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_bread_basket_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 12140,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_bread_basket_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 12151,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_bread_basket_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 12156,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_bread_basket_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 12211,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_bread_basket_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 12257,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_bread_basket_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 12299,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_bread_basket_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 12360,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_bread_basket_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 12434,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_bread_basket_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 12472,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_bread_basket_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 12572,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_bread_basket_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 12642,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_bread_basket_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 12649,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "pick_place",
+          "source_dataset_variant": "place_bread_basket_aloha-agilex_randomized_500"
+        }
+      ]
+    },
+    {
+      "task": "open_laptop",
+      "task_kind": "articulated_action_site",
+      "episode_count": 20,
+      "episode_indices": [
+        8800,
+        8801,
+        8812,
+        8813,
+        8821,
+        8826,
+        8831,
+        8841,
+        8847,
+        8849,
+        8850,
+        8851,
+        8966,
+        8982,
+        9087,
+        9115,
+        9212,
+        9231,
+        9347,
+        9349
+      ],
+      "domain_counts": {
+        "clean": 10,
+        "randomized": 10
+      },
+      "arm_counts": {
+        "left": 10,
+        "right": 10
+      },
+      "candidate_pool_count": 547,
+      "single_loop_candidate_pool_count": null,
+      "materialization": "copy_from_source_dataset",
+      "reuse_dataset_root": null,
+      "episodes": [
+        {
+          "episode_index": 8800,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_laptop_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 8801,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_laptop_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 8812,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_laptop_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 8813,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_laptop_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 8821,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_laptop_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 8826,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_laptop_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 8831,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_laptop_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 8841,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_laptop_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 8847,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_laptop_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 8849,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_laptop_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 8850,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_laptop_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 8851,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_laptop_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 8966,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_laptop_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 8982,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_laptop_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 9087,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_laptop_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 9115,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_laptop_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 9212,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_laptop_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 9231,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_laptop_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 9347,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_laptop_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 9349,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_laptop_aloha-agilex_randomized_500"
+        }
+      ]
+    },
+    {
+      "task": "open_microwave",
+      "task_kind": "articulated_action_site",
+      "episode_count": 20,
+      "episode_indices": [
+        9350,
+        9355,
+        9361,
+        9366,
+        9371,
+        9377,
+        9382,
+        9387,
+        9393,
+        9399,
+        9400,
+        9456,
+        9512,
+        9569,
+        9622,
+        9675,
+        9734,
+        9789,
+        9842,
+        9899
+      ],
+      "domain_counts": {
+        "clean": 10,
+        "randomized": 10
+      },
+      "arm_counts": {
+        "left": 20
+      },
+      "candidate_pool_count": 487,
+      "single_loop_candidate_pool_count": null,
+      "materialization": "copy_from_source_dataset",
+      "reuse_dataset_root": null,
+      "episodes": [
+        {
+          "episode_index": 9350,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_microwave_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 9355,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_microwave_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 9361,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_microwave_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 9366,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_microwave_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 9371,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_microwave_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 9377,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_microwave_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 9382,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_microwave_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 9387,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_microwave_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 9393,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_microwave_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 9399,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_microwave_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 9400,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_microwave_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 9456,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_microwave_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 9512,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_microwave_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 9569,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_microwave_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 9622,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_microwave_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 9675,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_microwave_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 9734,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_microwave_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 9789,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_microwave_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 9842,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_microwave_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 9899,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "open_microwave_aloha-agilex_randomized_500"
+        }
+      ]
+    },
+    {
+      "task": "turn_switch",
+      "task_kind": "articulated_action_site",
+      "episode_count": 20,
+      "episode_indices": [
+        26950,
+        26951,
+        26960,
+        26966,
+        26970,
+        26978,
+        26985,
+        26989,
+        26998,
+        26999,
+        27000,
+        27002,
+        27124,
+        27127,
+        27244,
+        27254,
+        27369,
+        27379,
+        27497,
+        27499
+      ],
+      "domain_counts": {
+        "clean": 10,
+        "randomized": 10
+      },
+      "arm_counts": {
+        "left": 10,
+        "right": 10
+      },
+      "candidate_pool_count": 547,
+      "single_loop_candidate_pool_count": null,
+      "materialization": "copy_from_source_dataset",
+      "reuse_dataset_root": null,
+      "episodes": [
+        {
+          "episode_index": 26950,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "turn_switch_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 26951,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "turn_switch_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 26960,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "turn_switch_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 26966,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "turn_switch_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 26970,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "turn_switch_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 26978,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "turn_switch_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 26985,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "turn_switch_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 26989,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "turn_switch_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 26998,
+          "domain": "clean",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "turn_switch_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 26999,
+          "domain": "clean",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "turn_switch_aloha-agilex_clean_50"
+        },
+        {
+          "episode_index": 27000,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "turn_switch_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 27002,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "turn_switch_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 27124,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "turn_switch_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 27127,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "turn_switch_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 27244,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "turn_switch_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 27254,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "turn_switch_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 27369,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "turn_switch_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 27379,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "turn_switch_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 27497,
+          "domain": "randomized",
+          "arm": "left",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "turn_switch_aloha-agilex_randomized_500"
+        },
+        {
+          "episode_index": 27499,
+          "domain": "randomized",
+          "arm": "right",
+          "timeline_shape": "close_hold",
+          "source_dataset_variant": "turn_switch_aloha-agilex_randomized_500"
+        }
+      ]
+    }
+  ]
+}

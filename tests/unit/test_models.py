@@ -4,6 +4,7 @@ import hashlib
 
 import pytest
 
+from robotwin_annotation_v2.domain import AnnotationMode
 from robotwin_annotation_v2.models import (
     EpisodeRef,
     FramePurpose,
@@ -16,6 +17,8 @@ from robotwin_annotation_v2.models import (
     SemanticPlan,
     SemanticPlanError,
     SemanticStatus,
+    TargetOnlyEvents,
+    derive_episode_windows,
     normalize_query,
 )
 
@@ -50,14 +53,127 @@ def test_loop_context_contract() -> None:
     assert context.episode.episode_id == "007152"
     assert context.events.target_window == FrameWindow(4, 68)
     assert context.events.receiver_window == FrameWindow(68, 136)
+    assert context.windows.operation == FrameWindow(4, 136)
+    assert context.windows.gripper == FrameWindow(4, 136)
     assert context.seed_candidates("target") == (0,)
     assert context.seed_candidates("receiver") == (0,)
-    assert context.to_json()["windows"]["loop"] == [4, 136]
+    payload = context.to_json()
+    assert payload["format_version"] == "robotwin_loop_context_v2"
+    assert payload["timeline_kind"] == "pick_place"
+    assert payload["windows"] == {
+        "operation": [4, 136],
+        "target_0": [4, 68],
+        "receiver_0": [68, 136],
+        "gripper": [4, 136],
+    }
 
 
 def test_loop_events_reject_invalid_order() -> None:
     with pytest.raises(ValueError, match="not ordered"):
         LoopEvents("right", 4, 56, 68, 60, 136)
+
+
+def test_target_only_events_derive_short_target_and_full_gripper_windows() -> None:
+    events = TargetOnlyEvents("left", 4, 53, 65)
+
+    windows = derive_episode_windows(events, frame_count=139)
+
+    assert windows.target == FrameWindow(4, 65)
+    assert windows.receiver is None
+    assert windows.operation == FrameWindow(4, 138)
+    assert windows.gripper == FrameWindow(4, 138)
+    assert windows.to_json() == {
+        "operation": [4, 138],
+        "target_0": [4, 65],
+        "receiver_0": None,
+        "gripper": [4, 138],
+    }
+
+
+def test_target_only_events_reject_close_before_remove_start() -> None:
+    with pytest.raises(ValueError, match="not ordered"):
+        TargetOnlyEvents("right", 60, 55, 68)
+
+
+def test_target_only_context_has_v2_close_hold_contract_without_fake_open() -> None:
+    context = LoopContext(
+        episode=EpisodeRef("adjust_bottle", 0, "cam_high"),
+        task_text="Lift the bottle with the left arm.",
+        frame_count=139,
+        events=TargetOnlyEvents("left", 4, 53, 65),
+        semantic_frames=(
+            SemanticFrame(
+                0,
+                FramePurpose.PRE_GRASP_SEED_CANDIDATE,
+                ("target",),
+            ),
+            SemanticFrame(66, FramePurpose.POST_GRASP_CONTEXT, ("target",)),
+            SemanticFrame(102, FramePurpose.POST_GRASP_CONTEXT, ("target",)),
+        ),
+        state_source="episode_000000.parquet",
+        video_source="episode_000000.mp4",
+        annotation_mode=AnnotationMode.TARGET_ONLY,
+    )
+
+    payload = context.to_json()
+
+    assert context.windows.target == FrameWindow(4, 65)
+    assert context.windows.receiver is None
+    assert context.windows.gripper == FrameWindow(4, 138)
+    assert context.seed_candidates("receiver") == ()
+    assert payload["timeline_kind"] == "close_hold"
+    assert payload["events"] == {
+        "active_arm": "left",
+        "t_remove_start": 4,
+        "t_close_start": 53,
+        "t_close_end": 65,
+    }
+    assert not ({"t_open_start", "t_open_done"} & payload["events"].keys())
+    assert payload["windows"] == {
+        "operation": [4, 138],
+        "target_0": [4, 65],
+        "receiver_0": None,
+        "gripper": [4, 138],
+    }
+
+
+@pytest.mark.parametrize(
+    ("mode", "events", "expected_name"),
+    (
+        (
+            AnnotationMode.PICK_PLACE,
+            TargetOnlyEvents("left", 4, 53, 65),
+            "PickPlaceEvents",
+        ),
+        (
+            AnnotationMode.TARGET_ONLY,
+            LoopEvents("right", 4, 56, 68, 123, 136),
+            "TargetOnlyEvents",
+        ),
+    ),
+)
+def test_loop_context_rejects_mode_event_type_mismatch(
+    mode: AnnotationMode,
+    events: LoopEvents | TargetOnlyEvents,
+    expected_name: str,
+) -> None:
+    with pytest.raises(TypeError, match=expected_name):
+        LoopContext(
+            episode=_episode(),
+            task_text="test task",
+            frame_count=138,
+            events=events,
+            semantic_frames=(
+                SemanticFrame(
+                    0,
+                    FramePurpose.PRE_GRASP_SEED_CANDIDATE,
+                    ("target",),
+                ),
+            ),
+            state_source="state.parquet",
+            video_source="video.mp4",
+            annotation_mode=mode,
+        )
 
 
 @pytest.mark.parametrize(
@@ -138,8 +254,7 @@ def test_semantic_plan_contains_joint_roles() -> None:
     )
     plan = SemanticPlan(
         episode=_episode(),
-        target=target,
-        receiver=receiver,
+        role_plans=(target, receiver),
         model="qwen3.5-27b",
         prompt_sha256=hashlib.sha256(b"prompt").hexdigest(),
         input_frame_ids=(0, 69, 128),

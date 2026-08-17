@@ -24,6 +24,114 @@
 相机为 `cam_high`，mask 没有像素级 simulator GT。因此“20/20 完成”“QC passed”“连续性
 提高”只说明运行合同和视觉审查通过，不能解释为精确率/召回率真值。
 
+### 1.1 可读 Pipeline 重构后的 Pick & Place 验收
+
+2026-08-13 在重构提交 `a819bd8` 上执行完整一键流程：
+
+```text
+run id: pick-place-coverage20-readable-v1
+dataset: move_pillbottle_pad_coverage20_original
+annotation mode: pick_place
+required roles: target, receiver
+gripper backend: urdf
+```
+
+结果：
+
+| 项目 | 结果 |
+| --- | ---: |
+| Qwen → Object SAM/QC → URDF → canonical publication | 20/20 completed |
+| canonical validation | 20/20 passed |
+| exact-run overlay video | 20/20 generated |
+| excluded / fatal error | 0 / none |
+| pipeline summary | `passed=true` |
+| 总耗时 | 1:40:21 |
+
+产物保存在：
+
+```text
+artifacts/runs/pick-place-coverage20-readable-v1/process_summary.json
+artifacts/runs/pick-place-coverage20-readable-v1/rendered_videos/
+artifacts/runs/_sources/pick-place-coverage20-readable-v1-object-source/
+```
+
+该 run 验证了重构后的默认 Pick & Place 路径仍执行完整业务链路，而不是只验证轻量 smoke：
+target 和 receiver 均经过 Qwen、SAM3 candidate identity QC 与 native propagation；gripper
+由 URDF/depth 生成；随后统一发布和验证 canonical 四通道 mask。20 个视频在 2026-08-14
+完成人工检查并确认 Pick & Place 结果可接受。
+
+### 1.2 Target-only close-and-hold 验收
+
+2026-08-14 在分支 `feat/target-only-close-hold`、提交 `b36cfa3` 上完成 Target-only 全链路
+验收：
+
+```text
+run id: target-only-full20-qwen18087-b36cfa3
+source run id: target-only-full20-qwen18087-b36cfa3-object-source
+dataset: /DATA/disk8/xuran/add_mask_robotwin/dataset/target_only_20/adjust_bottle
+annotation mode: target_only
+required roles: target
+gripper backend: urdf
+```
+
+20 个 episode：
+
+```text
+0, 6, 10, 18, 21, 30, 34, 42, 48, 49,
+50, 51, 171, 176, 287, 313, 415, 431, 547, 549
+```
+
+该 run 执行完整业务链路，而不是跳过模型的轻量路径：
+
+```text
+Qwen semantic plan
+  -> SAM candidates + basic/identity QC + native propagation
+  -> URDF/depth gripper
+  -> canonical publication + validation
+  -> exact-run overlay video
+```
+
+Target-only 使用 `remove_start < close_start < close_end` 三事件 close-and-hold 时间线；target
+窗口为 `[remove_start, close_end]`，receiver 为全零且 `not_applicable`，活动 gripper 窗口为
+`[remove_start, T-1]`。左右活动臂分布为 10 left / 10 right。
+
+独立逐帧验收结果：
+
+| 合同 | 结果 |
+| --- | ---: |
+| completed record / canonical publication | 20/20 |
+| three-event timeline 与窗口 | 20/20 |
+| canonical 七键四通道 `masks.npz` | 20/20 |
+| target 精确覆盖闭区间 | 20/20 |
+| target 在 `close_end` 后严格归零 | 20/20 |
+| receiver 全零且所有合同层为 N/A | 20/20 |
+| active/inactive gripper window clipping | 20/20 |
+| 活动 gripper 末帧非空 | 20/20 |
+| per-episode run manifest | 20/20 |
+| frame provenance | 20/20 |
+| URDF 0.90 quality gate | 20/20 |
+| MP4 文件大小与 SHA-256 | 20/20 |
+
+最低 active-window coverage 为 ep42 的 `125/138 = 0.905797`；最低 eligible coverage 也在
+ep42，为 `125/126 = 0.992063`，均通过固定 `0.90` gate。summary records、backend selected
+IDs、video manifest 与实际 20 个 MP4 的 ID 集完全一致，excluded 为 0，`passed=true`。
+
+产物保存在：
+
+```text
+artifacts/target_only_validation/target-only-full20-qwen18087-b36cfa3/process_summary.json
+artifacts/target_only_validation/target-only-full20-qwen18087-b36cfa3/rendered_videos/
+artifacts/target_only_validation/_sources/target-only-full20-qwen18087-b36cfa3-object-source/
+```
+
+首次 streaming run 在 source 20/20 完成、URDF 16/20 后被中断；恢复过程复用 immutable
+source，以 incremental resume 只补齐缺失 episode，再执行统一 canonical publication、validation
+和视频生成。最终 exact-run 的 20 条逐帧合同与 MP4 哈希全部通过，因此中断与恢复不改变最终
+结果或 source lineage。
+
+该数据集同样没有像素级 simulator GT。上述 20/20、coverage 和哈希证明流程合同、时间窗口、
+产物一致性与交付完整性，不应表述为 target 或 gripper 像素精确率/召回率真值。
+
 ## 2. target/receiver：语义、seed 和跟踪
 
 ### 2.1 query 设计结论

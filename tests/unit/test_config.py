@@ -6,11 +6,18 @@ from pathlib import Path
 import pytest
 
 from robotwin_annotation_v2.config import (
+    AnnotationConfig,
     ConfigError,
     GripperRoiConfig,
     MaskConfig,
     Sam3Config,
     load_config,
+)
+from robotwin_annotation_v2.domain import (
+    AnnotationMode,
+    GripperBackend,
+    ObjectRole,
+    annotation_spec,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -20,6 +27,12 @@ def test_pilot_config_loads_new_pipeline_contract() -> None:
     config = load_config(PROJECT_ROOT / "configs/pilot_move_pillbottle_pad.yaml")
 
     assert config.dataset.task == "move_pillbottle_pad"
+    assert config.annotation == AnnotationConfig(AnnotationMode.PICK_PLACE)
+    assert config.annotation.spec.required_object_roles == (
+        ObjectRole.TARGET,
+        ObjectRole.RECEIVER,
+    )
+    assert config.annotation.spec.default_gripper_backend is GripperBackend.URDF
     assert config.dataset.camera == "cam_high"
     assert config.dataset.smoke_episode_ids == (7152,)
     assert len(config.dataset.regression_episode_ids) == 20
@@ -50,14 +63,30 @@ def test_place_container_plate_config_pins_depth_complete_subset() -> None:
     assert config.dataset.task == "place_container_plate"
     assert config.dataset.smoke_episode_ids == (14850,)
     assert len(config.dataset.regression_episode_ids) == 547
-    assert config.dataset.regression_episode_ids == tuple(
-        manifest["regression_episode_ids"]
-    )
+    assert config.dataset.regression_episode_ids == tuple(manifest["regression_episode_ids"])
     assert {int(value) for value in manifest["excluded_source_episodes"]} == {
         14941,
         15022,
         15360,
     }
+
+
+def test_target_only_pilot_config_pins_close_and_hold_dataset() -> None:
+    config = load_config(PROJECT_ROOT / "configs/pilot_adjust_bottle_target_only.yaml")
+    manifest = json.loads(config.dataset.manifest.read_text(encoding="utf-8"))
+
+    assert config.annotation == AnnotationConfig(AnnotationMode.TARGET_ONLY)
+    assert config.annotation.spec.required_object_roles == (ObjectRole.TARGET,)
+    assert config.annotation.spec.default_gripper_backend is GripperBackend.URDF
+    assert config.dataset.task == "adjust_bottle"
+    assert config.dataset.smoke_episode_ids == (0,)
+    assert len(config.dataset.regression_episode_ids) == 20
+    assert config.dataset.regression_episode_ids == tuple(manifest["regression_episode_ids"])
+    assert config.qwen.prompt_template.name == "target_only_semantic.txt"
+    assert config.qwen.timeout_seconds == 600
+    assert config.qwen.max_tokens == 400
+    assert config.mask.qc_prompt_template is not None
+    assert config.mask.qc_prompt_template.name == "target_only_mask_candidate_qc.txt"
 
 
 def test_config_rejects_automatic_query_fallback(tmp_path: Path) -> None:
@@ -93,6 +122,26 @@ output:
     )
 
     with pytest.raises(ConfigError, match="fallback"):
+        load_config(config_path)
+
+
+def test_annotation_specs_only_declare_roles_and_backend() -> None:
+    pick_place = annotation_spec(AnnotationMode.PICK_PLACE)
+    target_only = annotation_spec(AnnotationMode.TARGET_ONLY)
+
+    assert pick_place.required_object_roles == (ObjectRole.TARGET, ObjectRole.RECEIVER)
+    assert target_only.required_object_roles == (ObjectRole.TARGET,)
+    assert target_only.canonical_object_roles == pick_place.canonical_object_roles
+    assert not target_only.requires(ObjectRole.RECEIVER)
+    assert target_only.default_gripper_backend is GripperBackend.URDF
+
+
+def test_config_rejects_unknown_annotation_mode(tmp_path: Path) -> None:
+    source = (PROJECT_ROOT / "configs/pilot_move_pillbottle_pad.yaml").read_text(encoding="utf-8")
+    config_path = tmp_path / "bad-mode.yaml"
+    config_path.write_text(source.replace("mode: pick_place", "mode: mystery"), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="annotation.mode"):
         load_config(config_path)
 
 
