@@ -111,12 +111,16 @@ t_move_start <= t_close_start < t_close_done < t_open_start < t_open_done
 
 ```text
 loop      = [move_start, open_done]
-target    = [move_start, close_done]
+target    = [move_start, open_start - 1]
 receiver  = [close_done, open_done]
 gripper   = [move_start, open_done]
 ```
 
-边界均按 inclusive 处理。事件帧由 detector 从 state 计算，不能为特定 episode 写死。
+target 内部再分成两种逐帧编码：普通段 `[move_start, close_done]` 使用 `1`，持有段
+`[close_done + 1, open_start - 1]` 使用 `2`；从 `open_start` 起 target 归零。Target-only
+没有 release 事件，普通段为 `[remove_start, close_end]`，持有段为
+`[close_end + 1, T - 1]`。边界均按 inclusive 处理。事件帧由 detector 从 state 计算，不能为
+特定 episode 写死。
 
 ### 3.2 语义帧
 
@@ -235,7 +239,7 @@ seed 诊断。native tracker 维持实例身份但不生成 amodal mask；被遮
 
 ### 5.3 Temporal QC
 
-每个角色的 `temporal_qc.json` 记录：
+每个角色的 `temporal_qc.json` 记录实际执行严格 QC 的 inclusive `window`，以及：
 
 - 输出窗口覆盖率、存在性切换、内部断帧；
 - adjacent IoU mean/p05；
@@ -254,6 +258,10 @@ area-ratio jump p95 > 0.4
 IoU、质心、面积三类信号至少两类越界才 `quarantined`；单一信号进入 review，避免将真实
 遮挡直接判失败。Temporal QC 只判断连续性：错误 seed 也可能被稳定传播，因此不能取代
 candidate identity QC。
+
+target 的严格 temporal QC 只覆盖普通编码段（截至 close 完成）；close 后目标随夹爪搬运会
+发生合法的大幅位移，因此 hold 段不参与 quarantine 判定。hold 像素仍照常发布，并在
+`frame_provenance.json` 的 target channel 中单独记录窗口覆盖率。
 
 ## 6. Gripper backend
 
@@ -510,7 +518,7 @@ URDF run 可增加 `<run>/_backend/urdf/`，它只用于中间产品与审计，
 
 ### 8.2 `masks.npz`
 
-canonical NPZ 严格包含七个 key：
+新生成的 canonical NPZ 使用 `robotwin_visible_masks_v3`，严格包含八个 key：
 
 ```text
 format_version
@@ -520,6 +528,7 @@ instance_names
 roles
 annotation_status
 qc_status
+frame_encoding
 ```
 
 `masks` 是 bool `[4,T,H,W]`；顺序固定：
@@ -530,6 +539,18 @@ qc_status
 | 1 | `receiver_0` | receiver |
 | 2 | `gripper_left` | gripper |
 | 3 | `gripper_right` | gripper |
+
+`frame_encoding` 是 `uint8 [4,T]`，只描述当前 instance/frame 的渲染语义，不替代 bool
+像素 mask：
+
+| code | 含义 |
+| ---: | --- |
+| 0 | 当前帧 mask 为空 |
+| 1 | 普通可见 mask |
+| 2 | close 完成后、open 开始前的 held target；只允许出现在 `target_0` |
+
+旧 `robotwin_visible_masks_v2` 七键产物仍可读取，loader 会按非空帧合成 `0/1` 编码；新写入
+和 URDF canonical publication 一律输出 v3。
 
 未运行的 gripper channel 是全零并标记 `not_annotated/not_run`，不能被下游当作负样本。被
 temporal QC 隔离的对象标记 `quarantined`，不得为了覆盖率发布已知坏像素。
@@ -566,6 +587,9 @@ renderer 只读 canonical `masks.npz`，不修复 mask。默认：内部填充 a
 3 px 角色色轮廓、扩张到总计 5 px 的黑色 halo。处理完自动生成 target/receiver/gripper
 early/late 六张 review sheet；`--skip-review-sheets` 可关闭二次解码。
 
+普通 target 使用 `(36, 180, 92)`，`frame_encoding=2` 的 held target 使用黄色
+`(255, 255, 0)`；shared renderer 与 URDF standalone renderer 共用这一约定。
+
 实验或发布审查应固定 exact run ID，避免“最佳 run”选择器回退到旧结果。
 
 ## 9. URDF lineage、原子发布与 resume
@@ -601,7 +625,7 @@ source preflight + lineage snapshot
   -> overlay/review
 ```
 
-canonical episode 先写同父目录 staging tree，文件集合、JSON、hash 和七键 masks 全部通过后
+canonical episode 先写同父目录 staging tree，文件集合、JSON、hash 和八键 masks 全部通过后
 原子 rename。非 resume 不覆盖既有 destination；resume 也不“修复”或重写被篡改的 complete
 episode。
 
@@ -666,7 +690,7 @@ git diff --check
 
 涉及真实 backend 时再做：单 episode smoke → 左右臂各一条 → coverage subset → full batch →
 exact-run overlay/review。URDF 还需核对 source object channels 逐像素相同、inactive arm 全空、
-七键 NPZ、lineage 和 resume tamper tests。
+八键 NPZ、lineage 和 resume tamper tests。
 
 当前不保证：
 
