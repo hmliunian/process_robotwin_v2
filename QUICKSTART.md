@@ -44,7 +44,7 @@ just sam <run_id> 7152
 # 或一次运行 qwen → sam → gripper
 just run 7152
 
-# 推荐：自动发现目录中的全部 episode，一键处理并渲染
+# 推荐：自动发现全部 episode，一键处理并渲染；Qwen 无需预先启动
 just process ../dataset/move_pillbottle_pad_coverage20_original
 
 # 终端显示可切换为 rich、plain 或单一 JSON；默认 auto
@@ -66,6 +66,11 @@ seed、native track、四通道 `masks.npz` 和 provenance。
 `sam-batch`、`gripper-batch` 和 `just process` 在批次中复用一个 SAM3 adapter，
 并为每个 episode 单独创建、清理视频 session。配置中的 `sam3.gpus` 使用物理 GPU
 索引时，不要再用 `CUDA_VISIBLE_DEVICES` 把同一张卡重映射成逻辑索引 0。
+
+`just process` 会复用配置 endpoint 上已有的健康 Qwen 服务；如果服务不存在，则排除
+`sam3.gpus` 和显式 `--urdf-egl-device-id`，选择至少有 60,000 MiB 空闲显存的 GPU 自动
+启动。它只在结束或中断时关闭自己启动的服务，日志写入 `artifacts/qwen-services/`。
+分阶段命令仍使用单独运行的 `just serve-qwen`。
 
 `just process` 在交互终端显示 episode/阶段进度和最终汇总；非交互环境输出稳定日志，
 并在 stdout 保留最终 JSON。`--verbose` 可显示默认收起的阶段 payload，`NO_COLOR` 可关闭

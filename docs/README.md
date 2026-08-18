@@ -41,10 +41,7 @@ target_0, receiver_0, gripper_left, gripper_right
 默认 SAM gripper：
 
 ```bash
-# 终端 A
-just serve-qwen
-
-# 终端 B
+# Qwen endpoint 不可用时会自动选卡、启动，并在 process 退出后释放
 just process DATASET_ROOT [OUTPUT_ROOT]
 ```
 

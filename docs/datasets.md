@@ -151,7 +151,6 @@ configs/pilot_place_empty_cup.yaml
 默认 SAM：
 
 ```bash
-just serve-qwen
 just config=configs/pilot_place_empty_cup.yaml \
   process ../dataset/place_empty_cup_full550_original
 ```

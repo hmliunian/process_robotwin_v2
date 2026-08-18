@@ -69,9 +69,10 @@ just process ../dataset/move_pillbottle_pad_coverage20_original
   --episode-ids 7152 7156 7157
 ```
 
-运行 `qwen`、启用 mask QC 的 `sam` 或完整 pipeline 前，先在另一个终端执行
-`just serve-qwen`。`sam` 会消费指定 `run_id` 的 Stage 2 产物，并调用 Qwen 比较实际
-SAM seed 候选；可用 `mask.qc_enabled: false` 兼容旧行为。
+运行分阶段的 `qwen`、启用 mask QC 的 `sam` 或 `run` 前，先在另一个终端执行
+`just serve-qwen`。该命令会自动选择空闲显存最多的合格 GPU。`sam` 会消费指定 `run_id`
+的 Stage 2 产物，并调用 Qwen 比较实际 SAM seed 候选；可用 `mask.qc_enabled: false`
+兼容旧行为。
 
 `sam-batch` 与 `gripper-batch` 都会跨 episode 复用一个 SAM3 adapter；已完整通过的
 episode 默认跳过，CUDA 级故障会立即终止 worker。`run` 会按 qwen → sam → gripper
@@ -79,8 +80,10 @@ episode 默认跳过，CUDA 级故障会立即终止 worker。`run` 会按 qwen 
 
 `just process <dataset_root>` 是推荐的一键入口：自动扫描
 `data/chunk-*/episode_*.parquet`，核对 video/sidecar，处理全部完整 episode，最后生成
-四通道 overlay 视频以及 target/receiver/gripper 的 early/late review sheets。它假定
-Qwen server 已由 `just serve-qwen` 在另一个终端启动。
+四通道 overlay 视频以及 target/receiver/gripper 的 early/late review sheets。它会先探测
+配置中的 Qwen endpoint；已有健康服务时直接复用且不关闭，否则排除 SAM/显式 EGL GPU，
+选择至少有 60,000 MiB 空闲显存的最空闲 GPU 启动服务。由本次命令启动的 Qwen 会在
+process 成功、失败或被中断后自动关闭，加载日志保存在 `artifacts/qwen-services/`。
 
 交互终端默认显示 episode 总进度、当前阶段、跳过/失败状态、耗时和最终 artifact；stderr
 不是交互终端时改为稳定的逐行日志，stdout 被重定向时仍会写出最终 JSON。可显式选择输出方式：
