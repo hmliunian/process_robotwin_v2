@@ -37,6 +37,7 @@ from .mask_qc import (
     run_mask_qc_stage,
     save_mask_qc_artifacts,
 )
+from .open_set_queries import curated_query_aliases
 from .qwen_stage import (
     QwenStageError,
     QwenStageResult,
@@ -97,6 +98,7 @@ __all__ = [
     "build_qwen_request",
     "compose_gripper_track",
     "compose_visible_mask",
+    "curated_query_aliases",
     "detect_arm_loops",
     "detect_episode_loop",
     "detect_episode_target_only",

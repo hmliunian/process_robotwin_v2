@@ -33,6 +33,7 @@ from robotwin_annotation_v2.models import (
 from robotwin_annotation_v2.pipeline import (
     GripperSeedQCResult,
     GripperStageResult,
+    SamStageError,
     compose_visible_mask,
     dilate_envelope,
     evaluate_temporal_mask,
@@ -135,6 +136,7 @@ class FakeSamBackend:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
         self.tracking_windows: list[tuple[int, int]] = []
+        self.propagation_seed_frames: list[int] = []
         target = np.zeros(FRAME_SHAPE, dtype=bool)
         target[1:3, 1:3] = True
         receiver = np.zeros(FRAME_SHAPE, dtype=bool)
@@ -159,11 +161,13 @@ class FakeSamBackend:
         _resource_path: Path,
         seed_mask: np.ndarray,
         *,
+        seed_frame: int,
         frame_count: int,
         tracking_window: tuple[int, int],
         **_kwargs: Any,
     ) -> np.ndarray:
         self.calls.append(("track", ""))
+        self.propagation_seed_frames.append(seed_frame)
         self.tracking_windows.append(tracking_window)
         output = np.zeros((frame_count, *seed_mask.shape), dtype=bool)
         output[tracking_window[0] : tracking_window[1] + 1] = seed_mask
@@ -470,6 +474,7 @@ def _qc_report(
     status: MaskQCStatus,
     *,
     query: str | None = None,
+    seed_frame_id: int = 0,
 ) -> RoleMaskQC:
     selected = "A" if status is MaskQCStatus.PASSED else None
     return RoleMaskQC(
@@ -478,9 +483,114 @@ def _qc_report(
         selected_candidate=selected,
         selected_query_field="category_query" if selected else None,
         selected_query=query if selected else None,
+        selected_seed_frame_id=seed_frame_id if selected else None,
         confidence=0.95,
         reason="test QC decision",
     )
+
+
+def _multi_seed_context() -> LoopContext:
+    base = _context()
+    return LoopContext(
+        episode=base.episode,
+        task_text=base.task_text,
+        frame_count=base.frame_count,
+        events=base.events,
+        semantic_frames=(
+            SemanticFrame(
+                0,
+                FramePurpose.PRE_GRASP_SEED_CANDIDATE,
+                ("target", "receiver"),
+            ),
+            SemanticFrame(
+                3,
+                FramePurpose.PRE_GRASP_SEED_CANDIDATE,
+                ("target",),
+            ),
+            SemanticFrame(9, FramePurpose.POST_GRASP_CONTEXT, ("target",)),
+            SemanticFrame(15, FramePurpose.PLACE_CONTEXT, ("receiver",)),
+        ),
+        state_source=base.state_source,
+        video_source=base.video_source,
+    )
+
+
+def test_sam_stage_propagates_from_the_qc_selected_fallback_seed(tmp_path: Path) -> None:
+    backend = FakeSamBackend()
+    mask_qc = MaskQCResult(
+        role_reports=(
+            _qc_report(
+                "target",
+                MaskQCStatus.PASSED,
+                query="bottle",
+                seed_frame_id=3,
+            ),
+            _qc_report("receiver", MaskQCStatus.PASSED, query="blue pad"),
+        ),
+        selected_masks={
+            "target": backend.seed_masks["bottle"].copy(),
+            "receiver": backend.seed_masks["blue pad"].copy(),
+        },
+        health={"status": "ok"},
+    )
+
+    result = run_sam_stage(
+        _multi_seed_context(),
+        _plan(),
+        backend,
+        Path("/tmp/fake-resource"),
+        frame_shape=FRAME_SHAPE,
+        mask_config=MaskConfig(0, 0),
+        mask_qc=mask_qc,
+    )
+
+    assert result.target.seed_frame_id == 3
+    assert backend.propagation_seed_frames == [3, 0]
+    assert backend.tracking_windows[0] == (2, 13)
+
+    seed_image = Image.fromarray(np.zeros((*FRAME_SHAPE, 3), dtype=np.uint8))
+    mask_run = save_sam_artifacts(
+        ArtifactStore(tmp_path),
+        "sam-fallback-test",
+        _multi_seed_context(),
+        _plan(),
+        result,
+        seed_images={0: seed_image, 3: seed_image},
+    )
+    manifest = json.loads((Path(mask_run.artifact_dir) / "run_manifest.json").read_text())
+    assert not manifest["algorithm"]["automatic_query_fallback"]
+    assert manifest["algorithm"]["mask_qc_fallback_used"]
+
+
+def test_sam_stage_rejects_a_qc_seed_outside_role_seed_candidates() -> None:
+    backend = FakeSamBackend()
+    mask_qc = MaskQCResult(
+        role_reports=(
+            _qc_report(
+                "target",
+                MaskQCStatus.PASSED,
+                query="bottle",
+                seed_frame_id=4,
+            ),
+            _qc_report("receiver", MaskQCStatus.PASSED, query="blue pad"),
+        ),
+        selected_masks={
+            "target": backend.seed_masks["bottle"].copy(),
+            "receiver": backend.seed_masks["blue pad"].copy(),
+        },
+        health={"status": "ok"},
+    )
+
+    with pytest.raises(SamStageError, match="QC selected.*ineligible"):
+        run_sam_stage(
+            _multi_seed_context(),
+            _plan(),
+            backend,
+            Path("/tmp/fake-resource"),
+            frame_shape=FRAME_SHAPE,
+            mask_config=MaskConfig(0, 0),
+            mask_qc=mask_qc,
+        )
 
 
 def test_sam_stage_uses_qc_selected_query_and_cached_seed_mask() -> None:
@@ -595,6 +705,8 @@ def test_save_sam_artifacts_marks_grippers_not_annotated(tmp_path: Path) -> None
     assert manifest["gripper_backend"] == "sam"
     assert not manifest["algorithm"]["per_frame_text_observation"]
     assert manifest["algorithm"]["canonical_envelope_usage"] == "seed_diagnostic_only"
+    assert not manifest["algorithm"]["automatic_query_fallback"]
+    assert not manifest["algorithm"]["mask_qc_fallback_used"]
     assert manifest["channels"]["gripper_left"] == "not_annotated"
     assert (episode_dir / "target_0/seed.mask.png").is_file()
     assert (episode_dir / "receiver_0/canonical_envelope.png").is_file()

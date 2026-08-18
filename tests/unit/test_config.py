@@ -47,6 +47,11 @@ def test_pilot_config_loads_new_pipeline_contract() -> None:
     assert config.mask.qc_prompt_template.is_file()
     assert config.mask.qc_max_candidates == 3
     assert config.mask.qc_max_attempts == 2
+    assert not config.mask.qc_query_fallback_enabled
+    assert not config.mask.qc_seed_fallback_enabled
+    assert not config.mask.qc_bbox_fallback_enabled
+    assert config.mask.qc_bbox_prompt_template is None
+    assert config.mask.qc_bbox_max_tokens == 180
     assert config.gripper_roi == GripperRoiConfig(
         prompt_axial_back_m=0.120,
         prompt_axial_front_m=0.060,
@@ -87,6 +92,56 @@ def test_target_only_pilot_config_pins_close_and_hold_dataset() -> None:
     assert config.qwen.max_tokens == 400
     assert config.mask.qc_prompt_template is not None
     assert config.mask.qc_prompt_template.name == "target_only_mask_candidate_qc.txt"
+
+
+def test_open_set_bbox_experiment_explicitly_enables_bbox_fallback() -> None:
+    config = load_config(PROJECT_ROOT / "configs/open_set_mask_fallback_bbox.yaml")
+
+    assert config.mask.qc_bbox_fallback_enabled
+    assert config.mask.qc_bbox_prompt_template is not None
+    assert config.mask.qc_bbox_prompt_template.name == "open_set_bbox_localization.txt"
+    assert config.mask.qc_bbox_prompt_template.is_file()
+    assert config.mask.qc_bbox_max_tokens == 180
+
+
+def test_bbox_fallback_requires_qc_and_an_explicit_prompt() -> None:
+    with pytest.raises(ConfigError, match="requires mask QC"):
+        MaskConfig(qc_bbox_fallback_enabled=True)
+
+    with pytest.raises(ConfigError, match="qc_bbox_prompt_template"):
+        MaskConfig(
+            qc_enabled=True,
+            qc_prompt_template=Path("mask-qc.txt"),
+            qc_bbox_fallback_enabled=True,
+        )
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "temporal_envelope_guard_retry_enabled",
+        "qc_bbox_directional_expand_enabled",
+        "qc_border_retry_enabled",
+        "qc_border_retry_prompt_template",
+        "qc_border_retry_max_tokens",
+    ],
+)
+def test_config_rejects_removed_s4_fields(tmp_path: Path, field: str) -> None:
+    source = (PROJECT_ROOT / "configs/open_set_mask_fallback_bbox.yaml").read_text(encoding="utf-8")
+    config_path = tmp_path / "removed-s4.yaml"
+    config_path.write_text(source.replace("mask:\n", f"mask:\n  {field}: true\n"), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="removed S4"):
+        load_config(config_path)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["qc_query_fallback_enabled", "qc_seed_fallback_enabled"],
+)
+def test_text_fallbacks_require_qc(field: str) -> None:
+    with pytest.raises(ConfigError, match="requires mask QC"):
+        MaskConfig(**{field: True})
 
 
 def test_config_rejects_automatic_query_fallback(tmp_path: Path) -> None:

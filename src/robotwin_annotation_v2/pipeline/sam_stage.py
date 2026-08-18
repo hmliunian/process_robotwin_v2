@@ -436,10 +436,14 @@ def _run_role(
                 qc_report=qc_report,
             )
         query = qc_report.selected_query
+        if qc_report.selected_seed_frame_id is not None:
+            seed_frame = qc_report.selected_seed_frame_id
     else:
         query = semantic.primary_query
     if seed_frame is None or query is None:
         raise SamStageError(f"{role} semantic plan has no usable seed/query")
+    if seed_frame not in context.seed_candidates(role):
+        raise SamStageError(f"{role} QC selected an ineligible seed frame {seed_frame}")
     if seed_frame > output_window.end:
         raise SamStageError(f"{role} seed occurs after its output window")
 
@@ -899,6 +903,17 @@ def save_sam_artifacts(
         artifact_dir=str(episode_dir),
     )
     manifest = mask_run.to_json()
+    candidate_mask_qc = any(
+        data.qc_status is not MaskQCStatus.NOT_RUN for data in role_data
+    )
+    fallback_used = any(
+        data.qc_status is MaskQCStatus.PASSED
+        and (
+            data.seed_frame_id != semantic_plan.for_role(data.role).seed_frame_id
+            or data.primary_query != semantic_plan.for_role(data.role).primary_query
+        )
+        for data in role_data
+    )
     if gripper_result is not None and gripper_role_name is not None:
         manifest["channels"][gripper_role_name] = (
             2 if gripper_result.active_arm == "left" else 3
@@ -912,7 +927,11 @@ def save_sam_artifacts(
             "frame_encoding": encoding_metadata,
             "semantic_prompt_sha256": semantic_plan.prompt_sha256,
             "algorithm": {
-                "seed": "sam3_text_only_primary_query",
+                "seed": (
+                    "sam3_mask_qc_selected_candidate"
+                    if candidate_mask_qc
+                    else "sam3_text_only_primary_query"
+                ),
                 "propagation": "sam3_native_mask_forward_backward",
                 "visibility": "native_track clipped_to role_output_window",
                 "target_hold_encoding": {
@@ -923,9 +942,8 @@ def save_sam_artifacts(
                 "per_frame_text_observation": False,
                 "canonical_envelope_usage": "seed_diagnostic_only",
                 "automatic_query_fallback": False,
-                "candidate_mask_qc": any(
-                    data.qc_status is not MaskQCStatus.NOT_RUN for data in role_data
-                ),
+                "mask_qc_fallback_used": fallback_used,
+                "candidate_mask_qc": candidate_mask_qc,
                 "gripper_stage": None
                 if gripper_result is None
                 else {
