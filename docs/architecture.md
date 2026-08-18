@@ -153,8 +153,9 @@ Qwen server 是独立基础设施，只加载模型并提供 OpenAI-compatible e
 - 解析严格 JSON；
 - 保存 rendered prompt、raw response、模型信息和 hash。
 
-target 和 receiver 在同一次请求中联合判断，避免角色交换或两者指向同一实例。一键 SAM
-流程开始前只做 health check，不管理 server 生命周期。
+target 和 receiver 在同一次请求中联合判断，避免角色交换或两者指向同一实例。pipeline
+内部仍只做 health check；`just process` 的外层 launcher 在 endpoint 不可用时自动选卡并
+启动本地 server，且只在退出时回收自己启动的进程。已有健康服务保持外部所有权。
 
 ### 4.2 角色语义
 
@@ -380,9 +381,12 @@ role artifacts 随后被内容寻址。live 模式 fresh-only，source 或 final
 默认 backend：
 
 ```bash
-just serve-qwen
 just process DATASET_ROOT [OUTPUT_ROOT] [PROCESS_ARGS...]
 ```
+
+该入口自动复用健康 Qwen endpoint；若 endpoint 不可用，会排除 SAM 和显式 EGL GPU 后按
+空闲显存选卡，等待服务就绪，并在 process 成功、失败或中断后回收服务。分阶段入口仍可用
+`just serve-qwen` 手动维持服务。
 
 常用参数：
 
