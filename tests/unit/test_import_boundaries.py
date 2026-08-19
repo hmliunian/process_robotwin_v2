@@ -48,6 +48,14 @@ def test_pipeline_package_loads_lightweight_stage_exports_on_demand() -> None:
     )
 
 
+def test_mask_qc_stage_does_not_load_artifact_store() -> None:
+    _run_import_probe(
+        "import sys\n"
+        "import robotwin_annotation_v2.pipeline.mask_qc\n"
+        "assert 'robotwin_annotation_v2.adapters.artifact_store' not in sys.modules\n"
+    )
+
+
 def test_urdf_batch_import_does_not_load_optional_backends() -> None:
     _run_import_probe(
         "import sys\n"

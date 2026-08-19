@@ -46,8 +46,8 @@ _EXPORT_GROUPS = {
         "MaskQCError",
         "parse_mask_qc_response",
         "run_mask_qc_stage",
-        "save_mask_qc_artifacts",
     ),
+    ".object_mask.artifacts": ("save_mask_qc_artifacts",),
     ".open_set_queries": ("curated_query_aliases",),
     ".qwen_stage": (
         "QwenStageError",

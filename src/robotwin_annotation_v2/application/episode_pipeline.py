@@ -44,8 +44,8 @@ from robotwin_annotation_v2.pipeline.gripper_stage import (
 from robotwin_annotation_v2.pipeline.mask_qc import (
     MaskQCError,
     run_mask_qc_stage,
-    save_mask_qc_artifacts,
 )
+from robotwin_annotation_v2.pipeline.object_mask.artifacts import save_mask_qc_artifacts
 from robotwin_annotation_v2.pipeline.qwen_stage import (
     QwenStageError,
     parse_semantic_plan,
