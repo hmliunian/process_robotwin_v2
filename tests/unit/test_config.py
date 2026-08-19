@@ -38,6 +38,8 @@ def test_pilot_config_loads_new_pipeline_contract() -> None:
     assert len(config.dataset.regression_episode_ids) == 20
     assert config.qwen.query_selection == "first_recommended"
     assert not config.qwen.allow_query_fallback
+    assert config.qwen.prompt_template.name == "target_receiver_semantic_open_set.txt"
+    assert config.qwen.timeout_seconds == 600
     assert config.qwen.prompt_template.is_file()
     assert config.dataset.manifest.is_file()
     assert config.sam3.checkpoint.name == "sam3.pt"
@@ -45,12 +47,14 @@ def test_pilot_config_loads_new_pipeline_contract() -> None:
     assert config.mask.qc_enabled
     assert config.mask.qc_prompt_template is not None
     assert config.mask.qc_prompt_template.is_file()
-    assert config.mask.qc_max_candidates == 3
+    assert config.mask.qc_max_candidates == 8
     assert config.mask.qc_max_attempts == 2
-    assert not config.mask.qc_query_fallback_enabled
-    assert not config.mask.qc_seed_fallback_enabled
-    assert not config.mask.qc_bbox_fallback_enabled
-    assert config.mask.qc_bbox_prompt_template is None
+    assert config.mask.qc_query_fallback_enabled
+    assert config.mask.qc_seed_fallback_enabled
+    assert config.mask.qc_bbox_fallback_enabled
+    assert config.mask.qc_bbox_prompt_template is not None
+    assert config.mask.qc_bbox_prompt_template.name == "open_set_bbox_localization.txt"
+    assert config.mask.qc_bbox_prompt_template.is_file()
     assert config.mask.qc_bbox_max_tokens == 180
     assert config.gripper_roi == GripperRoiConfig(
         prompt_axial_back_m=0.120,
@@ -87,11 +91,19 @@ def test_target_only_pilot_config_pins_close_and_hold_dataset() -> None:
     assert config.dataset.smoke_episode_ids == (0,)
     assert len(config.dataset.regression_episode_ids) == 20
     assert config.dataset.regression_episode_ids == tuple(manifest["regression_episode_ids"])
-    assert config.qwen.prompt_template.name == "target_only_semantic.txt"
+    assert config.qwen.prompt_template.name == "target_only_semantic_open_set.txt"
     assert config.qwen.timeout_seconds == 600
     assert config.qwen.max_tokens == 400
     assert config.mask.qc_prompt_template is not None
-    assert config.mask.qc_prompt_template.name == "target_only_mask_candidate_qc.txt"
+    assert config.mask.qc_prompt_template.name == (
+        "target_only_mask_candidate_qc_open_set.txt"
+    )
+    assert config.mask.qc_max_candidates == 8
+    assert config.mask.qc_query_fallback_enabled
+    assert config.mask.qc_seed_fallback_enabled
+    assert config.mask.qc_bbox_fallback_enabled
+    assert config.mask.qc_bbox_prompt_template is not None
+    assert config.mask.qc_bbox_prompt_template.name == "open_set_bbox_localization.txt"
 
 
 def test_open_set_bbox_experiment_explicitly_enables_bbox_fallback() -> None:

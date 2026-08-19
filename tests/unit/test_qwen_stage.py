@@ -251,6 +251,28 @@ def test_target_only_semantic_prompt_contains_only_target_contract() -> None:
     assert "open_done" not in request.rendered_prompt
 
 
+def test_target_only_open_set_semantic_prompt_uses_target_only_timeline() -> None:
+    template = (
+        PROJECT_ROOT / "configs/prompts/target_only_semantic_open_set.txt"
+    ).read_text(encoding="utf-8")
+    context = _target_only_context()
+    frames = {frame_id: _frames()[frame_id] for frame_id in (0, 9)}
+
+    request = build_qwen_request(context, frames, template)
+
+    assert "开放集语义规划器" in request.rendered_prompt
+    assert "white bar" in request.rendered_prompt
+    assert "本模式只识别 target" in request.rendered_prompt
+    assert "receiver" not in request.rendered_prompt
+    assert "active_arm: right" in request.rendered_prompt
+    assert "remove_start: 2" in request.rendered_prompt
+    assert "close_start: 6" in request.rendered_prompt
+    assert "close_end: 8" in request.rendered_prompt
+    assert "episode_end: 19" in request.rendered_prompt
+    assert "open_start" not in request.rendered_prompt
+    assert "open_done" not in request.rendered_prompt
+
+
 def test_target_only_rejects_a_pick_place_prompt_before_model_request() -> None:
     template = (
         "open={open_start}\nframes:\n{labeled_multimodal_frames}\n"

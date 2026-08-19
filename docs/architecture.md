@@ -405,6 +405,21 @@ just process DATASET_ROOT [OUTPUT_ROOT] [PROCESS_ARGS...]
 若第二个 positional token 以 `-` 开头，它会被当作 process 参数，输出根仍为
 `artifacts/runs`。
 
+也可以只提供带 `EXTRACT_MANIFEST.json` 的单任务目录或 collection，而不显式传 pipeline
+配置：
+
+```bash
+just process --data-path DATASET_OR_COLLECTION --pick-place
+just process --data-path DATASET_OR_COLLECTION --target-only
+```
+
+path 模式分别加载 `configs/pilot_move_pillbottle_pad.yaml` 和
+`configs/pilot_adjust_bottle_target_only.yaml` 作为默认推理 profile；数据目录中的 manifest 只
+替换 dataset root、task、camera 和 episode ids。两个默认 profile 都启用完整的 S1–S3
+open-set object-mask 路径：最多 8 个候选、curated query fallback、多合法 seed fallback、
+mode-specific appearance prompt，以及所有文本尝试失败后的 Qwen bbox → SAM box fallback。
+因此 collection 中的每个 task 使用同一套 mode profile，不需要逐 task 配置这些开关。
+
 live URDF：
 
 ```bash

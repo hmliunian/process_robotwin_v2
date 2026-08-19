@@ -695,6 +695,42 @@ def test_parse_args_accepts_path_only_modes(
     assert args.path_mode == expected
 
 
+@pytest.mark.parametrize(
+    ("mode", "semantic_prompt", "qc_prompt"),
+    (
+        (
+            process_module.AnnotationMode.PICK_PLACE,
+            "target_receiver_semantic_open_set.txt",
+            "mask_candidate_qc_open_set.txt",
+        ),
+        (
+            process_module.AnnotationMode.TARGET_ONLY,
+            "target_only_semantic_open_set.txt",
+            "target_only_mask_candidate_qc_open_set.txt",
+        ),
+    ),
+)
+def test_path_only_default_profiles_enable_s1_through_s3(
+    mode: Any,
+    semantic_prompt: str,
+    qc_prompt: str,
+) -> None:
+    config = process_module.load_config(process_module.PATH_MODE_CONFIGS[mode])
+
+    assert config.annotation.mode is mode
+    assert config.qwen.prompt_template.name == semantic_prompt
+    assert config.mask.qc_prompt_template is not None
+    assert config.mask.qc_prompt_template.name == qc_prompt
+    assert config.mask.qc_max_candidates == 8
+    assert config.mask.qc_query_fallback_enabled
+    assert config.mask.qc_seed_fallback_enabled
+    assert config.mask.qc_bbox_fallback_enabled
+    assert config.mask.qc_bbox_prompt_template is not None
+    assert config.mask.qc_bbox_prompt_template.name == (
+        "open_set_bbox_localization.txt"
+    )
+
+
 def test_path_only_single_task_dispatches_from_manifest(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

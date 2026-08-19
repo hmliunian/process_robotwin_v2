@@ -10,10 +10,13 @@ dataset:
   regression_episode_ids: [0, 6, 10, 18, 21, 30, 34, 42, 48, 49,
                            50, 51, 171, 176, 287, 313, 415, 431, 547, 549]
 
+# This is also the implicit target-only profile for ``just process --data-path``.
+# Its mode-specific prompts use the close-and-hold timeline while enabling the
+# same S1-S3 open-set ladder as pick-place.
 qwen:
   endpoint: http://127.0.0.1:18086/v1/chat/completions
   model: qwen3.5-27b
-  prompt_template: prompts/target_only_semantic.txt
+  prompt_template: prompts/target_only_semantic_open_set.txt
   # Six image frames can be slow when the shared Qwen GPU is busy.  The
   # target-only JSON has one role, so 400 output tokens are ample while the
   # longer HTTP timeout avoids abandoning an in-flight generation.
@@ -34,8 +37,13 @@ mask:
   temporal_qc_max_area_ratio_jump_p95: 0.4
   temporal_qc_quarantine_signal_count: 2
   qc_enabled: true
-  qc_prompt_template: prompts/target_only_mask_candidate_qc.txt
-  qc_max_candidates: 3
+  qc_prompt_template: prompts/target_only_mask_candidate_qc_open_set.txt
+  qc_max_candidates: 8
+  qc_query_fallback_enabled: true
+  qc_seed_fallback_enabled: true
+  qc_bbox_fallback_enabled: true
+  qc_bbox_prompt_template: prompts/open_set_bbox_localization.txt
+  qc_bbox_max_tokens: 180
   qc_max_tokens: 160
   qc_max_attempts: 2
   qc_min_confidence: 0.70
