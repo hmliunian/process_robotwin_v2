@@ -1,129 +1,104 @@
-"""The executable state, semantic, object-mask, and gripper stages."""
+"""Pipeline stages with lazy compatibility exports.
 
-from .gripper_stage import (
-    CAM_HIGH_CALIBRATION,
-    DEFAULT_GRIPPER_ROI_GEOMETRY,
-    CameraCalibration,
-    GripperRoiGeometry,
-    GripperSeedCandidate,
-    GripperSeedQCResult,
-    GripperSeedQualityGateConfig,
-    GripperStageError,
-    GripperStageResult,
-    GripperTrackResult,
-    KnownObjectTracks,
-    ObjectExclusionResult,
-    ProjectedGripperRoi,
-    apply_gripper_seed_quality_gate,
-    build_gripper_qwen_request,
-    build_gripper_seed_candidate,
-    compose_gripper_track,
-    exclude_known_objects,
-    gripper_keyframes,
-    load_qc_native_object_tracks,
-    mark_same_frame_duplicates,
-    normalized_roi_box,
-    phase_for_frame,
-    project_gripper_roi,
-    render_gripper_candidate_panel,
-    render_gripper_candidate_sheet,
-    rotation_from_rpy,
-    run_gripper_seed_qc,
-    run_gripper_stage,
-)
-from .mask_qc import (
-    MaskQCError,
-    parse_mask_qc_response,
-    run_mask_qc_stage,
-    save_mask_qc_artifacts,
-)
-from .open_set_queries import curated_query_aliases
-from .qwen_stage import (
-    QwenStageError,
-    QwenStageResult,
-    RenderedQwenRequest,
-    build_qwen_request,
-    parse_semantic_plan,
-    run_qwen_stage,
-)
-from .sam_stage import (
-    RoleMaskData,
-    SamStageError,
-    SamStageResult,
-    TemporalMaskQc,
-    compose_visible_mask,
-    dilate_envelope,
-    evaluate_temporal_mask,
-    run_sam_stage,
-    save_sam_artifacts,
-)
-from .state_loop import (
-    StateLoopError,
-    build_loop_context,
-    detect_arm_loops,
-    detect_episode_loop,
-    detect_episode_target_only,
-    detect_loop_events,
-    detect_target_only_events,
-    sample_semantic_frames,
-)
+Internal code imports concrete stage modules.  These lazy exports preserve the
+existing public surface without loading OpenCV-backed gripper code on every
+pipeline package import.
+"""
 
-__all__ = [
-    "CAM_HIGH_CALIBRATION",
-    "DEFAULT_GRIPPER_ROI_GEOMETRY",
-    "CameraCalibration",
-    "GripperRoiGeometry",
-    "GripperSeedCandidate",
-    "GripperSeedQCResult",
-    "GripperSeedQualityGateConfig",
-    "GripperStageError",
-    "GripperStageResult",
-    "GripperTrackResult",
-    "KnownObjectTracks",
-    "MaskQCError",
-    "ObjectExclusionResult",
-    "ProjectedGripperRoi",
-    "QwenStageError",
-    "QwenStageResult",
-    "RenderedQwenRequest",
-    "RoleMaskData",
-    "SamStageError",
-    "SamStageResult",
-    "StateLoopError",
-    "TemporalMaskQc",
-    "apply_gripper_seed_quality_gate",
-    "build_gripper_qwen_request",
-    "build_gripper_seed_candidate",
-    "build_loop_context",
-    "build_qwen_request",
-    "compose_gripper_track",
-    "compose_visible_mask",
-    "curated_query_aliases",
-    "detect_arm_loops",
-    "detect_episode_loop",
-    "detect_episode_target_only",
-    "detect_loop_events",
-    "detect_target_only_events",
-    "dilate_envelope",
-    "evaluate_temporal_mask",
-    "exclude_known_objects",
-    "gripper_keyframes",
-    "load_qc_native_object_tracks",
-    "mark_same_frame_duplicates",
-    "normalized_roi_box",
-    "parse_mask_qc_response",
-    "parse_semantic_plan",
-    "phase_for_frame",
-    "project_gripper_roi",
-    "render_gripper_candidate_panel",
-    "render_gripper_candidate_sheet",
-    "rotation_from_rpy",
-    "run_gripper_seed_qc",
-    "run_gripper_stage",
-    "run_mask_qc_stage",
-    "run_qwen_stage",
-    "run_sam_stage",
-    "sample_semantic_frames",
-    "save_mask_qc_artifacts",
-    "save_sam_artifacts",
-]
+from __future__ import annotations
+
+from importlib import import_module
+from typing import Any
+
+_EXPORT_GROUPS = {
+    ".gripper_stage": (
+        "CAM_HIGH_CALIBRATION",
+        "DEFAULT_GRIPPER_ROI_GEOMETRY",
+        "CameraCalibration",
+        "GripperRoiGeometry",
+        "GripperSeedCandidate",
+        "GripperSeedQCResult",
+        "GripperSeedQualityGateConfig",
+        "GripperStageError",
+        "GripperStageResult",
+        "GripperTrackResult",
+        "KnownObjectTracks",
+        "ObjectExclusionResult",
+        "ProjectedGripperRoi",
+        "apply_gripper_seed_quality_gate",
+        "build_gripper_qwen_request",
+        "build_gripper_seed_candidate",
+        "compose_gripper_track",
+        "exclude_known_objects",
+        "gripper_keyframes",
+        "load_qc_native_object_tracks",
+        "mark_same_frame_duplicates",
+        "normalized_roi_box",
+        "phase_for_frame",
+        "project_gripper_roi",
+        "render_gripper_candidate_panel",
+        "render_gripper_candidate_sheet",
+        "rotation_from_rpy",
+        "run_gripper_seed_qc",
+        "run_gripper_stage",
+    ),
+    ".mask_qc": (
+        "MaskQCError",
+        "parse_mask_qc_response",
+        "run_mask_qc_stage",
+        "save_mask_qc_artifacts",
+    ),
+    ".open_set_queries": ("curated_query_aliases",),
+    ".qwen_stage": (
+        "QwenStageError",
+        "QwenStageResult",
+        "RenderedQwenRequest",
+        "build_qwen_request",
+        "parse_semantic_plan",
+        "run_qwen_stage",
+    ),
+    ".sam_stage": (
+        "RoleMaskData",
+        "SamStageError",
+        "SamStageResult",
+        "TemporalMaskQc",
+        "compose_visible_mask",
+        "dilate_envelope",
+        "evaluate_temporal_mask",
+        "run_sam_stage",
+        "save_sam_artifacts",
+    ),
+    ".state_loop": (
+        "StateLoopError",
+        "build_loop_context",
+        "detect_arm_loops",
+        "detect_episode_loop",
+        "detect_episode_target_only",
+        "detect_loop_events",
+        "detect_target_only_events",
+        "sample_semantic_frames",
+    ),
+}
+_EXPORTS = {
+    name: module_name
+    for module_name, names in _EXPORT_GROUPS.items()
+    for name in names
+}
+
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name: str) -> Any:
+    """Load the concrete stage that owns a requested compatibility export."""
+
+    try:
+        module_name = _EXPORTS[name]
+    except KeyError as exc:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
+    value = getattr(import_module(module_name, __name__), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted({*globals(), *__all__})

@@ -9,17 +9,18 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 from PIL import Image
 
-from robotwin_annotation_v2.adapters import (
-    ArtifactStore,
-    OpenAICompatibleQwenClient,
-    RoboTwinDataset,
+from robotwin_annotation_v2.adapters.artifact_store import ArtifactStore
+from robotwin_annotation_v2.adapters.qwen_client import OpenAICompatibleQwenClient
+from robotwin_annotation_v2.adapters.robotwin_dataset import RoboTwinDataset
+from robotwin_annotation_v2.adapters.sam3_adapter import (
     Sam3Adapter,
     Sam3Error,
     sam3_video_resource,
@@ -35,25 +36,31 @@ from robotwin_annotation_v2.models import (
     MaskStatus,
     SemanticPlan,
 )
-from robotwin_annotation_v2.pipeline import (
+from robotwin_annotation_v2.pipeline.gripper_stage import (
     GripperSeedQualityGateConfig,
     GripperStageError,
+    run_gripper_stage,
+)
+from robotwin_annotation_v2.pipeline.mask_qc import (
     MaskQCError,
+    run_mask_qc_stage,
+    save_mask_qc_artifacts,
+)
+from robotwin_annotation_v2.pipeline.qwen_stage import (
     QwenStageError,
+    parse_semantic_plan,
+    run_qwen_stage,
+)
+from robotwin_annotation_v2.pipeline.sam_stage import (
     RoleMaskData,
     SamStageError,
     SamStageResult,
-    build_loop_context,
     compose_visible_mask,
     evaluate_temporal_mask,
-    parse_semantic_plan,
-    run_gripper_stage,
-    run_mask_qc_stage,
-    run_qwen_stage,
     run_sam_stage,
-    save_mask_qc_artifacts,
     save_sam_artifacts,
 )
+from robotwin_annotation_v2.pipeline.state_loop import build_loop_context
 
 SAM_EXECUTION_ERRORS = (
     GripperStageError,
@@ -67,8 +74,8 @@ SAM_EXECUTION_ERRORS = (
 
 __all__ = [
     "SAM_EXECUTION_ERRORS",
-    "SamEpisodeExecution",
     "GripperEpisodeExecution",
+    "SamEpisodeExecution",
     "_emit_gripper_result",
     "_emit_sam_result",
     "_execute_gripper_episode",
@@ -777,7 +784,7 @@ def _gripper_episode_complete(
         }
         if set(roles) != {"target", "receiver", role_name}:
             return False
-        for role in {"target", "receiver"}:
+        for role in ("target", "receiver"):
             expected = "ok" if role in required_names else "not_applicable"
             if roles[role].get("status") != expected:
                 return False
