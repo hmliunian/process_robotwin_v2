@@ -27,6 +27,13 @@ import robotwin_annotation_v2.application.streaming as _streaming
 from robotwin_annotation_v2.adapters.artifact_store import ArtifactStore
 from robotwin_annotation_v2.adapters.robotwin_dataset import RoboTwinDataset
 from robotwin_annotation_v2.application.dataset_input import resolve_dataset_input
+from robotwin_annotation_v2.application.sam_workflow import (
+    PROCESS_SUMMARY_FORMAT_VERSION,
+    SamBackend,
+    SamRuntime,
+    SamWorkflow,
+    SamWorkflowHooks,
+)
 from robotwin_annotation_v2.config import PipelineConfig, load_config
 from robotwin_annotation_v2.domain import (
     AnnotationMode,
@@ -58,8 +65,6 @@ PATH_MODE_CONFIGS = {
 DEFAULT_URDF_DEPTH_TOLERANCE_MM = 8.0
 DEFAULT_URDF_MINIMUM_ELIGIBLE_NONEMPTY_FRACTION = 0.90
 DEFAULT_URDF_PIPELINE_BUFFER_SIZE = 2
-PROCESS_SUMMARY_FORMAT_VERSION = "robotwin_process_dataset_summary_v1"
-
 CHUNK_PATTERN = _discovery.CHUNK_PATTERN
 EPISODE_FILE_PATTERN = _discovery.EPISODE_FILE_PATTERN
 DiscoveredEpisode = _discovery.DiscoveredEpisode
@@ -161,24 +166,7 @@ class UrdfSourceSelection:
     required_object_roles: tuple[ObjectRole, ...]
 
 
-@dataclass(frozen=True)
-class SamRuntime:
-    """SAM-only dependencies loaded after the backend has been selected."""
-
-    qwen_client_factory: Callable[..., Any]
-    backend_factory: Callable[..., Any]
-    execution_errors: tuple[type[BaseException], ...]
-    emit_gripper_result: Callable[..., Any]
-    emit_sam_result: Callable[..., Any]
-    execute_gripper_episode: Callable[..., Any]
-    execute_sam_episode: Callable[..., Any]
-    fatal_cuda_error: Callable[..., Any]
-    gripper_episode_complete: Callable[..., Any]
-    sam_episode_complete: Callable[..., Any]
-    run_qwen: Callable[..., Any]
-
-
-def _load_sam_runtime() -> SamRuntime:
+def _load_sam_runtime() -> SamRuntime[SamBackend, Any, Any]:
     """Load SAM/Qwen/OpenCV code only when the SAM backend is executed."""
 
     from robotwin_annotation_v2.adapters.qwen_client import (
@@ -2096,436 +2084,40 @@ def process_dataset(
     backend_factory: Callable[..., Any] | None = None,
     reporter: ProcessUI | None = None,
 ) -> dict[str, Any]:
-    """Run Qwen and object SAM, optionally followed by the SAM gripper stage.
+    """Compatibility entry point for the canonical :class:`SamWorkflow`."""
 
-    ``object_source_only`` describes stage scope, not annotation semantics.  The
-    semantic mode always comes from ``config.annotation.mode``.  The deprecated
-    ``target_receiver_only`` keyword remains accepted for old callers while new
-    code uses the role-neutral name.
-    """
-
-    if object_source_only is not None and target_receiver_only:
-        raise ValueError(
-            "object_source_only and deprecated target_receiver_only cannot both be set"
-        )
-    source_only = (
-        target_receiver_only
-        if object_source_only is None
-        else bool(object_source_only)
-    )
-    if config.annotation.mode is AnnotationMode.TARGET_ONLY and not source_only:
-        raise ValueError(
-            "target_only does not support --gripper-backend sam; use the default URDF backend"
-        )
-    if incremental_source and not source_only:
-        raise ValueError("incremental source receipts require object_source_only mode")
-    if run_id is not None:
-        _validate_run_id(run_id)
-    if reporter is not None:
-        if report_lifecycle:
-            reporter.run_started(
-                backend="sam",
-                dataset_root=str(dataset_root.expanduser().resolve()),
-                task=task,
-                camera=camera,
-            )
-        reporter.phase_started("dataset_discovery")
-    runtime = _load_sam_runtime()
-    discovery = discover_episodes(dataset_root, camera=camera)
-    if not discovery.episodes:
-        raise ValueError(f"no complete episodes found under {dataset_root}")
-    manifest = build_dynamic_manifest(
-        dataset_root,
-        task=task,
-        camera=camera,
-        episodes=discovery.episodes,
-    )
-    discovered_ids = set(discovery.episode_ids)
-    selected_ids = (
-        discovery.episode_ids
-        if episode_ids is None
-        else tuple(dict.fromkeys(int(value) for value in episode_ids))
-    )
-    if not selected_ids:
-        raise ValueError("process_dataset requires at least one selected episode")
-    unknown = sorted(set(selected_ids) - discovered_ids)
-    if unknown:
-        raise ValueError(f"requested episodes were not discovered: {unknown}")
-    if reporter is not None:
-        reporter.phase_finished(
-            "dataset_discovery",
-            detail=(
-                f"discovered={len(discovery.episodes)} "
-                f"selected={len(selected_ids)} skipped_inputs={len(discovery.skipped)}"
-            ),
-        )
-    dynamic = _dynamic_config(
+    workflow = SamWorkflow(
         config,
-        root=dataset_root,
+        SamWorkflowHooks(
+            runtime_loader=_load_sam_runtime,
+            discover_episodes=discover_episodes,
+            build_dynamic_manifest=build_dynamic_manifest,
+            build_dynamic_config=_dynamic_config,
+            capture_stage_output=_captured_stage_output,
+            render_processed=_render_processed,
+            validate_run_id=_validate_run_id,
+            validate_run_ownership=_validate_sam_run_ownership,
+            write_source_run_contract=write_source_run_contract,
+            write_source_episode_receipt=write_source_episode_completion_receipt,
+        ),
+    )
+    return workflow.run(
+        dataset_root=dataset_root,
         task=task,
         camera=camera,
-        manifest=manifest,
         output_root=output_root,
+        run_id=run_id,
+        episode_ids=episode_ids,
+        force=force,
+        skip_render=skip_render,
+        object_source_only=object_source_only,
+        target_receiver_only=target_receiver_only,
+        report_lifecycle=report_lifecycle,
+        incremental_source=incremental_source,
+        episode_terminal_callback=episode_terminal_callback,
+        backend_factory=backend_factory,
+        reporter=reporter,
     )
-    store = ArtifactStore(dynamic.output_root)
-    selected_run_id = _validate_run_id(run_id or store.new_run_id())
-    canonical_run_dir = store.run_dir(selected_run_id)
-    _validate_sam_run_ownership(canonical_run_dir, run_id=selected_run_id)
-    if incremental_source:
-        write_source_run_contract(
-            canonical_run_dir,
-            run_id=selected_run_id,
-            dataset_root=dataset_root,
-            task=task,
-            camera=camera,
-            dynamic_manifest=manifest,
-            requested_episode_ids=selected_ids,
-            annotation_mode=config.annotation.mode.value,
-            required_object_roles=config.annotation.spec.required_role_names,
-        )
-
-    def episode_terminal(episode_id: int, status: str) -> None:
-        if incremental_source and status in {"completed", "skipped_complete"}:
-            ref = EpisodeRef(task, episode_id, camera)
-            write_source_episode_completion_receipt(
-                store.episode_dir(selected_run_id, ref),
-                task=task,
-                camera=camera,
-                episode_index=episode_id,
-                status=status,
-                expected_dataset_root=dataset_root,
-            )
-        if episode_terminal_callback is not None:
-            episode_terminal_callback(episode_id, status)
-
-    if reporter is not None and report_lifecycle:
-        reporter.run_ready(run_id=selected_run_id, episode_ids=selected_ids)
-    if reporter is not None:
-        reporter.phase_started("qwen_health")
-    qwen = runtime.qwen_client_factory(
-        endpoint=dynamic.qwen.endpoint,
-        model=dynamic.qwen.model,
-        timeout_seconds=dynamic.qwen.timeout_seconds,
-    )
-    health = qwen.health()
-    if reporter is not None:
-        reporter.phase_finished("qwen_health")
-        reporter.phase_started("resume_scan", total=len(selected_ids))
-    records: list[dict[str, Any]] = list(discovery.skipped)
-    pending: list[int] = []
-    completion_check = (
-        runtime.sam_episode_complete
-        if source_only
-        else runtime.gripper_episode_complete
-    )
-    for position, episode_id in enumerate(selected_ids, start=1):
-        ref = EpisodeRef(
-            task,
-            episode_id,
-            camera,
-        )
-        if not force and completion_check(dynamic, store, selected_run_id, ref):
-            records.append({"episode": episode_id, "status": "skipped_complete"})
-            episode_terminal(episode_id, "skipped_complete")
-            if reporter is not None and report_lifecycle:
-                reporter.episode_finished(episode_id, status="skipped_complete")
-        else:
-            pending.append(episode_id)
-        if reporter is not None:
-            reporter.phase_progress(
-                position,
-                total=len(selected_ids),
-                episode_id=episode_id,
-                status=("pending" if episode_id in pending else "skipped_complete"),
-            )
-    if reporter is not None:
-        reporter.phase_finished(
-            "resume_scan",
-            detail=f"pending={len(pending)} skipped={len(selected_ids) - len(pending)}",
-        )
-
-    factory = runtime.backend_factory if backend_factory is None else backend_factory
-    backend: Any | None = None
-    fatal_error: BaseException | None = None
-    try:
-        if pending:
-            if reporter is not None:
-                reporter.phase_started("sam_backend_load")
-            try:
-                backend = factory(
-                    checkpoint_path=dynamic.sam3.checkpoint,
-                    gpus=dynamic.sam3.gpus,
-                )
-            except Exception as exc:
-                if reporter is not None:
-                    reporter.phase_finished(
-                        "sam_backend_load",
-                        status="failed",
-                        detail=f"{type(exc).__name__}: {exc}",
-                    )
-                raise
-            if reporter is not None:
-                reporter.phase_finished("sam_backend_load")
-            for episode_id in pending:
-                position = selected_ids.index(episode_id) + 1
-                current_stage: str | None = None
-                if reporter is not None and report_lifecycle:
-                    reporter.episode_started(
-                        episode_id,
-                        position=position,
-                        total=len(selected_ids),
-                    )
-                try:
-                    current_stage = "qwen"
-                    if reporter is not None:
-                        reporter.stage_started(episode_id, current_stage)
-                    with _captured_stage_output(reporter):
-                        runtime.run_qwen(dynamic, episode_id, selected_run_id)
-                    if reporter is not None:
-                        reporter.stage_finished(episode_id, current_stage)
-                    current_stage = "object_sam"
-                    if reporter is not None:
-                        reporter.stage_started(episode_id, current_stage)
-                    sam_execution = runtime.execute_sam_episode(
-                        dynamic,
-                        episode_id,
-                        selected_run_id,
-                        backend,
-                    )
-                    with _captured_stage_output(reporter):
-                        sam_complete = runtime.emit_sam_result(
-                            selected_run_id,
-                            sam_execution,
-                        )
-                    if not sam_complete:
-                        records.append({"episode": episode_id, "status": "sam_incomplete"})
-                        episode_terminal(episode_id, "sam_incomplete")
-                        if reporter is not None:
-                            reporter.stage_finished(
-                                episode_id,
-                                current_stage,
-                                status="sam_incomplete",
-                            )
-                            if report_lifecycle:
-                                reporter.episode_finished(
-                                    episode_id,
-                                    status="sam_incomplete",
-                                )
-                        current_stage = None
-                        continue
-                    if reporter is not None:
-                        reporter.stage_finished(episode_id, current_stage)
-                    if source_only:
-                        records.append(
-                            {
-                                "episode": episode_id,
-                                "status": "completed",
-                            }
-                        )
-                        episode_terminal(episode_id, "completed")
-                        if reporter is not None and report_lifecycle:
-                            reporter.episode_finished(
-                                episode_id,
-                                status="completed",
-                            )
-                        current_stage = None
-                        continue
-                    current_stage = "gripper_sam"
-                    if reporter is not None:
-                        reporter.stage_started(episode_id, current_stage)
-                    gripper_execution = runtime.execute_gripper_episode(
-                        dynamic,
-                        episode_id,
-                        selected_run_id,
-                        backend,
-                    )
-                    with _captured_stage_output(reporter):
-                        gripper_complete = runtime.emit_gripper_result(
-                            selected_run_id,
-                            gripper_execution,
-                        )
-                    episode_status = "completed" if gripper_complete else "gripper_incomplete"
-                    records.append(
-                        {
-                            "episode": episode_id,
-                            "status": episode_status,
-                        }
-                    )
-                    episode_terminal(episode_id, episode_status)
-                    if reporter is not None:
-                        reporter.stage_finished(
-                            episode_id,
-                            current_stage,
-                            status=episode_status,
-                        )
-                        if report_lifecycle:
-                            reporter.episode_finished(
-                                episode_id,
-                                status=episode_status,
-                            )
-                    current_stage = None
-                except SystemExit as exc:
-                    error = f"stage exited with code {exc.code}"
-                    records.append(
-                        {
-                            "episode": episode_id,
-                            "status": "failed",
-                            "error": error,
-                        }
-                    )
-                    episode_terminal(episode_id, "failed")
-                    if reporter is not None:
-                        if current_stage is not None:
-                            reporter.stage_finished(
-                                episode_id,
-                                current_stage,
-                                status="failed",
-                                detail=error,
-                            )
-                        if report_lifecycle:
-                            reporter.episode_finished(
-                                episode_id,
-                                status="failed",
-                                detail=error,
-                            )
-                except runtime.execution_errors as exc:
-                    error = str(exc)
-                    records.append(
-                        {
-                            "episode": episode_id,
-                            "status": "failed",
-                            "error": error,
-                        }
-                    )
-                    episode_terminal(episode_id, "failed")
-                    if reporter is not None:
-                        if current_stage is not None:
-                            reporter.stage_finished(
-                                episode_id,
-                                current_stage,
-                                status="failed",
-                                detail=error,
-                            )
-                        if report_lifecycle:
-                            reporter.episode_finished(
-                                episode_id,
-                                status="failed",
-                                detail=error,
-                            )
-                    if runtime.fatal_cuda_error(exc):
-                        fatal_error = exc
-                        break
-    finally:
-        if backend is not None:
-            backend.shutdown()
-
-    if fatal_error is not None:
-        recorded_ids = {
-            int(record["episode"])
-            for record in records
-            if "episode" in record and str(record["episode"]).isdigit()
-        }
-        records.extend(
-            {"episode": episode_id, "status": "not_run_after_fatal_cuda"}
-            for episode_id in selected_ids
-            if episode_id not in recorded_ids
-        )
-        for episode_id in selected_ids:
-            if episode_id not in recorded_ids:
-                episode_terminal(episode_id, "not_run_after_fatal_cuda")
-        if reporter is not None and report_lifecycle:
-            for episode_id in selected_ids:
-                if episode_id not in recorded_ids:
-                    reporter.episode_finished(
-                        episode_id,
-                        status="not_run_after_fatal_cuda",
-                        detail=str(fatal_error),
-                    )
-
-    render_report: dict[str, Any] | None = None
-    renderable_ids = tuple(
-        int(record["episode"])
-        for record in records
-        if record.get("status") in {"completed", "skipped_complete"}
-    )
-    if (
-        not source_only
-        and not skip_render
-        and fatal_error is None
-        and renderable_ids
-    ):
-        if reporter is not None:
-            reporter.phase_started("canonical_render", total=len(renderable_ids))
-        try:
-            render_report = _render_processed(
-                dynamic,
-                run_id=selected_run_id,
-                episode_ids=renderable_ids,
-                output_dir=canonical_run_dir,
-                reporter=reporter,
-            )
-            if reporter is not None:
-                reporter.phase_finished("canonical_render")
-        except Exception as exc:
-            records.append({"status": "render_failed", "error": str(exc)})
-            if reporter is not None:
-                reporter.phase_finished(
-                    "canonical_render",
-                    status="render_failed",
-                    detail=f"{type(exc).__name__}: {exc}",
-                )
-    elif reporter is not None:
-        reason = (
-            "object source stage"
-            if source_only
-            else "disabled by --skip-render"
-            if skip_render
-            else "blocked by fatal CUDA error"
-            if fatal_error is not None
-            else "no renderable episodes"
-        )
-        reporter.note(f"canonical_render skipped: {reason}", level="warning")
-
-    failure_statuses = {
-        "failed",
-        "sam_incomplete",
-        "gripper_incomplete",
-        "not_run_after_fatal_cuda",
-        "render_failed",
-    }
-    passed = (
-        fatal_error is None
-        and not any(record.get("status") in failure_statuses for record in records)
-    )
-    summary_model = ProcessSummary(
-        format_version=PROCESS_SUMMARY_FORMAT_VERSION,
-        annotation_mode=config.annotation.mode.value,
-        required_object_roles=tuple(config.annotation.spec.required_role_names),
-        gripper_backend=None if source_only else "sam",
-        run_id=selected_run_id,
-        dataset_root=str(dataset_root.expanduser().resolve()),
-        task=task,
-        camera=camera,
-        discovered_episode_ids=tuple(discovery.episode_ids),
-        requested_episode_ids=tuple(selected_ids),
-        dynamic_manifest=manifest,
-        qwen_health=health,
-        records=tuple(EpisodeRecord.from_payload(record) for record in records),
-        render=render_report,
-        fatal_error=None if fatal_error is None else str(fatal_error),
-        backend={
-            "object_masks": "sam",
-            "gripper": None if source_only else "sam",
-        },
-        passed=passed,
-        stage_mode="object_source_only" if source_only else "full_sam",
-    )
-    persisted_summary = summary_model.to_json()
-    summary_path = store.write_json(
-        canonical_run_dir / "process_summary.json",
-        persisted_summary,
-    )
-    return summary_model.with_artifact(str(summary_path)).to_json()
 
 
 def process_live_urdf_pipeline(
