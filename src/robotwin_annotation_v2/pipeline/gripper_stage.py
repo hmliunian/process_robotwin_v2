@@ -20,6 +20,8 @@ from .gripper.sam import composition as _composition
 from .gripper.sam import geometry as _geometry
 from .gripper.sam import qc as _qc
 
+NDArray = np.ndarray[Any, Any]
+
 GripperSamBackend = _annotator.GripperSamBackend
 GripperStageError = _annotator.GripperStageError
 GripperStageResult = _annotator.GripperStageResult
@@ -78,12 +80,12 @@ run_gripper_seed_qc = _qc.run_gripper_seed_qc
 
 @dataclass(frozen=True)
 class KnownObjectTracks:
-    tracks: Mapping[ObjectRole, np.ndarray]
-    seed_masks: Mapping[ObjectRole, np.ndarray]
+    tracks: Mapping[ObjectRole, NDArray]
+    seed_masks: Mapping[ObjectRole, NDArray]
     seed_frames: Mapping[ObjectRole, int]
     provenance: dict[str, Any]
 
-    def track(self, role: ObjectRole, *, empty_like: np.ndarray | None = None) -> np.ndarray:
+    def track(self, role: ObjectRole, *, empty_like: NDArray | None = None) -> NDArray:
         value = self.tracks.get(role)
         if value is not None:
             return np.asarray(value, dtype=bool)
@@ -92,19 +94,19 @@ class KnownObjectTracks:
         return np.zeros_like(np.asarray(empty_like, dtype=bool))
 
     @property
-    def target(self) -> np.ndarray:
+    def target(self) -> NDArray:
         return self.track(ObjectRole.TARGET)
 
     @property
-    def receiver(self) -> np.ndarray:
+    def receiver(self) -> NDArray:
         return self.track(ObjectRole.RECEIVER, empty_like=self.target)
 
     @property
-    def target_seed_mask(self) -> np.ndarray:
+    def target_seed_mask(self) -> NDArray:
         return np.asarray(self.seed_masks[ObjectRole.TARGET], dtype=bool)
 
     @property
-    def receiver_seed_mask(self) -> np.ndarray:
+    def receiver_seed_mask(self) -> NDArray:
         return np.asarray(
             self.seed_masks.get(ObjectRole.RECEIVER, np.zeros_like(self.target_seed_mask)),
             dtype=bool,
@@ -166,8 +168,8 @@ def load_qc_native_object_tracks(
         raise ValueError(  # noqa: TRY004 - preserve the artifact input contract
             "object manifest roles must be a list"
         )
-    tracks: dict[str, np.ndarray] = {}
-    seed_masks: dict[str, np.ndarray] = {}
+    tracks: dict[str, NDArray] = {}
+    seed_masks: dict[str, NDArray] = {}
     seed_frames: dict[str, int] = {}
     sources: dict[str, Any] = {}
     root = episode_dir.resolve()

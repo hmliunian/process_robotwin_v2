@@ -12,6 +12,8 @@ from typing import Any
 
 import numpy as np
 
+NDArray = np.ndarray[Any, Any]
+
 
 class Sam3Error(RuntimeError):
     """SAM3 cannot load, accept a prompt, or produce a valid mask."""
@@ -84,7 +86,7 @@ def sam3_video_resource(
         yield frame_dir
 
 
-def _primary_mask(outputs: Mapping[str, Any], shape: tuple[int, int]) -> np.ndarray:
+def _primary_mask(outputs: Mapping[str, Any], shape: tuple[int, int]) -> NDArray:
     object_ids = np.asarray(outputs.get("out_obj_ids", [])).reshape(-1)
     masks = np.asarray(outputs.get("out_binary_masks", []))
     if object_ids.size == 0 or masks.ndim < 3:
@@ -108,7 +110,7 @@ def _mask_for_object(
     *,
     object_id: int,
     shape: tuple[int, int],
-) -> np.ndarray | None:
+) -> NDArray | None:
     object_ids = np.asarray(outputs.get("out_obj_ids", [])).reshape(-1)
     matches = np.flatnonzero(object_ids == object_id)
     masks = np.asarray(outputs.get("out_binary_masks", []))
@@ -123,7 +125,7 @@ def _mask_for_object(
     return mask.astype(bool, copy=False)
 
 
-def _interior_point(mask: np.ndarray) -> list[float]:
+def _interior_point(mask: NDArray) -> list[float]:
     import cv2
 
     distance = cv2.distanceTransform(mask.astype(np.uint8), cv2.DIST_L2, 5)
@@ -201,7 +203,7 @@ class Sam3Adapter:
         frame_ids: Sequence[int],
         frame_count: int,
         frame_shape: tuple[int, int],
-    ) -> dict[int, np.ndarray]:
+    ) -> dict[int, NDArray]:
         if not text.strip():
             raise ValueError("SAM3 text must be non-empty")
         frames = tuple(dict.fromkeys(int(value) for value in frame_ids))
@@ -210,7 +212,7 @@ class Sam3Adapter:
         if not frames:
             return {}
         with self._session(resource_path) as session_id:
-            result: dict[int, np.ndarray] = {}
+            result: dict[int, NDArray] = {}
             for index, frame_id in enumerate(frames):
                 if index:
                     self.predictor.handle_request(
@@ -238,7 +240,7 @@ class Sam3Adapter:
         frame_id: int,
         frame_count: int,
         frame_shape: tuple[int, int],
-    ) -> np.ndarray:
+    ) -> NDArray:
         return self.text_query_masks(
             resource_path,
             (text,),
@@ -255,7 +257,7 @@ class Sam3Adapter:
         frame_id: int,
         frame_count: int,
         frame_shape: tuple[int, int],
-    ) -> dict[str, np.ndarray]:
+    ) -> dict[str, NDArray]:
         """Evaluate distinct text candidates while loading one video session once."""
 
         queries = tuple(dict.fromkeys(" ".join(text.split()) for text in texts))
@@ -266,7 +268,7 @@ class Sam3Adapter:
         if not queries:
             return {}
         with self._session(resource_path) as session_id:
-            result: dict[str, np.ndarray] = {}
+            result: dict[str, NDArray] = {}
             for index, query in enumerate(queries):
                 if index:
                     self.predictor.handle_request(
@@ -294,7 +296,7 @@ class Sam3Adapter:
         frame_id: int,
         frame_count: int,
         frame_shape: tuple[int, int],
-    ) -> np.ndarray:
+    ) -> NDArray:
         """Return one direct same-frame mask from a normalized visual box."""
 
         if not 0 <= frame_id < frame_count:
@@ -323,7 +325,7 @@ class Sam3Adapter:
         frame_id: int,
         frame_count: int,
         frame_shape: tuple[int, int],
-    ) -> np.ndarray:
+    ) -> NDArray:
         """Return one direct mask from one joint text-and-visual-box prompt."""
 
         query = " ".join(text.split())
@@ -353,7 +355,7 @@ class Sam3Adapter:
         session_id: str,
         seed_frame: int,
         object_id: int,
-        seed_mask: np.ndarray,
+        seed_mask: NDArray,
     ) -> None:
         if int(getattr(self.predictor, "world_size", 1)) != 1:
             raise Sam3Error("native mask prompts require a single-GPU predictor")
@@ -387,14 +389,14 @@ class Sam3Adapter:
     def propagate_mask(
         self,
         resource_path: Path,
-        seed_mask: np.ndarray,
+        seed_mask: NDArray,
         *,
         seed_frame: int,
         frame_count: int,
         frame_shape: tuple[int, int],
         tracking_window: tuple[int, int],
         object_id: int = 1,
-    ) -> np.ndarray:
+    ) -> NDArray:
         mask = np.asarray(seed_mask, dtype=bool)
         if mask.shape != frame_shape or not mask.any():
             raise ValueError("seed_mask must be non-empty and match frame_shape")

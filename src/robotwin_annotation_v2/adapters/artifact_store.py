@@ -15,6 +15,8 @@ from PIL import Image
 
 from ..models import EpisodeRef
 
+NDArray = np.ndarray[Any, Any]
+
 
 class ArtifactStore:
     def __init__(self, root: Path) -> None:
@@ -59,7 +61,7 @@ class ArtifactStore:
         return path
 
     @staticmethod
-    def write_png(path: Path, array: np.ndarray, *, rgb: bool = False) -> Path:
+    def write_png(path: Path, array: NDArray, *, rgb: bool = False) -> Path:
         value = np.asarray(array)
         if rgb:
             if value.ndim != 3 or value.shape[2] != 3:
@@ -86,7 +88,7 @@ class ArtifactStore:
         return path
 
     @staticmethod
-    def write_npz(path: Path, **arrays: np.ndarray) -> Path:
+    def write_npz(path: Path, **arrays: NDArray) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary_name = tempfile.mkstemp(
             prefix=f".{path.name}.",

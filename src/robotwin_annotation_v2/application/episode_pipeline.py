@@ -44,11 +44,13 @@ from robotwin_annotation_v2.pipeline.gripper.sam.annotator import (
 from robotwin_annotation_v2.pipeline.gripper.sam.candidates import (
     GripperSeedQualityGateConfig,
 )
-from robotwin_annotation_v2.pipeline.mask_qc import (
-    MaskQCError,
-    run_mask_qc_stage,
-)
+from robotwin_annotation_v2.pipeline.mask_qc import run_mask_qc_stage
 from robotwin_annotation_v2.pipeline.object_mask.artifacts import save_mask_qc_artifacts
+from robotwin_annotation_v2.pipeline.object_mask.qc import MaskQCError
+from robotwin_annotation_v2.pipeline.object_mask.temporal_qc import (
+    compose_visible_mask,
+    evaluate_temporal_mask,
+)
 from robotwin_annotation_v2.pipeline.qwen_stage import (
     QwenStageError,
     parse_semantic_plan,
@@ -58,11 +60,11 @@ from robotwin_annotation_v2.pipeline.sam_stage import (
     RoleMaskData,
     SamStageError,
     SamStageResult,
-    compose_visible_mask,
-    evaluate_temporal_mask,
     run_sam_stage,
 )
 from robotwin_annotation_v2.pipeline.state_loop import build_loop_context
+
+NDArray = np.ndarray[Any, Any]
 
 SAM_EXECUTION_ERRORS = (
     GripperStageError,
@@ -313,12 +315,13 @@ def _default_gripper_qc_prompt(config: PipelineConfig) -> Path:
     return config.config_path.parent / "prompts" / "gripper_seed_candidate_qc.txt"
 
 
-def _load_bool_png(path: Path) -> np.ndarray:
+def _load_bool_png(path: Path) -> NDArray:
     with Image.open(path) as image:
-        return np.asarray(image.convert("L"), dtype=np.uint8) != 0
+        mask: NDArray = np.asarray(image.convert("L"), dtype=np.uint8) != 0
+        return mask
 
 
-def _load_npz_masks(path: Path) -> np.ndarray:
+def _load_npz_masks(path: Path) -> NDArray:
     with np.load(path, allow_pickle=False) as archive:
         if "masks" not in archive.files:
             raise ValueError(f"mask archive has no masks array: {path}")

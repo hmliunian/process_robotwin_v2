@@ -47,6 +47,8 @@ from .object_mask.resolver import (
 )
 from .prompt_context import timeline_prompt_fields
 
+NDArray = np.ndarray[Any, Any]
+
 _CANDIDATE_MARKER = "{candidate_panels}"
 _CONTEXT_MARKER = "{context_frames}"
 _PLACEHOLDER_PATTERN = re.compile(r"\{([a-z][a-z0-9_]*)\}")
@@ -70,7 +72,7 @@ class MaskQCBackend(Protocol):
         frame_id: int,
         frame_count: int,
         frame_shape: tuple[int, int],
-    ) -> dict[str, np.ndarray]: ...
+    ) -> dict[str, NDArray]: ...
 
 
 class BboxMaskBackend(Protocol):
@@ -82,7 +84,7 @@ class BboxMaskBackend(Protocol):
         frame_id: int,
         frame_count: int,
         frame_shape: tuple[int, int],
-    ) -> np.ndarray: ...
+    ) -> NDArray: ...
 
 
 class MaskQCClient(Protocol):
@@ -98,7 +100,7 @@ class MaskQCClient(Protocol):
     ) -> QwenCompletion: ...
 
 
-def _dilate(mask: np.ndarray, radius: int = 2) -> np.ndarray:
+def _dilate(mask: NDArray, radius: int = 2) -> NDArray:
     value = np.asarray(mask, dtype=bool)
     if radius <= 0:
         return value.copy()
@@ -1043,10 +1045,10 @@ def run_mask_qc_stage(
                 client=client,
             )
         )
-    selected_masks: dict[RoleName, np.ndarray] = {}
-    candidate_masks: dict[RoleName, dict[str, np.ndarray]] = {}
+    selected_masks: dict[RoleName, NDArray] = {}
+    candidate_masks: dict[RoleName, dict[str, NDArray]] = {}
     candidate_panels: dict[RoleName, dict[str, Image.Image]] = {}
-    attempt_candidate_masks: dict[RoleName, dict[int, dict[str, np.ndarray]]] = {}
+    attempt_candidate_masks: dict[RoleName, dict[int, dict[str, NDArray]]] = {}
     attempt_candidate_panels: dict[RoleName, dict[int, dict[str, Image.Image]]] = {}
     for semantic, execution in zip(semantic_plan.role_plans, executions, strict=True):
         role = semantic.role
@@ -1061,7 +1063,7 @@ def run_mask_qc_stage(
                 strict=True,
             )
         }
-        role_attempt_masks: dict[int, dict[str, np.ndarray]] = {}
+        role_attempt_masks: dict[int, dict[str, NDArray]] = {}
         role_attempt_panels: dict[int, dict[str, Image.Image]] = {}
         for attempt in execution.attempts:
             masks_at_seed = role_attempt_masks.setdefault(attempt.seed_frame_id, {})

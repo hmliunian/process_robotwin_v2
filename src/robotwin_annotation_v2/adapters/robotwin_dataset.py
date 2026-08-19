@@ -6,7 +6,7 @@ import json
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import av
 import numpy as np
@@ -14,6 +14,8 @@ import pandas as pd
 from PIL import Image
 
 from ..models import EpisodeRef
+
+NDArray = np.ndarray[Any, Any]
 
 
 class DatasetError(RuntimeError):
@@ -31,8 +33,8 @@ class EpisodePaths:
 class EpisodeState:
     frame_count: int
     task_text: str
-    gripper_states: np.ndarray
-    eef_states: np.ndarray
+    gripper_states: NDArray
+    eef_states: NDArray
     paths: EpisodePaths
 
 
@@ -165,7 +167,7 @@ class RoboTwinDataset:
         with av.open(str(path)) as container:
             for frame_id, video_frame in enumerate(container.decode(video=0)):
                 if frame_id in wanted:
-                    result[frame_id] = video_frame.to_image().convert("RGB")
+                    result[frame_id] = cast(Any, video_frame).to_image().convert("RGB")
                     if len(result) == len(wanted):
                         break
         missing = sorted(wanted - set(result))

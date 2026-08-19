@@ -22,6 +22,7 @@ from .models.timeline import (
 from .pipeline import timeline_detector as _timeline_detector
 
 ArmName = Literal["left", "right"]
+NDArray = np.ndarray[Any, Any]
 
 CLOSED_THRESHOLD = _timeline_detector.CLOSED_THRESHOLD
 OPEN_THRESHOLD = _timeline_detector.OPEN_THRESHOLD
@@ -72,8 +73,8 @@ class EpisodeArrays:
     """State columns whose row count defines the usable episode length."""
 
     episode_index: int
-    observation_state: np.ndarray
-    joint_absolute: np.ndarray
+    observation_state: NDArray
+    joint_absolute: NDArray
 
     @property
     def frame_count(self) -> int:
@@ -91,9 +92,9 @@ class CameraCalibrationSeries:
     """Per-frame OpenCV calibration and OpenGL pose, cropped to Parquet rows."""
 
     camera: str
-    intrinsic_cv: np.ndarray
-    extrinsic_cv: np.ndarray
-    cam2world_gl: np.ndarray
+    intrinsic_cv: NDArray
+    extrinsic_cv: NDArray
+    cam2world_gl: NDArray
 
     @property
     def frame_count(self) -> int:
@@ -114,7 +115,7 @@ class UrdfGripperEpisodeData:
         return self.arrays.frame_count
 
     @property
-    def joint_absolute(self) -> np.ndarray:
+    def joint_absolute(self) -> NDArray:
         return self.arrays.joint_absolute
 
     @property
@@ -228,7 +229,7 @@ def _read_parquet_columns(path: Path) -> dict[str, Any]:
     return {column: table[column].to_pylist() for column in PARQUET_COLUMNS}
 
 
-def _stack_state_column(values: Any, *, name: str, frame_count: int) -> np.ndarray:
+def _stack_state_column(values: Any, *, name: str, frame_count: int) -> NDArray:
     try:
         rows = [np.asarray(row, dtype=np.float64) for row in values]
         result = np.stack(rows, axis=0)
@@ -299,8 +300,8 @@ def load_episode_arrays(
 
 
 def _detect_loop_events(
-    gripper_values: np.ndarray,
-    eef_values: np.ndarray,
+    gripper_values: NDArray,
+    eef_values: NDArray,
     *,
     arm: ArmName,
     stable_frames: int = 3,
@@ -335,11 +336,11 @@ def _detect_loop_events(
 class _TimelineState:
     """Minimal state view consumed by the canonical episode detector."""
 
-    gripper_states: np.ndarray[Any, Any]
-    eef_states: np.ndarray[Any, Any]
+    gripper_states: NDArray
+    eef_states: NDArray
 
 
-def infer_active_loop(observation_state: np.ndarray) -> ActiveGripperLoop:
+def infer_active_loop(observation_state: NDArray) -> ActiveGripperLoop:
     """Require exactly one complete arm loop using Stage-1's state semantics."""
 
     state = np.asarray(observation_state, dtype=np.float64)

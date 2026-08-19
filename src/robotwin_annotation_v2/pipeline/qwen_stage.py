@@ -7,7 +7,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from PIL import Image
 
@@ -352,12 +352,12 @@ def _parse_role(
             )
         try:
             query_bank = QueryBank(
-                category_query=candidate_values["category_query"],
+                category_query=cast(str, candidate_values["category_query"]),
                 color_category_query=candidate_values["color_category_query"],
                 shape_category_query=candidate_values["shape_category_query"],
                 general_fallback_query=candidate_values["general_fallback_query"],
                 recommended_order=order,
-            )  # type: ignore[arg-type]
+            )
         except SemanticPlanError as exc:
             raise QwenStageError(f"invalid {role} query bank: {exc}") from exc
 

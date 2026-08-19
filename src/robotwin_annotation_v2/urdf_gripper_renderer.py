@@ -31,6 +31,7 @@ from .adapters.urdf import finger_fit as _finger_fit
 FloatArray = NDArray[np.floating[Any]]
 BoolArray = NDArray[np.bool_]
 UIntArray = NDArray[np.unsignedinteger[Any]]
+VectorInput = Sequence[float] | FloatArray
 
 GRIPPER_DRIVE_CLOSED_M = _finger_fit.GRIPPER_DRIVE_CLOSED_M
 GRIPPER_DRIVE_SPAN_M = _finger_fit.GRIPPER_DRIVE_SPAN_M
@@ -157,7 +158,7 @@ def _parse_vector(text: str | None, default: Sequence[float]) -> FloatArray:
     return result
 
 
-def xyz_rpy_matrix(xyz: Sequence[float], rpy: Sequence[float]) -> FloatArray:
+def xyz_rpy_matrix(xyz: VectorInput, rpy: VectorInput) -> FloatArray:
     """Return URDF origin transform, using ``Rz(yaw) @ Ry(pitch) @ Rx(roll)``."""
 
     xyz_array = np.asarray(xyz, dtype=np.float64)
@@ -179,7 +180,7 @@ def xyz_rpy_matrix(xyz: Sequence[float], rpy: Sequence[float]) -> FloatArray:
     return transform
 
 
-def axis_angle_matrix(axis: Sequence[float], angle: float) -> FloatArray:
+def axis_angle_matrix(axis: VectorInput, angle: float) -> FloatArray:
     """Return a homogeneous rotation about an arbitrary joint-frame axis."""
 
     axis_array = np.asarray(axis, dtype=np.float64)
@@ -512,7 +513,8 @@ class AlohaUrdfRenderer:
         return resolved
 
     def _load_visual_mesh(self, path: Path, scale: FloatArray) -> Any:
-        loaded = self._trimesh.load(path, force="scene", process=False)
+        loaded: Any = self._trimesh.load(path, force="scene", process=False)
+        mesh: Any
         if isinstance(loaded, self._trimesh.Trimesh):
             mesh = loaded
         else:

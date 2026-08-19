@@ -13,7 +13,7 @@ import zipfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 
@@ -35,6 +35,8 @@ from .mask_schema import (
     default_frame_encoding,
     validate_frame_encoding,
 )
+
+NDArray = np.ndarray[Any, Any]
 
 MASK_RUN_FORMAT_VERSION = "robotwin_mask_run_v2"
 PROVENANCE_FORMAT_VERSION = "robotwin_frame_provenance_v2"
@@ -317,11 +319,11 @@ def _safe_child(root: Path, relative: Any, *, label: str) -> Path:
     return candidate
 
 
-def _small_strings(array: np.ndarray) -> tuple[str, ...]:
+def _small_strings(array: NDArray) -> tuple[str, ...]:
     return tuple(str(item) for item in array.tolist())
 
 
-def _scalar_int(value: np.ndarray, *, label: str) -> int:
+def _scalar_int(value: NDArray, *, label: str) -> int:
     array = np.asarray(value)
     if array.ndim != 0 or array.dtype.kind not in {"i", "u"}:
         raise UrdfGripperPublishError(f"{label} must be one integer scalar")
@@ -570,10 +572,10 @@ def _load_product(
 def _validate_backend_combined_masks(
     path: Path,
     *,
-    source_masks: np.ndarray,
-    source_frame_encoding: np.ndarray,
+    source_masks: NDArray,
+    source_frame_encoding: NDArray,
     source_mask_format: str,
-    gripper_track: np.ndarray,
+    gripper_track: NDArray,
     active_arm: str,
 ) -> None:
     try:
@@ -834,7 +836,7 @@ def _validate_source_run_contract(
     else:
         raw_mode = contract.get("annotation_mode")
         try:
-            source_mode = AnnotationMode(raw_mode)
+            source_mode = AnnotationMode(cast(str, raw_mode))
         except (TypeError, ValueError) as exc:
             raise UrdfGripperPublishError(
                 f"source run contract has unsupported annotation_mode: {raw_mode!r}"
@@ -985,7 +987,7 @@ def write_source_run_contract(
     )
     path = run_dir / SOURCE_RUN_CONTRACT_FILENAME
     _write_immutable_json(path, contract, description="source run contract")
-    return _json_clone(contract)
+    return cast(dict[str, Any], _json_clone(contract))
 
 
 def validate_source_run_contract(
@@ -1032,7 +1034,7 @@ def validate_source_run_contract(
         raise UrdfGripperPublishError(
             "source run contract requested episode ids differ from the expected run"
         )
-    return _json_clone(contract)
+    return cast(dict[str, Any], _json_clone(contract))
 
 
 def _validate_source_summary(
@@ -1081,7 +1083,7 @@ def _validate_source_summary(
                 "source process summary contains an invalid episode record"
             )
         try:
-            record_id = int(raw_id)
+            record_id = int(cast(str, raw_id))
         except (TypeError, ValueError) as exc:
             raise UrdfGripperPublishError(
                 "source process summary contains an invalid episode record"
@@ -1517,7 +1519,10 @@ def _validate_derivation_source_episode(
 
     dynamic = source_metadata["dynamic_manifest"]
     raw_shape = dynamic.get("frame_shape_hw")
-    frame_shape = tuple(int(item) for item in np.asarray(source["masks"]).shape[2:])
+    frame_shape = cast(
+        tuple[int, int],
+        tuple(int(item) for item in np.asarray(source["masks"]).shape[2:]),
+    )
     if (
         not isinstance(raw_shape, list)
         or len(raw_shape) != 2
@@ -1706,7 +1711,7 @@ def write_source_episode_completion_receipt(
         expected_dataset_root=expected_dataset_root,
         require_completion_receipt=True,
     )
-    return _json_clone(receipt)
+    return cast(dict[str, Any], _json_clone(receipt))
 
 
 def validate_derivation_source_episode(
@@ -2208,7 +2213,10 @@ def _prepare_contract(
         raise UrdfGripperPublishError(
             "backend source lineage differs from the current source episode"
         )
-    frame_shape = tuple(int(item) for item in np.asarray(source["masks"]).shape[2:])
+    frame_shape = cast(
+        tuple[int, int],
+        tuple(int(item) for item in np.asarray(source["masks"]).shape[2:]),
+    )
     raw_shape = backend_episode_record.get("frame_shape_hw")
     if raw_shape is not None and tuple(raw_shape) != frame_shape:
         raise UrdfGripperPublishError("backend and source frame shapes differ")

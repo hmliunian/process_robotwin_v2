@@ -37,6 +37,8 @@ from robotwin_annotation_v2.mask_schema import (
 )
 from robotwin_annotation_v2.models import EpisodeRef
 
+NDArray = np.ndarray[Any, Any]
+
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -89,14 +91,14 @@ class MaskCandidate:
 
 @dataclass(frozen=True)
 class MaskArtifact:
-    masks: np.ndarray
+    masks: NDArray
     instance_names: tuple[str, ...]
     roles: tuple[str, ...]
     annotation_status: tuple[str, ...]
     frame_count: int
     format_version: str
     qc_status: tuple[str, ...] = ()
-    frame_encoding: np.ndarray | None = None
+    frame_encoding: NDArray | None = None
 
 
 def _parse_args() -> argparse.Namespace:
@@ -350,7 +352,7 @@ def _load_masks(path: Path) -> MaskArtifact:
     )
 
 
-def _dilate_mask(mask: np.ndarray, radius: int) -> np.ndarray:
+def _dilate_mask(mask: NDArray, radius: int) -> NDArray:
     """Dilate a mask with a square kernel using a summed-area table."""
 
     value = np.asarray(mask, dtype=bool)
@@ -371,15 +373,16 @@ def _dilate_mask(mask: np.ndarray, radius: int) -> np.ndarray:
         - integral[kernel_size:, :-kernel_size]
         + integral[:-kernel_size, :-kernel_size]
     )
-    return counts > 0
+    output: NDArray = counts > 0
+    return output
 
 
 def _external_outline_layers(
-    mask: np.ndarray,
+    mask: NDArray,
     *,
     outline_radius: int,
     halo_radius: int,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[NDArray, NDArray]:
     """Return black halo and colored-outline pixels, both strictly outside the mask."""
 
     if outline_radius < 0:
@@ -394,14 +397,14 @@ def _external_outline_layers(
 
 
 def overlay_frame(
-    frame: np.ndarray,
+    frame: NDArray,
     artifact: MaskArtifact,
     frame_id: int,
     alpha: float,
     *,
     outline_radius: int = DEFAULT_OUTLINE_RADIUS,
     halo_radius: int = DEFAULT_HALO_RADIUS,
-) -> np.ndarray:
+) -> NDArray:
     if not 0.0 <= alpha <= 1.0:
         raise ValueError("alpha must be between 0 and 1")
     if frame_id >= artifact.frame_count:

@@ -45,6 +45,8 @@ from robotwin_annotation_v2.urdf_gripper_publisher import (
     validate_derivation_source_episode,
 )
 
+NDArray = np.ndarray[Any, Any]
+
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_DATASET_ROOT = Path(
     "/DATA/disk8/xuran/add_mask_robotwin/dataset/"
@@ -85,9 +87,9 @@ class FourChannelMasks:
     """One existing target/receiver/gripper mask artifact and its full payload."""
 
     path: Path
-    payload: dict[str, np.ndarray]
-    masks: np.ndarray
-    frame_encoding: np.ndarray
+    payload: dict[str, NDArray]
+    masks: NDArray
+    frame_encoding: NDArray
     annotation_status: tuple[str, ...]
     qc_status: tuple[str, ...]
 
@@ -104,10 +106,10 @@ class FourChannelMasks:
 class UrdfMaskProduct:
     """Episode-length renderer output before it is merged with object masks."""
 
-    gripper_track: np.ndarray
-    rendered_amodal_track: np.ndarray
-    depth_evaluable_track: np.ndarray
-    depth_consistent_track: np.ndarray
+    gripper_track: NDArray
+    rendered_amodal_track: NDArray
+    depth_evaluable_track: NDArray
+    depth_consistent_track: NDArray
     frame_diagnostics: tuple[dict[str, Any], ...]
 
 
@@ -388,7 +390,7 @@ def resolve_source_loop(
     )
 
 
-def _small_strings(value: np.ndarray) -> tuple[str, ...]:
+def _small_strings(value: NDArray) -> tuple[str, ...]:
     return tuple(str(item) for item in value.tolist())
 
 
@@ -524,8 +526,8 @@ def compose_four_channel_payload(
     source: FourChannelMasks,
     *,
     active_arm: str,
-    gripper_track: np.ndarray,
-) -> dict[str, np.ndarray]:
+    gripper_track: NDArray,
+) -> dict[str, NDArray]:
     if active_arm not in {"left", "right"}:
         raise ValueError(f"active_arm must be left or right, got {active_arm!r}")
     track = np.asarray(gripper_track, dtype=bool)
@@ -562,7 +564,7 @@ def compose_four_channel_payload(
     return payload
 
 
-def _atomic_write_npz(path: Path, payload: Mapping[str, np.ndarray]) -> Path:
+def _atomic_write_npz(path: Path, payload: Mapping[str, NDArray]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.",
@@ -756,7 +758,7 @@ def decode_depth_video(
     *,
     frame_count: int,
     frame_shape: tuple[int, int],
-) -> np.ndarray:
+) -> NDArray:
     """Decode the first Parquet-aligned FFV1 gray16le frames in one ffmpeg call."""
 
     raw = _decode_raw_video(
@@ -774,7 +776,7 @@ def decode_rgb_video(
     *,
     frame_count: int,
     frame_shape: tuple[int, int],
-) -> np.ndarray:
+) -> NDArray:
     raw = _decode_raw_video(
         path,
         frame_count=frame_count,
@@ -851,14 +853,14 @@ def _probe_video(path: Path) -> dict[str, Any]:
 
 
 def overlay_frame(
-    rgb: np.ndarray,
-    masks: np.ndarray,
+    rgb: NDArray,
+    masks: NDArray,
     annotation_status: Sequence[str],
     *,
     frame_id: int,
     alpha: float,
-    frame_encoding: np.ndarray | None = None,
-) -> np.ndarray:
+    frame_encoding: NDArray | None = None,
+) -> NDArray:
     frame = np.asarray(rgb, dtype=np.uint8)
     tracks = np.asarray(masks, dtype=bool)
     if frame.ndim != 3 or frame.shape[2] != 3:
@@ -1048,7 +1050,7 @@ def render_episode_product(
     fit_config: Mapping[str, Any],
     episode: UrdfGripperEpisodeData,
     calibration: CameraCalibrationSeries,
-    scene_depth_mm: np.ndarray,
+    scene_depth_mm: NDArray,
     *,
     frame_shape: tuple[int, int],
     tolerance_mm: float,
@@ -1148,7 +1150,7 @@ def _product_payload(
     episode: UrdfGripperEpisodeData,
     *,
     tolerance_mm: float,
-) -> dict[str, np.ndarray]:
+) -> dict[str, NDArray]:
     return {
         "format_version": np.asarray(PRODUCT_FORMAT_VERSION),
         "frame_count": np.asarray(episode.frame_count, dtype=np.int64),
@@ -1262,11 +1264,11 @@ def _quality_summary(
         ),
         "maximum_q_jump_by_joint_m": maximum_jump_by_joint,
     }
-    for key, value in quality.items():
+    for key, quality_value in quality.items():
         if key.endswith("_fraction") and (
-            not isinstance(value, float)
-            or not math.isfinite(value)
-            or not 0.0 <= value <= 1.0
+            not isinstance(quality_value, float)
+            or not math.isfinite(quality_value)
+            or not 0.0 <= quality_value <= 1.0
         ):
             raise UrdfMaskRunError(f"quality fraction must be finite and in [0, 1]: {key}")
     return quality
@@ -1425,7 +1427,14 @@ def validate_completed_episode(
             "minimum_eligible_nonempty_fraction",
         }:
             try:
-                matches = bool(np.isclose(float(actual), float(expected), rtol=0, atol=1e-12))
+                matches = bool(
+                    np.isclose(
+                        float(cast(Any, actual)),
+                        float(cast(Any, expected)),
+                        rtol=0,
+                        atol=1e-12,
+                    )
+                )
             except (TypeError, ValueError):
                 matches = False
         else:

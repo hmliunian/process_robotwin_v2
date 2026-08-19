@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 import numpy as np
 
@@ -26,6 +26,8 @@ from .object_mask.temporal_qc import (
     evaluate_temporal_mask,
 )
 
+NDArray = np.ndarray[Any, Any]
+
 INSTANCE_NAMES = ("target_0", "receiver_0", "gripper_left", "gripper_right")
 
 
@@ -42,19 +44,19 @@ class SamBackend(Protocol):
         frame_id: int,
         frame_count: int,
         frame_shape: tuple[int, int],
-    ) -> np.ndarray: ...
+    ) -> NDArray: ...
 
     def propagate_mask(
         self,
         resource_path: Path,
-        seed_mask: np.ndarray,
+        seed_mask: NDArray,
         *,
         seed_frame: int,
         frame_count: int,
         frame_shape: tuple[int, int],
         tracking_window: tuple[int, int],
         object_id: int = 1,
-    ) -> np.ndarray: ...
+    ) -> NDArray: ...
 
 
 @dataclass(frozen=True)
@@ -64,10 +66,10 @@ class RoleMaskData:
     seed_frame_id: int | None
     primary_query: str | None
     output_window: FrameWindow
-    seed_mask: np.ndarray | None
-    canonical_envelope: np.ndarray | None
-    native_track: np.ndarray
-    visible_mask: np.ndarray
+    seed_mask: NDArray | None
+    canonical_envelope: NDArray | None
+    native_track: NDArray
+    visible_mask: NDArray
     temporal_qc: TemporalMaskQc | None
     failure: str | None
     qc_status: MaskQCStatus = MaskQCStatus.NOT_RUN
@@ -106,7 +108,7 @@ class SamStageResult:
         return self.for_role("receiver")
 
     @property
-    def masks(self) -> np.ndarray:
+    def masks(self) -> NDArray:
         output = np.zeros(
             (len(INSTANCE_NAMES), self.frame_count, *self.frame_shape),
             dtype=bool,
@@ -117,7 +119,7 @@ class SamStageResult:
         return output
 
 
-def dilate_envelope(mask: np.ndarray, padding: int) -> np.ndarray:
+def dilate_envelope(mask: NDArray, padding: int) -> NDArray:
     """Dilate one seed mask without adding an image-processing dependency."""
 
     value = np.asarray(mask, dtype=bool)
@@ -153,9 +155,9 @@ def _empty_role(
     seed_frame_id: int | None,
     primary_query: str | None,
     failure: str,
-    seed_mask: np.ndarray | None = None,
-    envelope: np.ndarray | None = None,
-    native: np.ndarray | None = None,
+    seed_mask: NDArray | None = None,
+    envelope: NDArray | None = None,
+    native: NDArray | None = None,
     qc_report: RoleMaskQC | None = None,
 ) -> RoleMaskData:
     empty = np.zeros((frame_count, *frame_shape), dtype=bool)
@@ -192,7 +194,7 @@ def _run_role(
     resource_path: Path,
     frame_shape: tuple[int, int],
     qc_report: RoleMaskQC | None = None,
-    qc_seed_mask: np.ndarray | None = None,
+    qc_seed_mask: NDArray | None = None,
 ) -> RoleMaskData:
     if not (
         output_window.start <= temporal_qc_window.start

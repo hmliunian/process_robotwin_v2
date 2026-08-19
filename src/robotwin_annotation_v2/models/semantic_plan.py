@@ -6,7 +6,7 @@ import hashlib
 import re
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from ..domain import AnnotationMode, AnnotationSpec, annotation_spec
 from .loop_context import EpisodeRef
@@ -160,7 +160,7 @@ class QueryBank:
     def primary_query(self) -> str:
         value = getattr(self, self.recommended_order[0])
         assert value is not None
-        return value
+        return cast(str, value)
 
     def to_json(self) -> dict[str, Any]:
         return {
