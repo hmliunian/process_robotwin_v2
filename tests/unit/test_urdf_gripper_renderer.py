@@ -134,6 +134,9 @@ def test_renderer_reexports_canonical_finger_fit_primitives_by_identity() -> Non
     for name in (
         "DepthAgreement",
         "FingerCandidateScore",
+        "FingerFitDiagnostics",
+        "FingerFitResult",
+        "FingerPoseFitter",
         "active_gripper_link_names",
         "agreement_has_minimum_support",
         "candidate_has_minimum_support",
@@ -529,6 +532,66 @@ def test_q_fit_sweeps_joint7_before_joint8_and_preserves_diagnostic_order() -> N
     assert tuple(result.diagnostics.ranked_candidates_by_joint) == (
         "fr_joint7",
         "fr_joint8",
+    )
+
+
+def test_finger_pose_fitter_matches_legacy_renderer_delegate_exactly() -> None:
+    direct_renderer = _fake_renderer(mismatch_link8=False)
+    legacy_delegate_renderer = _fake_renderer(mismatch_link8=False)
+    inputs = (
+        np.zeros(14),
+        np.eye(3),
+        np.eye(4),
+        np.full((1, 3), 100.0),
+    )
+    options = {
+        "active_side": "right",
+        "tolerance_mm": 0.1,
+        "q_max_m": 0.04,
+        "coarse_step_m": 0.01,
+        "fine_step_m": 0.005,
+        "minimum_support_pixels": 2,
+        "minimum_per_link_support_pixels": 1,
+        "minimum_consistent_fraction": 1.0,
+        "minimum_fixed_support_pixels": 1,
+        "minimum_searchable_pixels": 0,
+    }
+
+    direct = finger_fit.FingerPoseFitter(direct_renderer).fit_finger_q(*inputs, **options)
+    delegated = legacy_delegate_renderer.fit_finger_q(*inputs, **options)
+
+    assert direct.accepted == delegated.accepted
+    assert direct.selected_q_m == delegated.selected_q_m
+    assert dict(direct.selected_q_by_joint) == dict(delegated.selected_q_by_joint)
+    assert dict(direct.component_acceptance) == dict(delegated.component_acceptance)
+    assert direct.diagnostics.as_dict() == delegated.diagnostics.as_dict()
+    np.testing.assert_array_equal(direct.visible_mask, delegated.visible_mask)
+    assert tuple(direct.component_visible_masks) == tuple(delegated.component_visible_masks)
+    for name in direct.component_visible_masks:
+        np.testing.assert_array_equal(
+            direct.component_visible_masks[name],
+            delegated.component_visible_masks[name],
+        )
+    direct_render: Any = direct.selected_render
+    delegated_render: Any = delegated.selected_render
+    assert direct_render.active_side == delegated_render.active_side
+    assert dict(direct_render.joint_positions) == dict(delegated_render.joint_positions)
+    for name in (
+        "robot_mask",
+        "robot_depth_mm",
+        "active_gripper_mask",
+        "active_gripper_depth_mm",
+        "fixed_link6_mask",
+        "finger_link7_mask",
+        "finger_link8_mask",
+        "segmentation_ids",
+    ):
+        np.testing.assert_array_equal(
+            getattr(direct_render, name),
+            getattr(delegated_render, name),
+        )
+    assert (  # type: ignore[attr-defined]
+        direct_renderer.render_calls == legacy_delegate_renderer.render_calls
     )
 
 

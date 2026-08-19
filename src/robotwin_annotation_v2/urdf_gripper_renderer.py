@@ -21,7 +21,7 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -39,6 +39,9 @@ GRIPPER_KINEMATIC_MIN_M = _finger_fit.GRIPPER_KINEMATIC_MIN_M
 ArmSide = _finger_fit.ArmSide
 DepthAgreement = _finger_fit.DepthAgreement
 FingerCandidateScore = _finger_fit.FingerCandidateScore
+FingerFitDiagnostics = _finger_fit.FingerFitDiagnostics
+FingerFitResult = _finger_fit.FingerFitResult
+FingerPoseFitter = _finger_fit.FingerPoseFitter
 _grid = _finger_fit._grid
 _normalize_active_side = _finger_fit._normalize_active_side
 active_gripper_link_names = _finger_fit.active_gripper_link_names
@@ -139,71 +142,6 @@ class UrdfRenderResult:
         """The link7/link8 union, excluding fixed wrist/palm link6."""
 
         return self.finger_link7_mask | self.finger_link8_mask
-
-
-@dataclass(frozen=True)
-class FingerFitDiagnostics:
-    """Serializable evidence and thresholds for a finger-q decision."""
-
-    reason: str | None
-    search_mode: Literal["prior_fast_path", "coordinate_sweep"]
-    tolerance_mm: float
-    command_q_m: float
-    temporal_prior_q_by_joint: Mapping[str, float]
-    temporal_max_delta_m: float | None
-    minimum_support_pixels: int
-    minimum_per_link_support_pixels: int
-    minimum_consistent_fraction: float
-    minimum_fast_path_fraction: float
-    maximum_median_residual_mm: float
-    minimum_fixed_support_pixels: int
-    fixed_link6_agreement: DepthAgreement
-    final_link7_agreement: DepthAgreement
-    final_link8_agreement: DepthAgreement
-    component_acceptance: Mapping[str, bool]
-    selected_score_by_joint: Mapping[str, FingerCandidateScore]
-    ranked_candidates_by_joint: Mapping[str, tuple[FingerCandidateScore, ...]]
-
-    def as_dict(self) -> dict[str, object]:
-        return {
-            "reason": self.reason,
-            "search_mode": self.search_mode,
-            "tolerance_mm": self.tolerance_mm,
-            "command_q_m": self.command_q_m,
-            "temporal_prior_q_by_joint": dict(self.temporal_prior_q_by_joint),
-            "temporal_max_delta_m": self.temporal_max_delta_m,
-            "minimum_support_pixels": self.minimum_support_pixels,
-            "minimum_per_link_support_pixels": self.minimum_per_link_support_pixels,
-            "minimum_consistent_fraction": self.minimum_consistent_fraction,
-            "minimum_fast_path_fraction": self.minimum_fast_path_fraction,
-            "maximum_median_residual_mm": self.maximum_median_residual_mm,
-            "minimum_fixed_support_pixels": self.minimum_fixed_support_pixels,
-            "fixed_link6_agreement": self.fixed_link6_agreement.as_dict(),
-            "final_link7_agreement": self.final_link7_agreement.as_dict(),
-            "final_link8_agreement": self.final_link8_agreement.as_dict(),
-            "component_acceptance": dict(self.component_acceptance),
-            "selected_score_by_joint": {
-                name: score.as_dict() for name, score in self.selected_score_by_joint.items()
-            },
-            "ranked_candidates_by_joint": {
-                name: [candidate.as_dict() for candidate in candidates]
-                for name, candidates in self.ranked_candidates_by_joint.items()
-            },
-        }
-
-
-@dataclass(frozen=True)
-class FingerFitResult:
-    """Selected contact-aware finger pose and fail-closed visible mask."""
-
-    accepted: bool
-    selected_q_m: float | None
-    selected_q_by_joint: Mapping[str, float]
-    selected_render: UrdfRenderResult
-    visible_mask: BoolArray
-    component_visible_masks: Mapping[str, BoolArray]
-    component_acceptance: Mapping[str, bool]
-    diagnostics: FingerFitDiagnostics
 
 
 def _parse_vector(text: str | None, default: Sequence[float]) -> FloatArray:
@@ -711,34 +649,6 @@ class AlohaUrdfRenderer:
             joint_positions=dict(joint_positions),
         )
 
-    def _score_candidate(
-        self,
-        rendered: UrdfRenderResult,
-        scene_depth_mm: FloatArray,
-        tolerance_mm: float,
-        q_m: float,
-        joint_name: str,
-    ) -> FingerCandidateScore:
-        link7 = depth_agreement(
-            rendered.finger_link7_mask,
-            rendered.robot_depth_mm,
-            scene_depth_mm,
-            tolerance_mm,
-        )
-        link8 = depth_agreement(
-            rendered.finger_link8_mask,
-            rendered.robot_depth_mm,
-            scene_depth_mm,
-            tolerance_mm,
-        )
-        return FingerCandidateScore(
-            q_m=q_m,
-            agreement=link7 if joint_name.endswith("joint7") else link8,
-            link7_agreement=link7,
-            link8_agreement=link8,
-            joint_name=joint_name,
-        )
-
     def fit_finger_q(
         self,
         joint_absolute: Sequence[float] | FloatArray,
@@ -763,390 +673,30 @@ class AlohaUrdfRenderer:
         temporal_max_delta_m: float | None = 0.01,
         minimum_searchable_pixels: int = 4,
     ) -> FingerFitResult:
-        """Fit contact-constrained link7/link8 q with a coarse-to-fine sweep.
+        """Delegate contact-aware finger fitting to the canonical fitter."""
 
-        Link7 and link8 are fitted independently by coordinate sweeps.  Every
-        hypothesis is rendered with both arms, so segmentation and depth
-        respect robot self-occlusion.  When a previous per-joint q is supplied,
-        each search is physically bounded to ``prior +/- temporal_max_delta_m``;
-        temporal continuity therefore has units and cannot be bypassed by a
-        one-pixel score difference.
-
-        Link6, link7, and link8 pass depth-support gates independently.  The
-        published mask is the union of supported components only: failure of
-        one finger never erases a verified palm or the other finger.
-        """
-
-        self._ensure_open()
-        side, prefix = _normalize_active_side(active_side)
-        joints = np.asarray(joint_absolute, dtype=np.float64)
-        if joints.shape != (14,) or not np.isfinite(joints).all():
-            raise ValueError("joint_absolute must be a finite shape-(14,) vector")
-        scene_depth = np.asarray(scene_depth_mm, dtype=np.float64)
-        expected_shape = (self.height, self.width)
-        if scene_depth.shape != expected_shape:
-            raise ValueError(f"scene_depth_mm must have shape {expected_shape}")
-        if not math.isfinite(float(tolerance_mm)) or tolerance_mm < 0:
-            raise ValueError("tolerance_mm must be finite and non-negative")
-        if (
-            minimum_support_pixels < 0
-            or minimum_fixed_support_pixels < 0
-            or minimum_searchable_pixels < 0
-        ):
-            raise ValueError("support thresholds must be non-negative")
-        finger_support_threshold = max(
-            minimum_per_link_support_pixels,
-            math.ceil(minimum_support_pixels / 2),
-        )
-        # Validate per-component gates before doing GPU work.
-        dummy = DepthAgreement(0, 0, 0, 0.0, None, None)
-        agreement_has_minimum_support(
-            dummy,
-            minimum_support_pixels=finger_support_threshold,
+        return FingerPoseFitter(self).fit_finger_q(
+            joint_absolute,
+            intrinsic_cv,
+            cam2world_gl,
+            scene_depth_mm,
+            active_side=active_side,
+            tolerance_mm=tolerance_mm,
+            q_min_m=q_min_m,
+            q_max_m=q_max_m,
+            coarse_step_m=coarse_step_m,
+            fine_step_m=fine_step_m,
+            minimum_support_pixels=minimum_support_pixels,
+            minimum_per_link_support_pixels=minimum_per_link_support_pixels,
             minimum_consistent_fraction=minimum_consistent_fraction,
+            minimum_fast_path_fraction=minimum_fast_path_fraction,
+            maximum_median_residual_mm=maximum_median_residual_mm,
+            minimum_fixed_support_pixels=minimum_fixed_support_pixels,
+            temporal_prior_q_m=temporal_prior_q_m,
+            temporal_prior_q_by_joint=temporal_prior_q_by_joint,
+            temporal_max_delta_m=temporal_max_delta_m,
+            minimum_searchable_pixels=minimum_searchable_pixels,
         )
-        if not 0.0 <= minimum_fast_path_fraction <= 1.0:
-            raise ValueError("minimum_fast_path_fraction must be within [0, 1]")
-        fast_path_fraction = max(
-            minimum_consistent_fraction,
-            minimum_fast_path_fraction,
-        )
-        if maximum_median_residual_mm is None:
-            robust_median_limit = min(
-                float(tolerance_mm),
-                max(2.0, float(tolerance_mm) * 0.25),
-            )
-        else:
-            robust_median_limit = float(maximum_median_residual_mm)
-        agreement_has_minimum_support(
-            dummy,
-            minimum_support_pixels=0,
-            minimum_consistent_fraction=0.0,
-            maximum_median_residual_mm=robust_median_limit,
-        )
-        q_lower = max(float(q_min_m), GRIPPER_KINEMATIC_MIN_M)
-        q_upper = min(float(q_max_m), GRIPPER_KINEMATIC_MAX_M)
-        # Validate the global range and both step sizes.
-        _grid(q_lower, q_upper, float(coarse_step_m))
-        _grid(q_lower, q_upper, float(fine_step_m))
-        command_index = 6 if side == "left" else 13
-        command_q = gripper_command_to_kinematic_q(float(joints[command_index]))
-        command_q = float(np.clip(command_q, q_lower, q_upper))
-        finger_joint_names = (f"{prefix}_joint7", f"{prefix}_joint8")
-        if temporal_prior_q_m is not None and temporal_prior_q_by_joint is not None:
-            raise ValueError("provide temporal_prior_q_m or temporal_prior_q_by_joint, not both")
-        temporal_priors: dict[str, float] = {}
-        if temporal_prior_q_m is not None:
-            shared_prior = float(temporal_prior_q_m)
-            if not math.isfinite(shared_prior):
-                raise ValueError("temporal_prior_q_m must be finite when provided")
-            temporal_priors = {name: shared_prior for name in finger_joint_names}
-        elif temporal_prior_q_by_joint is not None:
-            unknown_priors = set(temporal_prior_q_by_joint) - set(finger_joint_names)
-            if unknown_priors:
-                raise ValueError(f"unexpected temporal prior joints: {sorted(unknown_priors)}")
-            for name, value in temporal_prior_q_by_joint.items():
-                prior = float(value)
-                if not math.isfinite(prior):
-                    raise ValueError(f"temporal prior {name} must be finite")
-                temporal_priors[name] = prior
-        temporal_delta = None if temporal_max_delta_m is None else float(temporal_max_delta_m)
-        if temporal_delta is not None and (not math.isfinite(temporal_delta) or temporal_delta < 0):
-            raise ValueError("temporal_max_delta_m must be finite and non-negative")
-        temporal_priors = {
-            name: float(np.clip(value, q_lower, q_upper)) for name, value in temporal_priors.items()
-        }
-        working_q = {name: temporal_priors.get(name, command_q) for name in finger_joint_names}
-        selected_scores: dict[str, FingerCandidateScore] = {}
-        ranked_by_joint: dict[str, tuple[FingerCandidateScore, ...]] = {}
-
-        def finish(
-            selected_render: UrdfRenderResult,
-            *,
-            search_mode: Literal["prior_fast_path", "coordinate_sweep"],
-        ) -> FingerFitResult:
-            fixed_agreement = depth_agreement(
-                selected_render.fixed_link6_mask,
-                selected_render.robot_depth_mm,
-                scene_depth,
-                float(tolerance_mm),
-            )
-            link7_agreement = depth_agreement(
-                selected_render.finger_link7_mask,
-                selected_render.robot_depth_mm,
-                scene_depth,
-                float(tolerance_mm),
-            )
-            link8_agreement = depth_agreement(
-                selected_render.finger_link8_mask,
-                selected_render.robot_depth_mm,
-                scene_depth,
-                float(tolerance_mm),
-            )
-            component_agreements = (fixed_agreement, link7_agreement, link8_agreement)
-            component_thresholds = (
-                minimum_fixed_support_pixels,
-                finger_support_threshold,
-                finger_support_threshold,
-            )
-            link_names = active_gripper_link_names(side)
-            component_acceptance = {
-                name: agreement_has_minimum_support(
-                    agreement,
-                    minimum_support_pixels=threshold,
-                    minimum_consistent_fraction=minimum_consistent_fraction,
-                )
-                for name, agreement, threshold in zip(
-                    link_names,
-                    component_agreements,
-                    component_thresholds,
-                    strict=True,
-                )
-            }
-            component_masks = {
-                link_names[0]: selected_render.fixed_link6_mask,
-                link_names[1]: selected_render.finger_link7_mask,
-                link_names[2]: selected_render.finger_link8_mask,
-            }
-            component_visible_masks = {
-                name: (
-                    compute_visible_gripper_mask(
-                        mask,
-                        selected_render.robot_depth_mm,
-                        scene_depth,
-                        float(tolerance_mm),
-                    )
-                    if component_acceptance[name]
-                    else np.zeros(expected_shape, dtype=bool)
-                )
-                for name, mask in component_masks.items()
-            }
-            visible_mask = np.zeros(expected_shape, dtype=bool)
-            for component_mask in component_visible_masks.values():
-                visible_mask |= component_mask
-            failed_components = [
-                name for name, is_supported in component_acceptance.items() if not is_supported
-            ]
-            reason = (
-                "insufficient_depth_support:" + ",".join(failed_components)
-                if failed_components
-                else None
-            )
-            diagnostics = FingerFitDiagnostics(
-                reason=reason,
-                search_mode=search_mode,
-                tolerance_mm=float(tolerance_mm),
-                command_q_m=command_q,
-                temporal_prior_q_by_joint=temporal_priors,
-                temporal_max_delta_m=temporal_delta,
-                minimum_support_pixels=minimum_support_pixels,
-                minimum_per_link_support_pixels=minimum_per_link_support_pixels,
-                minimum_consistent_fraction=minimum_consistent_fraction,
-                minimum_fast_path_fraction=fast_path_fraction,
-                maximum_median_residual_mm=robust_median_limit,
-                minimum_fixed_support_pixels=minimum_fixed_support_pixels,
-                fixed_link6_agreement=fixed_agreement,
-                final_link7_agreement=link7_agreement,
-                final_link8_agreement=link8_agreement,
-                component_acceptance=component_acceptance,
-                selected_score_by_joint=dict(selected_scores),
-                ranked_candidates_by_joint=dict(ranked_by_joint),
-            )
-            selected_q_by_joint = dict(working_q)
-            q7, q8 = (selected_q_by_joint[name] for name in finger_joint_names)
-            return FingerFitResult(
-                accepted=not failed_components,
-                selected_q_m=(q7 if math.isclose(q7, q8, abs_tol=1e-12) else None),
-                selected_q_by_joint=selected_q_by_joint,
-                selected_render=selected_render,
-                visible_mask=visible_mask,
-                component_visible_masks=component_visible_masks,
-                component_acceptance=component_acceptance,
-                diagnostics=diagnostics,
-            )
-
-        baseline_render = self.render(
-            joints,
-            intrinsic_cv,
-            cam2world_gl,
-            active_side=side,
-            finger_q_by_joint=working_q,
-        )
-        for joint_name in finger_joint_names:
-            baseline_score = self._score_candidate(
-                baseline_render,
-                scene_depth,
-                float(tolerance_mm),
-                working_q[joint_name],
-                joint_name,
-            )
-            selected_scores[joint_name] = baseline_score
-            ranked_by_joint[joint_name] = (baseline_score,)
-        baseline_result = finish(baseline_render, search_mode="prior_fast_path")
-        baseline_agreements = (
-            baseline_result.diagnostics.fixed_link6_agreement,
-            baseline_result.diagnostics.final_link7_agreement,
-            baseline_result.diagnostics.final_link8_agreement,
-        )
-        baseline_thresholds = (
-            minimum_fixed_support_pixels,
-            finger_support_threshold,
-            finger_support_threshold,
-        )
-        baseline_fast_acceptance = tuple(
-            agreement_has_minimum_support(
-                agreement,
-                minimum_support_pixels=threshold,
-                minimum_consistent_fraction=fast_path_fraction,
-                maximum_median_residual_mm=robust_median_limit,
-            )
-            for agreement, threshold in zip(
-                baseline_agreements,
-                baseline_thresholds,
-                strict=True,
-            )
-        )
-        if all(baseline_fast_acceptance):
-            return baseline_result
-        baseline_finger_agreements = (
-            baseline_result.diagnostics.final_link7_agreement,
-            baseline_result.diagnostics.final_link8_agreement,
-        )
-        if all(
-            agreement.rendered_pixels < minimum_searchable_pixels
-            and agreement.comparable_pixels < minimum_searchable_pixels
-            for agreement in baseline_finger_agreements
-        ):
-            return baseline_result
-
-        def fit_one_joint(joint_name: str) -> None:
-            prior = temporal_priors.get(joint_name)
-            search_lower, search_upper = q_lower, q_upper
-            if prior is not None and temporal_delta is not None:
-                search_lower = max(search_lower, prior - temporal_delta)
-                search_upper = min(search_upper, prior + temporal_delta)
-            coarse_values = list(_grid(search_lower, search_upper, float(coarse_step_m)))
-            coarse_values.append(float(np.clip(working_q[joint_name], search_lower, search_upper)))
-            if search_lower <= command_q <= search_upper:
-                coarse_values.append(command_q)
-            scores_by_q: dict[float, FingerCandidateScore] = {}
-
-            def evaluate(raw_q: float) -> None:
-                q_m = round(float(raw_q), 12)
-                if q_m in scores_by_q:
-                    return
-                overrides = dict(working_q)
-                overrides[joint_name] = q_m
-                rendered = self.render(
-                    joints,
-                    intrinsic_cv,
-                    cam2world_gl,
-                    active_side=side,
-                    finger_q_by_joint=overrides,
-                )
-                scores_by_q[q_m] = self._score_candidate(
-                    rendered,
-                    scene_depth,
-                    float(tolerance_mm),
-                    q_m,
-                    joint_name,
-                )
-
-            for q_m in coarse_values:
-                evaluate(q_m)
-            ranked_coarse = rank_finger_candidates(
-                tuple(scores_by_q.values()),
-                command_prior_q_m=command_q,
-                temporal_prior_q_m=prior,
-                maximum_median_residual_mm=robust_median_limit,
-            )
-            coarse_winner = ranked_coarse[0].q_m
-            fine_lower = max(search_lower, coarse_winner - float(coarse_step_m))
-            fine_upper = min(search_upper, coarse_winner + float(coarse_step_m))
-            for q_m in _grid(fine_lower, fine_upper, float(fine_step_m)):
-                evaluate(q_m)
-            ranked = rank_finger_candidates(
-                tuple(scores_by_q.values()),
-                command_prior_q_m=command_q,
-                temporal_prior_q_m=prior,
-                maximum_median_residual_mm=robust_median_limit,
-            )
-            best = ranked[0]
-            best_is_supported = agreement_has_minimum_support(
-                best.agreement,
-                minimum_support_pixels=finger_support_threshold,
-                minimum_consistent_fraction=minimum_consistent_fraction,
-                maximum_median_residual_mm=robust_median_limit,
-            )
-            bounded_by_prior = search_lower > q_lower or search_upper < q_upper
-            if not best_is_supported and bounded_by_prior:
-                # A prior can become stale while one finger is occluded. If
-                # its metric window contains no supported hypothesis, retry
-                # once over the physical range so the finger can reacquire
-                # after a large opening/closing change.
-                for q_m in _grid(q_lower, q_upper, float(coarse_step_m)):
-                    evaluate(q_m)
-                ranked_global_coarse = rank_finger_candidates(
-                    tuple(scores_by_q.values()),
-                    command_prior_q_m=command_q,
-                    temporal_prior_q_m=prior,
-                    maximum_median_residual_mm=robust_median_limit,
-                )
-                global_coarse_winner = ranked_global_coarse[0].q_m
-                global_fine_lower = max(
-                    q_lower,
-                    global_coarse_winner - float(coarse_step_m),
-                )
-                global_fine_upper = min(
-                    q_upper,
-                    global_coarse_winner + float(coarse_step_m),
-                )
-                for q_m in _grid(
-                    global_fine_lower,
-                    global_fine_upper,
-                    float(fine_step_m),
-                ):
-                    evaluate(q_m)
-                ranked = rank_finger_candidates(
-                    tuple(scores_by_q.values()),
-                    command_prior_q_m=command_q,
-                    temporal_prior_q_m=prior,
-                    maximum_median_residual_mm=robust_median_limit,
-                )
-                best = ranked[0]
-                best_is_supported = agreement_has_minimum_support(
-                    best.agreement,
-                    minimum_support_pixels=finger_support_threshold,
-                    minimum_consistent_fraction=minimum_consistent_fraction,
-                    maximum_median_residual_mm=robust_median_limit,
-                )
-            if best_is_supported:
-                working_q[joint_name] = best.q_m
-                selected_scores[joint_name] = best
-            else:
-                # Evidence is too weak to move this component away from its
-                # bounded temporal/command baseline.
-                fallback_q = round(float(working_q[joint_name]), 12)
-                working_q[joint_name] = fallback_q
-                selected_scores[joint_name] = scores_by_q.get(fallback_q, best)
-            ranked_by_joint[joint_name] = ranked
-
-        # Coordinate fitting avoids an intractable Cartesian product while
-        # still allowing asymmetric contact-constrained finger positions.  A
-        # component already supported by the prior render does not need a sweep.
-        if not baseline_fast_acceptance[1]:
-            fit_one_joint(finger_joint_names[0])
-        if not baseline_fast_acceptance[2]:
-            fit_one_joint(finger_joint_names[1])
-        selected_render = self.render(
-            joints,
-            intrinsic_cv,
-            cam2world_gl,
-            active_side=side,
-            finger_q_by_joint=working_q,
-        )
-        return finish(selected_render, search_mode="coordinate_sweep")
-
     def close(self) -> None:
         """Release the offscreen GL context; safe to call more than once."""
 
