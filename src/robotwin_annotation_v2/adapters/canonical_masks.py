@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
 import zipfile
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -73,6 +75,10 @@ def _copy_read_only(value: NDArray[Any]) -> NDArray[Any]:
     return copied
 
 
+def _status_vector(value: Any, *, label: str) -> tuple[str, ...]:
+    return _string_vector(value, label=label)
+
+
 @dataclass(frozen=True)
 class CanonicalMaskBundle:
     """Immutable, validated in-memory representation of a v2/v3 mask archive."""
@@ -140,10 +146,10 @@ class CanonicalMaskBundle:
             cast(FrameEncodingArray, _copy_read_only(validated_encoding)),
         )
 
-    def to_payload(self) -> dict[str, np.ndarray]:
+    def to_payload(self) -> dict[str, NDArray[Any]]:
         """Return a detached archive payload using this bundle's format version."""
 
-        payload: dict[str, np.ndarray] = {
+        payload: dict[str, NDArray[Any]] = {
             "format_version": np.asarray(self.format_version),
             "frame_count": np.asarray(self.frame_count, dtype=np.int64),
             "masks": np.asarray(self.masks).copy(),
@@ -155,6 +161,30 @@ class CanonicalMaskBundle:
         if self.format_version == MASK_FORMAT_VERSION:
             payload["frame_encoding"] = np.asarray(self.frame_encoding).copy()
         return payload
+
+
+def build_canonical_mask_bundle(
+    path: Path,
+    *,
+    frame_count: int,
+    masks: NDArray[Any],
+    annotation_status: Any,
+    qc_status: Any,
+    frame_encoding: NDArray[Any],
+) -> CanonicalMaskBundle:
+    """Build the validated v3 bundle used by new canonical writers."""
+
+    return CanonicalMaskBundle(
+        path=path,
+        format_version=MASK_FORMAT_VERSION,
+        frame_count=frame_count,
+        masks=cast(BoolMaskArray, np.asarray(masks)),
+        instance_names=CANONICAL_INSTANCE_NAMES,
+        roles=CANONICAL_ROLES,
+        annotation_status=_status_vector(annotation_status, label="annotation_status"),
+        qc_status=_status_vector(qc_status, label="qc_status"),
+        frame_encoding=cast(FrameEncodingArray, np.asarray(frame_encoding)),
+    )
 
 
 def _bundle_from_payload(path: Path, payload: Mapping[str, Any]) -> CanonicalMaskBundle:
@@ -219,10 +249,37 @@ def read_canonical_masks(path: Path) -> CanonicalMaskBundle:
         raise CanonicalMaskError(f"invalid canonical masks {source}: {exc}") from exc
 
 
+def write_canonical_masks(path: Path, bundle: CanonicalMaskBundle) -> Path:
+    """Atomically write one validated v3 canonical mask archive."""
+
+    if bundle.format_version != MASK_FORMAT_VERSION:
+        raise CanonicalMaskError(
+            f"canonical writer only supports {MASK_FORMAT_VERSION}: {bundle.format_version}"
+        )
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{target.name}.",
+        suffix=".npz",
+        dir=target.parent,
+    )
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    try:
+        np.savez_compressed(temporary, **bundle.to_payload())
+        os.replace(temporary, target)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+    return target
+
+
 __all__ = [
     "CANONICAL_INSTANCE_NAMES",
     "CANONICAL_ROLES",
     "CanonicalMaskBundle",
     "CanonicalMaskError",
+    "build_canonical_mask_bundle",
     "read_canonical_masks",
+    "write_canonical_masks",
 ]

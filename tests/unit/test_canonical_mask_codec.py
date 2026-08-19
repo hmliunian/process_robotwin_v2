@@ -9,7 +9,9 @@ from robotwin_annotation_v2.adapters.canonical_masks import (
     CANONICAL_INSTANCE_NAMES,
     CANONICAL_ROLES,
     CanonicalMaskError,
+    build_canonical_mask_bundle,
     read_canonical_masks,
+    write_canonical_masks,
 )
 from robotwin_annotation_v2.mask_schema import MASK_FORMAT_VERSION
 
@@ -104,3 +106,64 @@ def test_rejects_invalid_v3_encoding(tmp_path: Path) -> None:
 
     with pytest.raises(CanonicalMaskError, match="invalid frame_encoding"):
         read_canonical_masks(_write(tmp_path / "invalid.npz", payload))
+
+
+def test_v3_builder_and_writer_preserve_exact_payload(tmp_path: Path) -> None:
+    expected = _payload()
+    destination = tmp_path / "nested" / "masks.npz"
+
+    bundle = build_canonical_mask_bundle(
+        destination,
+        frame_count=3,
+        masks=expected["masks"],
+        annotation_status=expected["annotation_status"],
+        qc_status=expected["qc_status"],
+        frame_encoding=expected["frame_encoding"],
+    )
+    written = write_canonical_masks(destination, bundle)
+
+    assert written == destination
+    with np.load(written, allow_pickle=False) as archive:
+        assert set(archive.files) == set(expected)
+        for key, value in expected.items():
+            np.testing.assert_array_equal(archive[key], value)
+
+    loaded = read_canonical_masks(written)
+    np.testing.assert_array_equal(loaded.masks, expected["masks"])
+
+
+def test_writer_rejects_legacy_bundle(tmp_path: Path) -> None:
+    legacy_path = tmp_path / "legacy.npz"
+    bundle = read_canonical_masks(
+        _write(legacy_path, _payload(version="robotwin_visible_masks_v2"))
+    )
+
+    with pytest.raises(CanonicalMaskError, match="only supports"):
+        write_canonical_masks(tmp_path / "output.npz", bundle)
+
+
+def test_writer_failure_preserves_destination_and_cleans_staging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination = tmp_path / "masks.npz"
+    destination.write_bytes(b"previous archive")
+    expected = _payload()
+    bundle = build_canonical_mask_bundle(
+        destination,
+        frame_count=3,
+        masks=expected["masks"],
+        annotation_status=expected["annotation_status"],
+        qc_status=expected["qc_status"],
+        frame_encoding=expected["frame_encoding"],
+    )
+
+    def fail_compression(*args: object, **kwargs: object) -> None:
+        raise OSError("compression failed")
+
+    monkeypatch.setattr(np, "savez_compressed", fail_compression)
+    with pytest.raises(OSError, match="compression failed"):
+        write_canonical_masks(destination, bundle)
+
+    assert destination.read_bytes() == b"previous archive"
+    assert not list(tmp_path.glob(".masks.npz.*"))

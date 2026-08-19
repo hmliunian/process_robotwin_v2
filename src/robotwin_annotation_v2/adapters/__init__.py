@@ -18,7 +18,9 @@ _EXPORT_GROUPS = {
         "CANONICAL_ROLES",
         "CanonicalMaskBundle",
         "CanonicalMaskError",
+        "build_canonical_mask_bundle",
         "read_canonical_masks",
+        "write_canonical_masks",
     ),
     ".qwen_client": (
         "OpenAICompatibleQwenClient",
