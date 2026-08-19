@@ -38,3 +38,11 @@ def test_pipeline_package_loads_lightweight_stage_exports_on_demand() -> None:
         "assert 'robotwin_annotation_v2.pipeline.gripper_stage' not in sys.modules\n"
         "assert 'cv2' not in sys.modules\n"
     )
+
+
+def test_urdf_batch_import_does_not_load_optional_backends() -> None:
+    _run_import_probe(
+        "import sys\n"
+        "import robotwin_annotation_v2.application.urdf_batch\n"
+        "assert not any(name in sys.modules for name in ('cv2', 'torch', 'sam3', 'av'))\n"
+    )

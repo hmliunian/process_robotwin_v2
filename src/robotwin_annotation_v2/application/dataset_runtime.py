@@ -217,6 +217,12 @@ def _load_sam_runtime() -> SamRuntime:
     )
 
 
+def _load_urdf_runner() -> Any:
+    """Load the package-owned URDF batch engine at the execution boundary."""
+
+    return importlib.import_module("robotwin_annotation_v2.application.urdf_batch")
+
+
 def _release_sam_cuda_cache(gpus: Sequence[int]) -> dict[str, Any]:
     """Release unreachable SAM objects and report the CUDA cache handoff."""
 
@@ -515,10 +521,7 @@ def _incremental_urdf_process_entry(
     sys.stdout = worker_log
     sys.stderr = worker_log
     try:
-        try:
-            import render_urdf_gripper_masks as urdf_runner
-        except ModuleNotFoundError:
-            from scripts import render_urdf_gripper_masks as urdf_runner
+        urdf_runner = _load_urdf_runner()
 
         worker: Any | None = None
         completed = 0
@@ -1483,10 +1486,7 @@ def process_urdf_source_run(
         )
         reporter.phase_started("dataset_contract")
 
-    try:
-        import render_urdf_gripper_masks as urdf_runner
-    except ModuleNotFoundError:
-        from scripts import render_urdf_gripper_masks as urdf_runner
+    urdf_runner = _load_urdf_runner()
     from robotwin_annotation_v2.urdf_gripper_publisher import (
         publish_urdf_episode,
         validate_published_urdf_episode,
@@ -2825,10 +2825,7 @@ def process_live_urdf_pipeline(
     prepared_backend_error: str | None = None
     streaming = urdf_pipeline and backend_factory is None and selected_egl_device is not None
     if streaming:
-        try:
-            import render_urdf_gripper_masks as urdf_runner
-        except ModuleNotFoundError:
-            from scripts import render_urdf_gripper_masks as urdf_runner
+        urdf_runner = _load_urdf_runner()
 
         streaming_config = urdf_runner.RunConfig(
             dataset_root=resolved_dataset_root,
