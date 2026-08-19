@@ -18,8 +18,11 @@ from typing import Any
 import numpy as np
 
 from .adapters.canonical_masks import (
+    CanonicalMaskBundle,
     CanonicalMaskError,
+    build_canonical_mask_bundle,
     read_canonical_masks,
+    write_canonical_masks,
 )
 from .domain import AnnotationMode, ObjectRole, annotation_spec
 from .mask_schema import (
@@ -276,6 +279,7 @@ def publisher_implementation_identity() -> dict[str, Any]:
     project_root = Path(__file__).resolve().parents[2]
     paths = (
         Path(__file__).resolve(),
+        project_root / "src/robotwin_annotation_v2/adapters/canonical_masks.py",
         project_root / "src/robotwin_annotation_v2/mask_schema.py",
     )
     return {
@@ -1898,7 +1902,7 @@ def _build_public_payloads(
     validated_source: DerivationSourceEpisode,
     product: Mapping[str, Any],
     artifact_identities: Mapping[str, Mapping[str, Any]],
-) -> tuple[dict[str, np.ndarray], dict[str, Any], dict[str, Any]]:
+) -> tuple[CanonicalMaskBundle, dict[str, Any], dict[str, Any]]:
     source = validated_source.source_masks
     source_manifest = validated_source.manifest
     source_provenance = validated_source.provenance
@@ -1936,16 +1940,14 @@ def _build_public_payloads(
         [*source["qc_status"][:2], "not_run", "not_run"]
     )
     qc_status[active_index] = "passed"
-    masks_payload = {
-        "format_version": np.asarray(MASK_FORMAT_VERSION),
-        "frame_count": np.asarray(frame_count, dtype=np.int64),
-        "masks": masks,
-        "instance_names": np.asarray(INSTANCE_NAMES),
-        "roles": np.asarray(ROLES),
-        "annotation_status": annotation_status,
-        "qc_status": qc_status,
-        "frame_encoding": frame_encoding,
-    }
+    masks_bundle = build_canonical_mask_bundle(
+        destination_dir / "masks.npz",
+        frame_count=frame_count,
+        masks=masks,
+        annotation_status=annotation_status,
+        qc_status=qc_status,
+        frame_encoding=frame_encoding,
+    )
 
     source_roles = [_json_clone(record) for record in validated_source.source_roles]
     source_algorithm = _json_clone(validated_source.source_algorithm)
@@ -2127,7 +2129,7 @@ def _build_public_payloads(
         "frame_encoding": public_encoding_metadata,
         "channels": provenance_channels,
     }
-    return masks_payload, run_manifest, frame_provenance
+    return masks_bundle, run_manifest, frame_provenance
 
 
 def _validate_canonical_path(
@@ -2324,7 +2326,8 @@ def _prepare_contract(
         "product": product,
         "product_path": product_path,
         "diagnostics_path": diagnostics_path,
-        "masks_payload": payloads[0],
+        "masks_bundle": payloads[0],
+        "masks_payload": payloads[0].to_payload(),
         "run_manifest": payloads[1],
         "frame_provenance": payloads[2],
     }
@@ -2341,7 +2344,7 @@ def _write_stage(stage_dir: Path, contract: Mapping[str, Any]) -> None:
     )
     shutil.copy2(contract["product_path"], gripper_dir / "urdf_product.npz")
     shutil.copy2(contract["diagnostics_path"], gripper_dir / "urdf_diagnostics.json")
-    np.savez_compressed(stage_dir / "masks.npz", **contract["masks_payload"])
+    write_canonical_masks(stage_dir / "masks.npz", contract["masks_bundle"])
     _write_json(stage_dir / "run_manifest.json", contract["run_manifest"])
     _write_json(stage_dir / "frame_provenance.json", contract["frame_provenance"])
 
