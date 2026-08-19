@@ -12,10 +12,12 @@ import pytest
 
 import scripts.process_dataset as process_module
 import scripts.render_urdf_gripper_masks as urdf_module
-from scripts.process_dataset import (
+from robotwin_annotation_v2.application.discovery import (
     DiscoveredEpisode,
     build_dynamic_manifest,
     discover_episodes,
+)
+from scripts.process_dataset import (
     select_urdf_source_episodes,
 )
 
@@ -333,7 +335,6 @@ def test_discover_episodes_rejects_invalid_chunk_name(tmp_path: Path) -> None:
 
 def test_dynamic_manifest_contains_measured_contract(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     first = DiscoveredEpisode(
         episode_id=7,
@@ -347,17 +348,12 @@ def test_dynamic_manifest_contains_measured_contract(
         video=tmp_path / "episode_000008.mp4",
         sidecar=tmp_path / "episode_000008.hdf5",
     )
-    monkeypatch.setattr(
-        process_module,
-        "_measure_episode",
-        lambda _episode: (24, (240, 320), 1),
-    )
-
     manifest = build_dynamic_manifest(
         tmp_path,
         task="task",
         camera="cam_high",
         episodes=(first, second),
+        measure_episode_fn=lambda _episode: (24, (240, 320), 1),
     )
 
     assert manifest["format_version"] == "robotwin_dataset_manifest_dynamic_v1"

@@ -7,13 +7,15 @@ is the stable seam for applications, notebooks, and debug tooling; the legacy
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from ..config import PipelineConfig
 from ..terminal_ui import ProcessUI
 from . import dataset_runtime as runtime
+from .discovery import DiscoveryResult
 
 
 @dataclass(frozen=True)
@@ -22,7 +24,7 @@ class DatasetPipeline:
 
     config: PipelineConfig
 
-    def discover(self, dataset_root: Path, *, require_depth: bool = False) -> Any:
+    def discover(self, dataset_root: Path, *, require_depth: bool = False) -> DiscoveryResult:
         """Run the input-discovery stage.
 
         Input: dataset root and camera from ``config``.
@@ -37,7 +39,11 @@ class DatasetPipeline:
             require_depth=require_depth,
         )
 
-    def build_manifest(self, dataset_root: Path, discovery: Any) -> dict[str, Any]:
+    def build_manifest(
+        self,
+        dataset_root: Path,
+        discovery: DiscoveryResult,
+    ) -> dict[str, Any]:
         """Build the immutable-in-run dynamic dataset manifest.
 
         Input: discovery output.
