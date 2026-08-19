@@ -3,8 +3,9 @@ from __future__ import annotations
 import importlib.util
 import json
 import math
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import numpy as np
 import pytest
@@ -304,6 +305,7 @@ def _fake_renderer(
     renderer.height = 1
     renderer._closed = False
     renderer.render_call_count = 0
+    renderer.render_calls = []
 
     def fake_render(
         joint_absolute: Any,
@@ -316,6 +318,7 @@ def _fake_renderer(
         del joint_absolute, intrinsic_cv, cam2world_gl
         assert finger_q_by_joint is not None
         renderer.render_call_count += 1
+        renderer.render_calls.append(dict(finger_q_by_joint))
         return _fake_render_result(
             finger_q_by_joint,
             mismatch_link8=mismatch_link8,
@@ -468,6 +471,45 @@ def test_q_fit_uses_metric_temporal_window_when_it_contains_supported_q() -> Non
     for joint_name, candidates in result.diagnostics.ranked_candidates_by_joint.items():
         prior = {"fr_joint7": 0.014, "fr_joint8": 0.032}[joint_name]
         assert all(abs(candidate.q_m - prior) <= 0.004 + 1e-12 for candidate in candidates)
+
+
+def test_q_fit_sweeps_joint7_before_joint8_and_preserves_diagnostic_order() -> None:
+    renderer = _fake_renderer(mismatch_link8=False)
+
+    result = renderer.fit_finger_q(
+        np.zeros(14),
+        np.eye(3),
+        np.eye(4),
+        np.full((1, 3), 100.0),
+        active_side="right",
+        tolerance_mm=0.1,
+        q_max_m=0.04,
+        coarse_step_m=0.01,
+        fine_step_m=0.005,
+        minimum_support_pixels=2,
+        minimum_per_link_support_pixels=1,
+        minimum_consistent_fraction=1.0,
+        minimum_fixed_support_pixels=1,
+        minimum_searchable_pixels=0,
+    )
+
+    render_calls = renderer.render_calls  # type: ignore[attr-defined]
+    first_joint8_change = next(
+        index for index, values in enumerate(render_calls) if values["fr_joint8"] != 0.0
+    )
+    assert all(values["fr_joint8"] == 0.0 for values in render_calls[:first_joint8_change])
+    assert all(
+        values["fr_joint7"] == pytest.approx(0.015)
+        for values in render_calls[first_joint8_change:]
+    )
+    assert tuple(result.diagnostics.selected_score_by_joint) == (
+        "fr_joint7",
+        "fr_joint8",
+    )
+    assert tuple(result.diagnostics.ranked_candidates_by_joint) == (
+        "fr_joint7",
+        "fr_joint8",
+    )
 
 
 def test_q_fit_globally_reacquires_when_temporal_window_has_no_support() -> None:
