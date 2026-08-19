@@ -8,7 +8,7 @@ behind the lazy runtime hook.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +28,7 @@ from .discovery import DiscoveryResult
 
 DEFAULT_URDF_DEPTH_TOLERANCE_MM = 8.0
 DEFAULT_URDF_MINIMUM_ELIGIBLE_NONEMPTY_FRACTION = 0.90
+DEFAULT_URDF_PIPELINE_BUFFER_SIZE = 2
 
 
 class UrdfRunConfig(Protocol):
@@ -79,6 +80,12 @@ class UrdfWorkflowHooks:
     validate_source_episode: Callable[..., DerivationSourceEpisode]
     build_dynamic_config: Callable[..., PipelineConfig]
     render_processed: Callable[..., dict[str, Any]]
+    select_egl_device: Callable[[Sequence[int], int | None], int | None]
+    run_streaming_workers: Callable[..., tuple[dict[str, Any], dict[str, Any], str | None]]
+    run_object_source_process: Callable[..., dict[str, Any]]
+    process_dataset: Callable[..., dict[str, Any]]
+    release_sam_cuda_cache: Callable[[Sequence[int]], dict[str, Any]]
+    process_frozen_source: Callable[..., dict[str, Any]]
     summary_format_version: str
 
 
@@ -845,10 +852,282 @@ class UrdfWorkflow:
         )
         return summary_model.with_artifact(str(summary_path)).to_json()
 
+    def run_live(
+        self,
+        *,
+        pipeline_config: PipelineConfig,
+        dataset_root: Path,
+        task: str,
+        camera: str,
+        output_root: Path,
+        urdf_path: Path,
+        mesh_root: Path | None = None,
+        run_id: str | None = None,
+        episode_ids: tuple[int, ...] | None = None,
+        skip_render: bool = False,
+        depth_tolerance_mm: float = DEFAULT_URDF_DEPTH_TOLERANCE_MM,
+        minimum_eligible_nonempty_fraction: float = (
+            DEFAULT_URDF_MINIMUM_ELIGIBLE_NONEMPTY_FRACTION
+        ),
+        fit_config_json: Path | None = None,
+        allow_partial_source: bool = False,
+        urdf_pipeline: bool = True,
+        urdf_pipeline_buffer_size: int = DEFAULT_URDF_PIPELINE_BUFFER_SIZE,
+        urdf_egl_device_id: int | None = None,
+        backend_factory: Callable[..., Any] | None = None,
+        reporter: ProcessUI | None = None,
+    ) -> dict[str, Any]:
+        """Run the mode-required object source followed by the URDF gripper stage."""
+
+        resolved_dataset_root = dataset_root.expanduser().resolve()
+        resolved_output_root = output_root.expanduser().resolve()
+        resolved_urdf_path = urdf_path.expanduser().resolve()
+        if not resolved_urdf_path.is_file():
+            raise FileNotFoundError(f"URDF asset is missing: {resolved_urdf_path}")
+        if not math.isfinite(depth_tolerance_mm) or depth_tolerance_mm < 0:
+            raise ValueError("URDF depth tolerance must be finite and non-negative")
+        if not math.isfinite(minimum_eligible_nonempty_fraction) or not (
+            0.0 <= minimum_eligible_nonempty_fraction <= 1.0
+        ):
+            raise ValueError("URDF minimum eligible nonempty fraction must be finite and in [0, 1]")
+
+        selected_run_id = self.hooks.validate_run_id(run_id or ArtifactStore.new_run_id())
+        canonical_run_dir = resolved_output_root / selected_run_id
+        self.hooks.validate_run_ownership(
+            canonical_run_dir,
+            run_id=selected_run_id,
+            resume=False,
+        )
+        source_run_id = self.hooks.validate_run_id(f"{selected_run_id}-object-source")
+        source_output_root = resolved_output_root / "_sources"
+        source_run_dir = source_output_root / source_run_id
+        if source_run_dir.exists():
+            raise FileExistsError(f"live object-source run already exists: {source_run_dir}")
+
+        depth_discovery = self.hooks.discover_episodes(
+            resolved_dataset_root,
+            camera=camera,
+            require_depth=True,
+        )
+        depth_eligible_ids = depth_discovery.episode_ids
+        if not depth_eligible_ids:
+            raise ValueError(f"no complete URDF episodes found under {resolved_dataset_root}")
+        requested_ids = (
+            None
+            if episode_ids is None
+            else tuple(dict.fromkeys(int(value) for value in episode_ids))
+        )
+        if requested_ids is not None:
+            if not requested_ids:
+                raise ValueError("live URDF pipeline requires at least one selected episode")
+            ineligible = sorted(set(requested_ids) - set(depth_eligible_ids))
+            if ineligible:
+                raise ValueError(
+                    "requested URDF episodes do not satisfy the dataset/depth contract: "
+                    f"{ineligible}"
+                )
+            source_episode_ids = requested_ids
+        else:
+            if depth_discovery.skipped and not allow_partial_source:
+                examples = ", ".join(
+                    f"{record['episode']} ({','.join(record['missing'])})"
+                    for record in depth_discovery.skipped[:10]
+                )
+                suffix = "" if len(depth_discovery.skipped) <= 10 else ", ..."
+                raise ValueError(
+                    "dataset contract excludes episodes before the live source stage: "
+                    f"{examples}{suffix}; pass --allow-partial-source to process only "
+                    "the depth-eligible subset"
+                )
+            source_episode_ids = depth_eligible_ids
+
+        if reporter is not None:
+            reporter.run_started(
+                backend="urdf",
+                dataset_root=str(resolved_dataset_root),
+                task=task,
+                camera=camera,
+            )
+            reporter.run_ready(run_id=selected_run_id, episode_ids=source_episode_ids)
+            reporter.lane_started("source", "Source (Qwen + SAM)", len(source_episode_ids))
+            reporter.lane_started("urdf", "URDF render", len(source_episode_ids))
+            reporter.lane_started("publish", "Canonical publish", len(source_episode_ids))
+            if not skip_render:
+                reporter.lane_started(
+                    "validation",
+                    "Canonical validation",
+                    len(source_episode_ids),
+                )
+                reporter.lane_started(
+                    "render",
+                    "Review render",
+                    len(source_episode_ids),
+                )
+            reporter.note(f"object-mask source will be frozen at {source_run_dir}")
+
+        selected_egl_device: int | None = None
+        if urdf_pipeline and backend_factory is None:
+            selected_egl_device = self.hooks.select_egl_device(
+                pipeline_config.sam3.gpus,
+                urdf_egl_device_id,
+            )
+            if selected_egl_device is None and reporter is not None:
+                reporter.note(
+                    "no independent EGL GPU is available; using the serial URDF path",
+                    level="warning",
+                )
+        elif urdf_egl_device_id is not None:
+            if isinstance(urdf_egl_device_id, bool) or urdf_egl_device_id < 0:
+                raise ValueError("URDF EGL device id must be a non-negative integer")
+            # The serial path releases SAM before EGL starts, so sharing is safe.
+            selected_egl_device = urdf_egl_device_id
+
+        prepared_backend_result: Mapping[str, Any] | None = None
+        prepared_backend_error: str | None = None
+        streaming = urdf_pipeline and backend_factory is None and selected_egl_device is not None
+        if streaming:
+            runtime = self.hooks.runtime_loader()
+
+            streaming_config = runtime.run_config_factory(
+                dataset_root=resolved_dataset_root,
+                source_run_dir=source_run_dir,
+                output_root=canonical_run_dir / "_backend",
+                run_id="urdf",
+                urdf_path=resolved_urdf_path,
+                mesh_root=(None if mesh_root is None else mesh_root.expanduser().resolve()),
+                episode_ids=source_episode_ids,
+                task=task,
+                camera=camera,
+                depth_tolerance_mm=depth_tolerance_mm,
+                minimum_eligible_nonempty_fraction=(minimum_eligible_nonempty_fraction),
+                fit_config_json=(
+                    None if fit_config_json is None else fit_config_json.expanduser().resolve()
+                ),
+                skip_overlay=True,
+                dry_run=False,
+                resume=False,
+                egl_device_id=selected_egl_device,
+            )
+            if reporter is not None:
+                reporter.note(
+                    "streaming Source -> URDF pipeline enabled: "
+                    f"sam_gpus={list(pipeline_config.sam3.gpus)} "
+                    f"egl_gpu={selected_egl_device} buffer={urdf_pipeline_buffer_size}"
+                )
+            source_summary, prepared_result, prepared_backend_error = (
+                self.hooks.run_streaming_workers(
+                    pipeline_config,
+                    dataset_root=resolved_dataset_root,
+                    task=task,
+                    camera=camera,
+                    source_output_root=source_output_root,
+                    source_run_id=source_run_id,
+                    episode_ids=source_episode_ids,
+                    urdf_run_config=streaming_config,
+                    buffer_size=urdf_pipeline_buffer_size,
+                    reporter=reporter,
+                )
+            )
+            prepared_backend_result = prepared_result
+            if reporter is not None:
+                reporter.lane_finished("source", status="completed")
+                reporter.lane_finished(
+                    "urdf",
+                    status=("completed" if prepared_backend_error is None else "failed"),
+                    detail=prepared_backend_error,
+                )
+        elif backend_factory is None:
+            source_summary = self.hooks.run_object_source_process(
+                pipeline_config,
+                dataset_root=resolved_dataset_root,
+                task=task,
+                camera=camera,
+                output_root=source_output_root,
+                run_id=source_run_id,
+                episode_ids=source_episode_ids,
+                reporter=reporter,
+            )
+            if reporter is not None:
+                reporter.lane_progress("source", len(source_episode_ids), len(source_episode_ids))
+                reporter.lane_finished("source")
+        else:
+            source_summary = self.hooks.process_dataset(
+                pipeline_config,
+                dataset_root=resolved_dataset_root,
+                task=task,
+                camera=camera,
+                output_root=source_output_root,
+                run_id=source_run_id,
+                episode_ids=source_episode_ids,
+                force=False,
+                skip_render=True,
+                object_source_only=True,
+                report_lifecycle=False,
+                backend_factory=backend_factory,
+                reporter=reporter,
+            )
+            if reporter is not None:
+                reporter.lane_progress("source", len(source_episode_ids), len(source_episode_ids))
+                reporter.lane_finished("source")
+        if reporter is not None:
+            reporter.phase_started("sam_backend_release")
+        source_release = self.hooks.release_sam_cuda_cache(pipeline_config.sam3.gpus)
+        if reporter is not None:
+            gpu_details = "; ".join(
+                (
+                    f"gpu={record['gpu']} "
+                    f"allocated={record['allocated_before_bytes']}"
+                    f"->{record['allocated_after_bytes']} "
+                    f"reserved={record['reserved_before_bytes']}"
+                    f"->{record['reserved_after_bytes']}"
+                )
+                for record in source_release["gpus"]
+            )
+            reporter.phase_finished(
+                "sam_backend_release",
+                detail=gpu_details or "no CUDA cache was present",
+            )
+        if not bool(source_summary.get("passed")) and (
+            requested_ids is not None or not allow_partial_source
+        ):
+            raise RuntimeError(
+                "live object-source stage did not pass; its frozen diagnostics "
+                f"are at {source_run_dir}"
+            )
+
+        return self.hooks.process_frozen_source(
+            pipeline_config=pipeline_config,
+            dataset_root=resolved_dataset_root,
+            source_run_dir=source_run_dir,
+            task=task,
+            camera=camera,
+            output_root=resolved_output_root,
+            urdf_path=resolved_urdf_path,
+            mesh_root=mesh_root,
+            run_id=selected_run_id,
+            episode_ids=requested_ids,
+            skip_render=skip_render,
+            dry_run=False,
+            resume=False,
+            depth_tolerance_mm=depth_tolerance_mm,
+            minimum_eligible_nonempty_fraction=(minimum_eligible_nonempty_fraction),
+            fit_config_json=fit_config_json,
+            allow_partial_source=allow_partial_source,
+            source_mode="live_object_source_stage",
+            source_release=source_release,
+            prepared_backend_result=prepared_backend_result,
+            prepared_backend_error=prepared_backend_error,
+            egl_device_id=selected_egl_device,
+            report_lifecycle=False,
+            pipeline_episode_ids=source_episode_ids,
+            reporter=reporter,
+        )
+
 
 __all__ = [
     "DEFAULT_URDF_DEPTH_TOLERANCE_MM",
     "DEFAULT_URDF_MINIMUM_ELIGIBLE_NONEMPTY_FRACTION",
+    "DEFAULT_URDF_PIPELINE_BUFFER_SIZE",
     "UrdfRunConfig",
     "UrdfSourceSelection",
     "UrdfWorkflow",
