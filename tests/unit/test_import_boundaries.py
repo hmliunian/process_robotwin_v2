@@ -75,6 +75,14 @@ def test_gripper_composition_does_not_load_opencv() -> None:
     )
 
 
+def test_gripper_qc_does_not_load_model_backends() -> None:
+    _run_import_probe(
+        "import sys\n"
+        "import robotwin_annotation_v2.pipeline.gripper.sam.qc\n"
+        "assert not any(name in sys.modules for name in ('torch', 'sam3', 'av'))\n"
+    )
+
+
 def test_urdf_batch_import_does_not_load_optional_backends() -> None:
     _run_import_probe(
         "import sys\n"

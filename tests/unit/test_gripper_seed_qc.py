@@ -32,7 +32,7 @@ from robotwin_annotation_v2.pipeline import (
     run_gripper_seed_qc,
 )
 from robotwin_annotation_v2.pipeline import gripper_stage as legacy_stage
-from robotwin_annotation_v2.pipeline.gripper.sam import candidates
+from robotwin_annotation_v2.pipeline.gripper.sam import candidates, qc
 
 SHAPE = (12, 16)
 
@@ -369,6 +369,22 @@ def test_gripper_qwen_qc_retries_then_stably_selects_first_tied_fallback(
         "forced fallback candidate A; "
         "gripper QC request failed after 2 attempt(s): unavailable"
     )
+
+
+def test_legacy_qc_exports_preserve_canonical_identity() -> None:
+    public_names = (
+        "GripperSeedQCResult",
+        "build_gripper_qwen_request",
+        "render_gripper_candidate_panel",
+        "render_gripper_candidate_sheet",
+        "run_gripper_seed_qc",
+    )
+    for name in public_names:
+        canonical = getattr(qc, name)
+        assert getattr(legacy_stage, name) is canonical
+        assert getattr(public_pipeline, name) is canonical
+    assert legacy_stage.GripperQwenClient is qc.GripperQwenClient
+    assert legacy_stage._fallback_candidate is qc._fallback_candidate
 
 
 def test_load_qc_native_tracks_includes_approved_seed_masks(tmp_path: Path) -> None:
