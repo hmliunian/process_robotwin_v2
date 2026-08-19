@@ -37,6 +37,7 @@ from .bbox_localization import (
     render_bbox_prompt,
 )
 from .object_mask.planner import QueryCandidate, plan_role_queries
+from .object_mask.proposals import blue_planar_region
 from .object_mask.qc import MaskQCError, candidate_info, mask_iou
 from .prompt_context import timeline_prompt_fields
 
@@ -121,54 +122,6 @@ class _RoleExecution:
 
 def _normalize_text(value: str) -> str:
     return " ".join(value.split())
-
-
-def _largest_component(mask: np.ndarray) -> np.ndarray:
-    """Keep the largest 4-connected component of a binary proposal."""
-
-    remaining = np.asarray(mask, dtype=bool).copy()
-    if remaining.ndim != 2:
-        raise ValueError("mask must be 2-D")
-    largest: list[tuple[int, int]] = []
-    height, width = remaining.shape
-    while remaining.any():
-        row, column = np.argwhere(remaining)[0]
-        component: list[tuple[int, int]] = []
-        stack = [(int(row), int(column))]
-        remaining[row, column] = False
-        while stack:
-            current_row, current_column = stack.pop()
-            component.append((current_row, current_column))
-            for next_row, next_column in (
-                (current_row - 1, current_column),
-                (current_row + 1, current_column),
-                (current_row, current_column - 1),
-                (current_row, current_column + 1),
-            ):
-                if (
-                    0 <= next_row < height
-                    and 0 <= next_column < width
-                    and remaining[next_row, next_column]
-                ):
-                    remaining[next_row, next_column] = False
-                    stack.append((next_row, next_column))
-        if len(component) > len(largest):
-            largest = component
-    output = np.zeros_like(remaining)
-    for row, column in largest:
-        output[row, column] = True
-    return output
-
-
-def _blue_planar_region(seed_image: Image.Image, frame_shape: tuple[int, int]) -> np.ndarray:
-    """Build a coordinate-free proposal for a saturated blue receiver region."""
-
-    rgb = np.asarray(seed_image.convert("RGB"), dtype=np.int16)
-    if rgb.shape[:2] != frame_shape:
-        raise MaskQCError(f"seed RGB shape {rgb.shape[:2]} does not match expected {frame_shape}")
-    red, green, blue = (rgb[..., index] for index in range(3))
-    saturated_blue = (blue >= 80) & ((blue - red) >= 30) & ((blue - green) >= 20)
-    return _largest_component(saturated_blue)
 
 
 def _dilate(mask: np.ndarray, radius: int = 2) -> np.ndarray:
@@ -680,7 +633,7 @@ def _run_role_qc_at_seed(
         "blue" in query.split() for query in (candidate.query for candidate in query_candidates)
     ):
         try:
-            blue_prior = _blue_planar_region(seed_image, frame_shape)
+            blue_prior = blue_planar_region(seed_image, frame_shape)
         except MaskQCError as exc:
             return generation_error(str(exc))
     reserve_prior = bool(blue_prior.any()) and mask_config.qc_max_candidates >= 2
