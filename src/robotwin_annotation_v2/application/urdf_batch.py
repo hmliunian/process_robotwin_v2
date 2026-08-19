@@ -13,11 +13,12 @@ import subprocess
 import tempfile
 import uuid
 import xml.etree.ElementTree as ET
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, is_dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from fractions import Fraction
 from pathlib import Path
-from typing import Any, Mapping, Sequence, cast
+from typing import Any, cast
 
 import numpy as np
 
@@ -192,7 +193,7 @@ class RunConfig:
 
 
 def new_run_id() -> str:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     return f"{stamp}-{uuid.uuid4().hex[:8]}"
 
 
@@ -645,7 +646,7 @@ def _load_json_object(path: Path, *, description: str) -> dict[str, Any]:
 
 
 def _resolve_urdf_mesh_path(uri: str, *, mesh_root: Path) -> Path:
-    normalized = uri[len("package://") :] if uri.startswith("package://") else uri
+    normalized = uri.removeprefix("package://")
     candidate = Path(normalized)
     resolved = candidate.resolve() if candidate.is_absolute() else (mesh_root / candidate).resolve()
     if not resolved.is_file():
@@ -736,7 +737,7 @@ def _decode_raw_video(
         pixel_format,
         "-",
     ]
-    completed = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    completed = subprocess.run(command, capture_output=True, check=False)
     if completed.returncode != 0:
         message = completed.stderr.decode(errors="replace").strip()
         raise UrdfMaskRunError(f"ffmpeg failed to decode {path}: {message}")
@@ -797,7 +798,7 @@ def _video_rate(path: Path) -> str:
         "json",
         str(path),
     ]
-    completed = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    completed = subprocess.run(command, capture_output=True, check=False)
     if completed.returncode != 0:
         message = completed.stderr.decode(errors="replace").strip()
         raise UrdfMaskRunError(f"ffprobe failed for {path}: {message}")
@@ -826,7 +827,7 @@ def _probe_video(path: Path) -> dict[str, Any]:
         "json",
         str(path),
     ]
-    completed = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    completed = subprocess.run(command, capture_output=True, check=False)
     if completed.returncode != 0:
         message = completed.stderr.decode(errors="replace").strip()
         raise UrdfMaskRunError(f"ffprobe failed for {path}: {message}")
@@ -959,8 +960,8 @@ def render_overlay_video(
         completed = subprocess.run(
             command,
             input=rgb.tobytes(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
+            check=False,
         )
         if completed.returncode != 0:
             message = completed.stderr.decode(errors="replace").strip()
@@ -1365,7 +1366,7 @@ def finalize_episode_diagnostics(
         )
         artifacts["overlay"] = identity
     completed["status"] = "complete"
-    completed["completed_at"] = datetime.now(timezone.utc).isoformat()
+    completed["completed_at"] = datetime.now(UTC).isoformat()
     _atomic_write_json(output_dir / "diagnostics.json", completed)
     return completed
 
@@ -1686,8 +1687,8 @@ def _git_revision() -> str | None:
     completed = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         cwd=PROJECT_ROOT,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
+        check=False,
         text=True,
     )
     revision = completed.stdout.strip()
@@ -1772,7 +1773,7 @@ def _checkpoint_manifest(path: Path, manifest: dict[str, Any]) -> None:
     manifest["successful_episode_count"] = complete
     manifest["failed_episode_count"] = failed
     manifest["failure_attempt_count"] = len(failures)
-    manifest["updated_at"] = datetime.now(timezone.utc).isoformat()
+    manifest["updated_at"] = datetime.now(UTC).isoformat()
     _atomic_write_json(path, manifest)
 
 
@@ -2034,8 +2035,8 @@ def _new_run_manifest(
 ) -> dict[str, Any]:
     return {
         "format_version": RUN_FORMAT_VERSION,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
+        "updated_at": datetime.now(UTC).isoformat(),
         "run_id": config.run_id,
         "status": "running",
         "dry_run": False,
@@ -2073,7 +2074,7 @@ def _resume_manifest(
         expected_contract=contract,
     )
     manifest["status"] = "running"
-    manifest["resumed_at"] = datetime.now(timezone.utc).isoformat()
+    manifest["resumed_at"] = datetime.now(UTC).isoformat()
     _checkpoint_manifest(path, manifest)
     return manifest
 
@@ -2082,7 +2083,7 @@ def _failure_record(plan: EpisodePlan, exc: Exception) -> dict[str, Any]:
     return {
         **plan.to_json(),
         "status": "failed",
-        "failed_at": datetime.now(timezone.utc).isoformat(),
+        "failed_at": datetime.now(UTC).isoformat(),
         "error_type": type(exc).__name__,
         "error": str(exc),
     }
@@ -2211,7 +2212,7 @@ class IncrementalUrdfEpisodeWorker:
             if frame_shapes:
                 self._renderer_frame_shape = next(iter(frame_shapes))
             manifest["status"] = "running"
-            manifest["resumed_at"] = datetime.now(timezone.utc).isoformat()
+            manifest["resumed_at"] = datetime.now(UTC).isoformat()
             self._manifest = manifest
         else:
             config.run_dir.mkdir(parents=True, exist_ok=False)
@@ -2388,7 +2389,7 @@ class IncrementalUrdfEpisodeWorker:
                 record = {
                     "episode_index": episode_index,
                     "status": "failed",
-                    "failed_at": datetime.now(timezone.utc).isoformat(),
+                    "failed_at": datetime.now(UTC).isoformat(),
                     "error_type": type(exc).__name__,
                     "error": str(exc),
                 }
@@ -2414,7 +2415,7 @@ class IncrementalUrdfEpisodeWorker:
             failure = {
                 "episode_index": episode_index,
                 "status": "failed",
-                "failed_at": datetime.now(timezone.utc).isoformat(),
+                "failed_at": datetime.now(UTC).isoformat(),
                 "error_type": "SourceEpisodeUnavailable",
                 "error": "source episode did not become ready",
             }
@@ -2626,7 +2627,7 @@ def run_experiment(
                 os.replace(temporary_dir, output_dir)
                 completed = validate_completed_episode(output_dir, plan, config)
                 record_map[plan.episode_index] = completed
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - resume records validation failures
                 status = "failed"
                 failure = _failure_record(plan, exc)
                 record_map[plan.episode_index] = failure

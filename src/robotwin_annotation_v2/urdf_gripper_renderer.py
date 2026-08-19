@@ -21,7 +21,7 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 import numpy as np
 from numpy.typing import NDArray
@@ -501,8 +501,7 @@ class AlohaUrdfRenderer:
 
     def _resolve_mesh_path(self, filename: str) -> Path:
         normalized = filename
-        if normalized.startswith("package://"):
-            normalized = normalized[len("package://") :]
+        normalized = normalized.removeprefix("package://")
         candidate = Path(normalized)
         if candidate.is_absolute():
             resolved = candidate.resolve()
@@ -704,7 +703,7 @@ class AlohaUrdfRenderer:
             self._renderer.delete()
             self._closed = True
 
-    def __enter__(self) -> AlohaUrdfRenderer:
+    def __enter__(self) -> Self:
         self._ensure_open()
         return self
 

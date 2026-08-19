@@ -648,7 +648,7 @@ def test_real_aloha_render_preserves_link6_7_8_union_when_backend_is_available()
                 np.asarray(report["cam2world_gl"]),
                 active_side="right",
             )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - optional EGL failures skip this smoke test
         pytest.skip(f"EGL rendering backend is unavailable: {exc}")
 
     expected = rendered.fixed_link6_mask | rendered.finger_link7_mask | rendered.finger_link8_mask

@@ -7,7 +7,7 @@ import argparse
 import hashlib
 import json
 import shutil
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -33,7 +33,6 @@ from robotwin_annotation_v2.pipeline import (
     parse_semantic_plan,
     save_sam_artifacts,
 )
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RoleName = Literal["target", "receiver"]
@@ -347,7 +346,7 @@ def materialize(
 
     run_manifest = {
         "format_version": "robotwin_native_tracking_materialization_v1",
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
         "output_run_id": output_run_id,
         "selection_manifest": str(selection_manifest),
         "identity_review_format": identity_review.get("format_version"),

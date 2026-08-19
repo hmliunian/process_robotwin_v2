@@ -6,7 +6,7 @@ import json
 import os
 import tempfile
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +22,7 @@ class ArtifactStore:
 
     @staticmethod
     def new_run_id() -> str:
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         return f"{stamp}-{uuid.uuid4().hex[:8]}"
 
     def run_dir(self, run_id: str) -> Path:

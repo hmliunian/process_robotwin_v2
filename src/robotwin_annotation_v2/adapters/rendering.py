@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import unicodedata
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
@@ -606,7 +606,9 @@ def build_sheets(
             )
             role_records = run_manifest["roles"]
         if not isinstance(role_records, list):
-            raise ValueError(f"episode {episode_index} review roles must be a list")
+            raise ValueError(  # noqa: TRY004 - preserve the renderer input contract
+                f"episode {episode_index} review roles must be a list"
+            )
         wanted: dict[str, int] = {}
         statuses: dict[str, str] = {}
         for role_record in role_records:
@@ -755,7 +757,7 @@ def main() -> None:
 
     manifest = {
         "format": "robotwin_coverage20_overlay_videos_v3",
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
         "selection_rule": (
             f"exact run_id={args.run_id}"
             if args.run_id is not None

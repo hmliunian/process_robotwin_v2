@@ -163,7 +163,9 @@ def load_qc_native_object_tracks(
 
     role_records = manifest.get("roles")
     if not isinstance(role_records, list):
-        raise ValueError("object manifest roles must be a list")
+        raise ValueError(  # noqa: TRY004 - preserve the artifact input contract
+            "object manifest roles must be a list"
+        )
     tracks: dict[str, np.ndarray] = {}
     seed_masks: dict[str, np.ndarray] = {}
     seed_frames: dict[str, int] = {}

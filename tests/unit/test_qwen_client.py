@@ -4,7 +4,7 @@ import base64
 import io
 import json
 import urllib.request
-from typing import Any
+from typing import Any, Self
 
 import numpy as np
 
@@ -15,7 +15,7 @@ from robotwin_annotation_v2.adapters import (
 
 
 class FakeHTTPResponse(io.BytesIO):
-    def __enter__(self) -> FakeHTTPResponse:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_args: object) -> None:

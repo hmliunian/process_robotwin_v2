@@ -16,7 +16,7 @@ import traceback
 from collections import deque
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from queue import Full
 from typing import Any
@@ -920,7 +920,9 @@ def _read_json_object(path: Path, *, description: str) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"cannot read {description}: {path}: {exc}") from exc
     if not isinstance(payload, dict):
-        raise ValueError(f"{description} must contain one JSON object: {path}")
+        raise ValueError(  # noqa: TRY004 - preserve the JSON input error contract
+            f"{description} must contain one JSON object: {path}"
+        )
     return payload
 
 
@@ -1257,7 +1259,7 @@ def _render_processed(
             )
     manifest = {
         "format": "robotwin_coverage20_overlay_videos_v3",
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
         "requested_run_id": run_id,
         "config": str(config.config_path),
         "dataset_root": str(config.dataset.root),

@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Literal
 
-from .timeline import FrameWindow
 from .mask_qc import MaskQCStatus
+from .timeline import FrameWindow
 
 
 class MaskStatus(StrEnum):
