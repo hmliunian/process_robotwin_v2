@@ -37,6 +37,7 @@ from .bbox_localization import (
     render_bbox_prompt,
 )
 from .object_mask.planner import QueryCandidate, plan_role_queries
+from .object_mask.qc import MaskQCError, candidate_info, mask_iou
 from .prompt_context import timeline_prompt_fields
 
 _CANDIDATE_MARKER = "{candidate_panels}"
@@ -51,21 +52,6 @@ _PANEL_COLORS = (
     (20, 160, 160),
     (220, 90, 150),
 )
-
-
-class MaskQCError(RuntimeError):
-    """The candidate-mask QC request or response violated its contract."""
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        rendered_prompt: str | None = None,
-        raw_response: str | None = None,
-    ) -> None:
-        super().__init__(message)
-        self.rendered_prompt = rendered_prompt
-        self.raw_response = raw_response
 
 
 class MaskQCBackend(Protocol):
@@ -135,37 +121,6 @@ class _RoleExecution:
 
 def _normalize_text(value: str) -> str:
     return " ".join(value.split())
-
-
-def _component_count(mask: np.ndarray) -> int:
-    """Count 4-connected components without requiring OpenCV/scipy."""
-
-    remaining = np.asarray(mask, dtype=bool).copy()
-    if remaining.ndim != 2:
-        raise ValueError("mask must be 2-D")
-    count = 0
-    height, width = remaining.shape
-    while remaining.any():
-        row, column = np.argwhere(remaining)[0]
-        count += 1
-        stack = [(int(row), int(column))]
-        remaining[row, column] = False
-        while stack:
-            current_row, current_column = stack.pop()
-            for next_row, next_column in (
-                (current_row - 1, current_column),
-                (current_row + 1, current_column),
-                (current_row, current_column - 1),
-                (current_row, current_column + 1),
-            ):
-                if (
-                    0 <= next_row < height
-                    and 0 <= next_column < width
-                    and remaining[next_row, next_column]
-                ):
-                    remaining[next_row, next_column] = False
-                    stack.append((next_row, next_column))
-    return count
 
 
 def _largest_component(mask: np.ndarray) -> np.ndarray:
@@ -272,55 +227,6 @@ def _panel_image(
         fill=(255, 255, 255),
     )
     return panel
-
-
-def _candidate_info(
-    candidate_id: str,
-    query_field: str,
-    query: str,
-    mask: np.ndarray,
-    *,
-    min_area_fraction: float,
-    max_area_fraction: float,
-    duplicate_of: str | None = None,
-    seed_frame_id: int | None = None,
-) -> MaskCandidateInfo:
-    value = np.asarray(mask, dtype=bool)
-    if value.ndim != 2:
-        raise MaskQCError(f"candidate {candidate_id} mask must be 2-D")
-    area_fraction = float(value.mean())
-    nonempty = bool(value.any())
-    components = _component_count(value) if nonempty else 0
-    if not nonempty:
-        reason = "empty_seed_mask"
-    elif area_fraction < min_area_fraction:
-        reason = "seed_mask_too_small"
-    elif area_fraction > max_area_fraction:
-        reason = "seed_mask_too_large"
-    elif duplicate_of is not None:
-        reason = "duplicate_candidate_mask"
-    else:
-        reason = None
-    return MaskCandidateInfo(
-        candidate_id=candidate_id,
-        query_field=query_field,
-        query=query,
-        nonempty=nonempty,
-        area_fraction=area_fraction,
-        component_count=components,
-        basic_valid=reason is None,
-        basic_reason=reason,
-        duplicate_of=duplicate_of,
-        seed_frame_id=seed_frame_id,
-    )
-
-
-def _mask_iou(first: np.ndarray, second: np.ndarray) -> float:
-    union = np.asarray(first, dtype=bool) | np.asarray(second, dtype=bool)
-    if not union.any():
-        return 1.0
-    intersection = np.asarray(first, dtype=bool) & np.asarray(second, dtype=bool)
-    return float(intersection.sum() / union.sum())
 
 
 def _context_items(
@@ -814,7 +720,7 @@ def _run_role_qc_at_seed(
             return generation_error(
                 f"{role} candidate {candidate_id} has shape {mask.shape}, expected {frame_shape}"
             )
-        info = _candidate_info(
+        info = candidate_info(
             candidate_id,
             field,
             query,
@@ -829,12 +735,12 @@ def _run_role_qc_at_seed(
                     previous
                     for previous in candidates
                     if previous.info.basic_valid
-                    and _mask_iou(previous.mask, mask) >= mask_config.qc_duplicate_iou_threshold
+                    and mask_iou(previous.mask, mask) >= mask_config.qc_duplicate_iou_threshold
                 ),
                 None,
             )
             if duplicate is not None:
-                info = _candidate_info(
+                info = candidate_info(
                     candidate_id,
                     field,
                     query,
@@ -848,7 +754,7 @@ def _run_role_qc_at_seed(
     if reserve_prior:
         candidate_id = chr(ord("A") + len(candidates))
         query = "blue planar region"
-        info = _candidate_info(
+        info = candidate_info(
             candidate_id,
             "blue_region_prior",
             query,
@@ -863,13 +769,13 @@ def _run_role_qc_at_seed(
                     previous
                     for previous in candidates
                     if previous.info.basic_valid
-                    and _mask_iou(previous.mask, blue_prior)
+                    and mask_iou(previous.mask, blue_prior)
                     >= mask_config.qc_duplicate_iou_threshold
                 ),
                 None,
             )
             if duplicate is not None:
-                info = _candidate_info(
+                info = candidate_info(
                     candidate_id,
                     "blue_region_prior",
                     query,
@@ -1088,7 +994,7 @@ def _run_bbox_qc_at_seed(
     candidate_id = "BBOX"
     query_field = "bbox_fallback"
     query = f"Qwen-localized {role} bounding box"
-    info = _candidate_info(
+    info = candidate_info(
         candidate_id,
         query_field,
         query,
