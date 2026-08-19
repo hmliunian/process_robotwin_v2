@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
+import robotwin_annotation_v2.pipeline as public_pipeline
 from robotwin_annotation_v2.adapters import QwenCompletion
 from robotwin_annotation_v2.domain import ObjectRole
 from robotwin_annotation_v2.models import (
@@ -31,6 +32,7 @@ from robotwin_annotation_v2.pipeline import (
     run_gripper_seed_qc,
 )
 from robotwin_annotation_v2.pipeline import gripper_stage as legacy_stage
+from robotwin_annotation_v2.pipeline.gripper.sam import candidates
 
 SHAPE = (12, 16)
 
@@ -240,7 +242,24 @@ def test_same_frame_duplicate_is_not_submitted_as_valid() -> None:
 def test_component_metrics_preserve_opencv_eight_connectivity() -> None:
     diagonal = np.eye(3, dtype=bool)
 
-    assert legacy_stage._component_metrics(diagonal) == (1, 1.0)
+    assert candidates._component_metrics(diagonal) == (1, 1.0)
+
+
+def test_legacy_candidate_exports_preserve_canonical_identity() -> None:
+    public_names = (
+        "GripperSeedCandidate",
+        "GripperSeedQualityGateConfig",
+        "apply_gripper_seed_quality_gate",
+        "build_gripper_seed_candidate",
+        "mark_same_frame_duplicates",
+        "phase_for_frame",
+    )
+    for name in public_names:
+        canonical = getattr(candidates, name)
+        assert getattr(legacy_stage, name) is canonical
+        assert getattr(public_pipeline, name) is canonical
+    assert legacy_stage._component_metrics is candidates._component_metrics
+    assert legacy_stage._tcp_distance is candidates._tcp_distance
 
 
 def test_gripper_qwen_qc_receives_candidate_and_context_images(tmp_path: Path) -> None:
