@@ -15,7 +15,7 @@ from PIL import Image, ImageDraw
 from ....adapters.qwen_client import QwenCompletion, image_data_url
 from ....models.loop_context import LoopContext
 from ....models.mask_qc import MaskQCStatus
-from ....models.timeline import LoopEvents
+from ....models.timeline import PickPlaceEvents
 from ...mask_qc import parse_mask_qc_response
 from ...object_mask.qc import MaskQCError
 from .candidates import GripperSeedCandidate
@@ -205,7 +205,7 @@ def build_gripper_qwen_request(
         raise ValueError("gripper QC template must contain {context_frames} once")
     records = "\n".join(_candidate_record(candidate) for candidate in valid)
     context_ids = tuple(sorted(context_images))
-    events = cast(LoopEvents, context.events)
+    events = cast(PickPlaceEvents, context.events)
     replacements = {
         "task_text": context.task_text,
         "active_arm": events.active_arm,

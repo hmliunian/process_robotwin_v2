@@ -15,7 +15,7 @@ from ....config import GripperRoiConfig
 from ....domain import AnnotationMode, ObjectRole
 from ....models.loop_context import LoopContext
 from ....models.mask_qc import MaskQCStatus
-from ....models.timeline import FrameWindow, LoopEvents
+from ....models.timeline import FrameWindow, PickPlaceEvents
 from .candidates import (
     GripperSeedCandidate,
     GripperSeedQualityGateConfig,
@@ -148,7 +148,7 @@ class GripperSamBackend(Protocol):
 
 def gripper_keyframes(
     rois: Mapping[int, ProjectedGripperRoi],
-    events: LoopEvents,
+    events: PickPlaceEvents,
     *,
     frame_shape: tuple[int, int],
 ) -> tuple[int, ...]:
@@ -255,7 +255,7 @@ def _polygon_mask(roi: ProjectedGripperRoi, frame_shape: tuple[int, int]) -> NDA
 def _build_roi_track(
     eef_states: NDArray,
     gripper_states: NDArray,
-    events: LoopEvents,
+    events: PickPlaceEvents,
     *,
     frame_shape: tuple[int, int],
     geometry: GripperRoiGeometry,
@@ -303,7 +303,7 @@ def _load_resource_image(resource_path: Path, frame_id: int) -> Image.Image:
 
 def _context_frame_ids(
     keyframes: Sequence[int],
-    events: LoopEvents,
+    events: PickPlaceEvents,
     frame_count: int,
 ) -> tuple[int, ...]:
     values = (
@@ -327,7 +327,7 @@ def _build_gripper_candidates(
     prompt_roi_track: NDArray,
     target_track: NDArray,
     receiver_track: NDArray,
-    events: LoopEvents,
+    events: PickPlaceEvents,
     frame_count: int,
     frame_shape: tuple[int, int],
     gripper_text: str,
@@ -444,7 +444,7 @@ def run_gripper_stage(
 
     if context.annotation_mode is AnnotationMode.TARGET_ONLY:
         raise GripperStageError("target_only does not support the SAM gripper backend; use URDF")
-    events = cast(LoopEvents, context.events)
+    events = cast(PickPlaceEvents, context.events)
     gate = seed_quality_gate or GripperSeedQualityGateConfig()
     expected_shape = (context.frame_count, *frame_shape)
     expected_roles = context.annotation_spec.required_object_roles

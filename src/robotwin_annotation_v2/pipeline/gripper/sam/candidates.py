@@ -9,7 +9,7 @@ from typing import Any
 import cv2
 import numpy as np
 
-from ....models.timeline import LoopEvents
+from ....models.timeline import PickPlaceEvents
 from .composition import ObjectExclusionResult, exclude_known_objects
 
 NDArray = np.ndarray[Any, Any]
@@ -91,7 +91,7 @@ class GripperSeedCandidate:
         }
 
 
-def phase_for_frame(frame_id: int, events: LoopEvents) -> str:
+def phase_for_frame(frame_id: int, events: PickPlaceEvents) -> str:
     if frame_id < events.t_close_start:
         return "approach"
     if frame_id <= events.t_close_done:
@@ -127,7 +127,7 @@ def build_gripper_seed_candidate(
     *,
     candidate_id: str,
     frame_id: int,
-    events: LoopEvents,
+    events: PickPlaceEvents,
     prompt_mode: str,
     prompt_text: str | None,
     raw_mask: NDArray,
