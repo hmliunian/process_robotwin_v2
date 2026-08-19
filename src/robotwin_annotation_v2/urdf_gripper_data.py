@@ -106,7 +106,7 @@ class UrdfGripperEpisodeData:
 
     paths: UrdfGripperEpisodePaths
     arrays: EpisodeArrays
-    events: ActiveGripperEvents
+    events: TimelineEvents
     gripper_window: tuple[int, int]
 
     @property
@@ -126,7 +126,7 @@ class UrdfGripperEpisodeData:
         return self.gripper_window
 
     @property
-    def loop(self) -> ActiveGripperEvents:
+    def loop(self) -> TimelineEvents:
         """Compatibility alias for callers that still use the historic name."""
 
         return self.events
@@ -434,7 +434,7 @@ def load_urdf_gripper_episode(
     camera: str = "cam_high",
     require_media: bool = True,
     authoritative_loop: ActiveGripperLoop | None = None,
-    authoritative_events: ActiveGripperEvents | None = None,
+    authoritative_events: TimelineEvents | None = None,
     authoritative_gripper_window: tuple[int, int] | None = None,
 ) -> UrdfGripperEpisodeData:
     """Resolve one episode using normalized authoritative gripper activity.
@@ -467,9 +467,11 @@ def load_urdf_gripper_episode(
         raise ValueError(
             "authoritative_events and authoritative_gripper_window must be provided together"
         )
+    events: TimelineEvents
     if authoritative_events is None:
-        events: ActiveGripperEvents = infer_active_loop(arrays.observation_state)
-        gripper_window = events.inclusive_window
+        inferred_events = infer_active_loop(arrays.observation_state)
+        events = inferred_events
+        gripper_window = inferred_events.inclusive_window
     else:
         if not isinstance(authoritative_events, (ActiveGripperLoop, TargetOnlyEvents)):
             raise TypeError(
