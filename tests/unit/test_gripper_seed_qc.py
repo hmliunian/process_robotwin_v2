@@ -30,6 +30,7 @@ from robotwin_annotation_v2.pipeline import (
     render_gripper_candidate_panel,
     run_gripper_seed_qc,
 )
+from robotwin_annotation_v2.pipeline import gripper_stage as legacy_stage
 
 SHAPE = (12, 16)
 
@@ -234,6 +235,12 @@ def test_same_frame_duplicate_is_not_submitted_as_valid() -> None:
     assert marked[0].basic_valid
     assert not marked[1].basic_valid
     assert marked[1].duplicate_of == "A"
+
+
+def test_component_metrics_preserve_opencv_eight_connectivity() -> None:
+    diagonal = np.eye(3, dtype=bool)
+
+    assert legacy_stage._component_metrics(diagonal) == (1, 1.0)
 
 
 def test_gripper_qwen_qc_receives_candidate_and_context_images(tmp_path: Path) -> None:
