@@ -678,6 +678,134 @@ def test_parse_args_accepts_output_format_alias_and_verbose() -> None:
     assert args.verbose is True
 
 
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    (
+        (("--data-path", "dataset", "--target-only"), "target_only"),
+        (("--data_path", "dataset", "--pick_place"), "pick_place"),
+    ),
+)
+def test_parse_args_accepts_path_only_modes(
+    arguments: tuple[str, ...],
+    expected: str,
+) -> None:
+    args = process_module._parse_args(arguments)
+
+    assert args.data_path == Path("dataset")
+    assert args.path_mode == expected
+
+
+def test_path_only_single_task_dispatches_from_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dataset = tmp_path / "adjust_bottle"
+    target = SimpleNamespace(
+        root=dataset,
+        task="adjust_bottle",
+        camera="cam_high",
+        episode_ids=(0,),
+    )
+    resolved = SimpleNamespace(root=dataset, targets=(target,), is_collection=False)
+    calls: dict[str, Any] = {}
+    config = _cli_config(tmp_path)
+
+    monkeypatch.setattr(
+        process_module,
+        "resolve_dataset_input",
+        lambda *_args, **_kwargs: resolved,
+    )
+
+    def fake_load_config(path: Path) -> Any:
+        calls["config_path"] = path
+        return config
+
+    monkeypatch.setattr(process_module, "load_config", fake_load_config)
+
+    def fake_live(**kwargs: Any) -> dict[str, Any]:
+        calls.update(kwargs)
+        return {"passed": True}
+
+    monkeypatch.setattr(process_module, "process_live_urdf_pipeline", fake_live)
+    args = process_module._parse_args(
+        [
+            "--data-path",
+            str(dataset),
+            "--target-only",
+            "--episode-ids",
+            "0",
+            "--skip-render",
+        ]
+    )
+
+    summary = process_module._run_from_args(
+        args,
+        process_module.ProcessUI(emit_json_summary=False, verbose=False),
+    )
+
+    assert summary["passed"] is True
+    assert calls["config_path"] == process_module.PATH_MODE_CONFIGS[
+        process_module.AnnotationMode.TARGET_ONLY
+    ]
+    assert calls["dataset_root"] == dataset
+    assert calls["task"] == "adjust_bottle"
+    assert calls["episode_ids"] == (0,)
+
+
+def test_path_only_collection_runs_each_task_and_writes_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    targets = tuple(
+        SimpleNamespace(
+            root=tmp_path / task,
+            task=task,
+            camera="cam_high",
+            episode_ids=(episode_id,),
+        )
+        for task, episode_id in (("alpha", 1), ("beta", 2))
+    )
+    resolved = SimpleNamespace(root=tmp_path, targets=targets, is_collection=True)
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        process_module,
+        "resolve_dataset_input",
+        lambda *_args, **_kwargs: resolved,
+    )
+    monkeypatch.setattr(process_module, "load_config", lambda _path: _cli_config(tmp_path))
+
+    def fake_live(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs)
+        return {"passed": True, "artifact": f"{kwargs['task']}.json"}
+
+    monkeypatch.setattr(process_module, "process_live_urdf_pipeline", fake_live)
+    args = process_module._parse_args(
+        [
+            "--data-path",
+            str(tmp_path),
+            "--target-only",
+            "--run-id",
+            "collection-test",
+            "--output-dir",
+            str(tmp_path / "output"),
+            "--skip-render",
+        ]
+    )
+
+    summary = process_module._run_from_args(
+        args,
+        process_module.ProcessUI(emit_json_summary=False, verbose=False),
+    )
+
+    assert [call["task"] for call in calls] == ["alpha", "beta"]
+    assert [call["run_id"] for call in calls] == [
+        "collection-test-alpha",
+        "collection-test-beta",
+    ]
+    assert summary["passed"] is True
+    assert Path(summary["artifact"]).is_file()
+
+
 def test_main_legacy_cli_dispatches_sam_without_urdf_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

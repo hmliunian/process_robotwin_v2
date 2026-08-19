@@ -94,7 +94,7 @@ def resolve_dataset_input(
     names: list[str] = []
     for record in datasets:
         name = record.get("task") if isinstance(record, dict) else None
-        if not isinstance(name, str) or Path(name).name != name:
+        if not isinstance(name, str) or name in {"", ".", ".."} or Path(name).name != name:
             raise ValueError(f"collection manifest contains an invalid task record: {root}")
         names.append(name)
     if len(set(names)) != len(names):
