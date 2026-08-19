@@ -10,6 +10,7 @@ import pytest
 from PIL import Image
 
 from robotwin_annotation_v2.adapters import ArtifactStore
+from robotwin_annotation_v2.adapters.canonical_masks import read_canonical_masks
 from robotwin_annotation_v2.config import MaskConfig
 from robotwin_annotation_v2.domain import AnnotationMode
 from robotwin_annotation_v2.mask_schema import FrameEncoding, target_hold_window
@@ -698,6 +699,18 @@ def test_save_sam_artifacts_marks_grippers_not_annotated(tmp_path: Path) -> None
             "not_run",
             "not_run",
         ]
+    bundle = read_canonical_masks(episode_dir / "masks.npz")
+    np.testing.assert_array_equal(bundle.masks, result.masks)
+    assert set(bundle.to_payload()) == {
+        "format_version",
+        "frame_count",
+        "masks",
+        "instance_names",
+        "roles",
+        "annotation_status",
+        "qc_status",
+        "frame_encoding",
+    }
     manifest = json.loads((episode_dir / "run_manifest.json").read_text())
     assert manifest["format_version"] == "robotwin_mask_run_v2"
     assert manifest["mask_format_version"] == "robotwin_visible_masks_v3"

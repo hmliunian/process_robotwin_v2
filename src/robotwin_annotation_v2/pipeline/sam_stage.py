@@ -10,6 +10,10 @@ import numpy as np
 from PIL import Image
 
 from ..adapters.artifact_store import ArtifactStore
+from ..adapters.canonical_masks import (
+    build_canonical_mask_bundle,
+    write_canonical_masks,
+)
 from ..config import MaskConfig
 from ..mask_schema import (
     FRAME_ENCODING_LEGEND,
@@ -812,17 +816,16 @@ def save_sam_artifacts(
         ]
     )
     frame_encoding = build_frame_encoding(masks, context.events)
-    masks_path = store.write_npz(
-        episode_dir / "masks.npz",
-        format_version=np.asarray(MASK_FORMAT_VERSION),
-        frame_count=np.asarray(result.frame_count, dtype=np.int64),
+    masks_path = episode_dir / "masks.npz"
+    canonical_bundle = build_canonical_mask_bundle(
+        masks_path,
+        frame_count=result.frame_count,
         masks=masks,
-        instance_names=np.asarray(INSTANCE_NAMES),
-        roles=np.asarray(ROLES),
         annotation_status=annotation_statuses,
         qc_status=qc_status,
         frame_encoding=frame_encoding,
     )
+    masks_path = write_canonical_masks(masks_path, canonical_bundle)
     provenance_channels: dict[str, Any] = {
         "gripper_left": {"status": "not_annotated"},
         "gripper_right": {"status": "not_annotated"},
