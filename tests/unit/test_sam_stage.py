@@ -35,14 +35,24 @@ from robotwin_annotation_v2.pipeline import (
     GripperSeedQCResult,
     GripperStageResult,
     SamStageError,
-    compose_visible_mask,
     dilate_envelope,
-    evaluate_temporal_mask,
     run_sam_stage,
+    sam_stage,
     save_sam_artifacts,
+)
+from robotwin_annotation_v2.pipeline.object_mask.temporal_qc import (
+    TemporalMaskQc,
+    compose_visible_mask,
+    evaluate_temporal_mask,
 )
 
 FRAME_SHAPE = (5, 6)
+
+
+def test_sam_stage_temporal_helpers_are_compatibility_exports() -> None:
+    assert sam_stage.TemporalMaskQc is TemporalMaskQc
+    assert sam_stage.compose_visible_mask is compose_visible_mask
+    assert sam_stage.evaluate_temporal_mask is evaluate_temporal_mask
 
 
 def _context() -> LoopContext:
