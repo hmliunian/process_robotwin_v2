@@ -15,6 +15,7 @@ from ..models.timeline import (
     PickPlaceEvents,
     TargetOnlyEvents,
     TimelineEvents,
+    derive_target_hold_window,
 )
 
 ArmName = Literal["left", "right"]
@@ -50,13 +51,8 @@ class AuthoritativeLoopContext:
     def target_hold_window(self) -> tuple[int, int] | None:
         """Inclusive frames carrying the held-target encoding."""
 
-        if isinstance(self.events, TargetOnlyEvents):
-            start = self.events.t_close_end + 1
-            end = self.frame_count - 1
-        else:
-            start = self.events.t_close_done + 1
-            end = self.events.t_open_start - 1
-        return None if end < start else (start, end)
+        hold = derive_target_hold_window(self.events, frame_count=self.frame_count)
+        return None if hold is None else (hold.start, hold.end)
 
 
 def _validate_episode_index(episode_index: int) -> int:

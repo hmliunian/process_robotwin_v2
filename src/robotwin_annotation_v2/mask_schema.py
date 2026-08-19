@@ -14,7 +14,7 @@ from typing import Any, cast
 import numpy as np
 from numpy.typing import NDArray
 
-from .models.timeline import PickPlaceEvents, TargetOnlyEvents, TimelineEvents
+from .models.timeline import TimelineEvents, derive_target_hold_window
 
 MASK_FORMAT_VERSION = "robotwin_visible_masks_v3"
 LEGACY_MASK_FORMAT_VERSION = "robotwin_visible_masks_v2"
@@ -76,15 +76,8 @@ def target_hold_window(
 ) -> tuple[int, int] | None:
     """Return the inclusive post-close/pre-open target hold interval."""
 
-    if frame_count < 1:
-        raise ValueError("frame_count must be positive")
-    if isinstance(events, PickPlaceEvents):
-        hold = events.target_hold_window
-        return None if hold is None else (hold.start, hold.end)
-    if isinstance(events, TargetOnlyEvents):
-        hold = events.target_hold_window(frame_count)
-        return None if hold is None else (hold.start, hold.end)
-    raise TypeError(f"unsupported timeline events: {type(events).__name__}")
+    hold = derive_target_hold_window(events, frame_count=frame_count)
+    return None if hold is None else (hold.start, hold.end)
 
 
 def build_frame_encoding(

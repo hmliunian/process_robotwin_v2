@@ -34,6 +34,7 @@ from .timeline import (
     TargetOnlyEvents,
     TimelineEvents,
     derive_episode_windows,
+    derive_target_hold_window,
 )
 
 __all__ = [
@@ -67,5 +68,6 @@ __all__ = [
     "TargetOnlyEvents",
     "TimelineEvents",
     "derive_episode_windows",
+    "derive_target_hold_window",
     "normalize_query",
 ]
