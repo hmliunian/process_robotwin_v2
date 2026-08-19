@@ -68,14 +68,16 @@ _EXPORT_GROUPS = {
         "evaluate_temporal_mask",
         "run_sam_stage",
     ),
-    ".state_loop": (
+    ".timeline_detector": (
         "StateLoopError",
-        "build_loop_context",
         "detect_arm_loops",
         "detect_episode_loop",
         "detect_episode_target_only",
         "detect_loop_events",
         "detect_target_only_events",
+    ),
+    ".state_loop": (
+        "build_loop_context",
         "sample_semantic_frames",
     ),
 }

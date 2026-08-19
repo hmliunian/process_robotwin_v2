@@ -1,16 +1,17 @@
 """Lightweight dataset contracts for deterministic URDF gripper rendering.
 
-This module deliberately avoids the regular dataset and pipeline packages: those
-packages import video/SAM dependencies that are not available in the rendering
-environment.  Loop detection mirrors ``pipeline.state_loop`` using only NumPy.
+This module avoids heavyweight dataset and model-service dependencies that are
+not available in the rendering environment. Loop detection reuses the pure
+NumPy timeline detector shared with the main pipeline.
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Mapping
+from typing import Any, Literal
 
 import numpy as np
 
@@ -18,13 +19,22 @@ from .domain import AnnotationMode, annotation_spec
 from .models.timeline import (
     EpisodeWindows,
     FrameWindow,
+    PickPlaceEvents,
     TargetOnlyEvents,
 )
+from .pipeline import timeline_detector as _timeline_detector
 
 ArmName = Literal["left", "right"]
 
-OPEN_THRESHOLD = 0.9
-CLOSED_THRESHOLD = 0.15
+CLOSED_THRESHOLD = _timeline_detector.CLOSED_THRESHOLD
+OPEN_THRESHOLD = _timeline_detector.OPEN_THRESHOLD
+_StateLoopError = _timeline_detector.StateLoopError
+_first_run = _timeline_detector._first_run
+_median_filter = _timeline_detector._median_filter
+_canonical_detect_arm_loops = _timeline_detector.detect_arm_loops
+_canonical_detect_episode_loop = _timeline_detector.detect_episode_loop
+_canonical_detect_loop_events = _timeline_detector.detect_loop_events
+
 PARQUET_COLUMNS = (
     "frame_index",
     "episode_index",
@@ -718,19 +728,17 @@ def load_episode_arrays(
     )
 
 
-def _median_filter(values: np.ndarray) -> np.ndarray:
-    padded = np.pad(values, (1, 1), mode="edge")
-    return np.median(
-        np.stack((padded[:-2], padded[1:-1], padded[2:])),
-        axis=0,
+def _legacy_active_loop(events: PickPlaceEvents) -> ActiveGripperLoop:
+    """Adapt canonical events to the temporary URDF compatibility type."""
+
+    return ActiveGripperLoop(
+        active_arm=events.active_arm,
+        t_move_start=events.t_move_start,
+        t_close_start=events.t_close_start,
+        t_close_done=events.t_close_done,
+        t_open_start=events.t_open_start,
+        t_open_done=events.t_open_done,
     )
-
-
-def _first_run(condition: np.ndarray, *, start: int, length: int) -> int | None:
-    for frame_id in range(max(0, start), len(condition) - length + 1):
-        if bool(condition[frame_id : frame_id + length].all()):
-            return frame_id
-    return None
 
 
 def _detect_loop_events(
@@ -752,63 +760,18 @@ def _detect_loop_events(
         raise UrdfGripperDataError(f"eef values must have shape {(gripper.size, 6)}")
     if stable_frames < 1:
         raise ValueError("stable_frames must be positive")
-
-    filtered = _median_filter(gripper)
-    close_candidates = np.flatnonzero(
-        (filtered[1:] < OPEN_THRESHOLD) & (filtered[1:] < filtered[:-1])
-    ) + 1
-    if close_candidates.size == 0:
-        raise UrdfGripperDataError("no close transition detected")
-    close_start = int(close_candidates[0])
-    close_run = _first_run(
-        filtered <= CLOSED_THRESHOLD,
-        start=close_start,
-        length=stable_frames,
-    )
-    if close_run is None:
-        raise UrdfGripperDataError("no stable closed transition detected")
-    close_done = close_run + stable_frames - 1
-
-    open_candidates = np.flatnonzero(
-        (filtered[1:] > filtered[:-1])
-        & (np.arange(1, len(filtered)) > close_done)
-    ) + 1
-    if open_candidates.size == 0:
-        raise UrdfGripperDataError("no open transition detected")
-    open_start = int(open_candidates[0])
-    open_run = _first_run(
-        filtered >= OPEN_THRESHOLD,
-        start=open_start,
-        length=stable_frames,
-    )
-    if open_run is None:
-        raise UrdfGripperDataError("no stable reopen transition detected")
-    open_done = open_run + stable_frames - 1
-
-    delta = np.diff(eef, axis=0)
-    delta[:, 3:] = (delta[:, 3:] + np.pi) % (2 * np.pi) - np.pi
-    score = np.linalg.norm(delta[:, :3], axis=1)
-    score += rotation_scale * np.linalg.norm(delta[:, 3:], axis=1)
-    baseline = score[: max(1, min(close_start, 3))]
-    median = float(np.median(baseline))
-    deviation = float(np.median(np.abs(baseline - median)))
-    threshold = max(median + 4.0 * deviation, motion_floor)
-    motion = np.concatenate(([False], score > threshold))
-    move_start = _first_run(motion, start=1, length=stable_frames)
-    if move_start is None or move_start >= close_start:
-        move_start = close_start
-
     try:
-        return ActiveGripperLoop(
-            active_arm=arm,
-            t_move_start=move_start,
-            t_close_start=close_start,
-            t_close_done=close_done,
-            t_open_start=open_start,
-            t_open_done=open_done,
+        events = _canonical_detect_loop_events(
+            gripper,
+            eef,
+            arm=arm,
+            stable_frames=stable_frames,
+            motion_floor=motion_floor,
+            rotation_scale=rotation_scale,
         )
-    except ValueError as exc:
+    except _StateLoopError as exc:
         raise UrdfGripperDataError(str(exc)) from exc
+    return _legacy_active_loop(events)
 
 
 def _detect_arm_loops(
@@ -817,26 +780,16 @@ def _detect_arm_loops(
     *,
     arm: ArmName,
 ) -> tuple[ActiveGripperLoop, ...]:
-    gripper = np.asarray(gripper_values)
-    eef = np.asarray(eef_values)
-    events: list[ActiveGripperLoop] = []
-    offset = 0
-    while offset < len(gripper) - 5:
-        try:
-            event = _detect_loop_events(gripper[offset:], eef[offset:], arm=arm)
-        except UrdfGripperDataError:
-            break
-        absolute = ActiveGripperLoop(
-            active_arm=event.active_arm,
-            t_move_start=event.t_move_start + offset,
-            t_close_start=event.t_close_start + offset,
-            t_close_done=event.t_close_done + offset,
-            t_open_start=event.t_open_start + offset,
-            t_open_done=event.t_open_done + offset,
-        )
-        events.append(absolute)
-        offset = absolute.t_open_done + 1
-    return tuple(events)
+    events = _canonical_detect_arm_loops(gripper_values, eef_values, arm=arm)
+    return tuple(_legacy_active_loop(event) for event in events)
+
+
+@dataclass(frozen=True)
+class _TimelineState:
+    """Minimal state view consumed by the canonical episode detector."""
+
+    gripper_states: np.ndarray[Any, Any]
+    eef_states: np.ndarray[Any, Any]
 
 
 def infer_active_loop(observation_state: np.ndarray) -> ActiveGripperLoop:
@@ -850,21 +803,16 @@ def infer_active_loop(observation_state: np.ndarray) -> ActiveGripperLoop:
 
     grippers = state[:, (6, 13)]
     eef = np.stack((state[:, 0:6], state[:, 7:13]), axis=1)
-    candidates: list[ActiveGripperLoop] = []
-    counts: dict[str, int] = {}
-    for arm_index, arm in enumerate(("left", "right")):
-        arm_events = _detect_arm_loops(
-            grippers[:, arm_index],
-            eef[:, arm_index],
-            arm=arm,
+    try:
+        events = _canonical_detect_episode_loop(
+            _TimelineState(
+                gripper_states=grippers,
+                eef_states=eef,
+            )
         )
-        candidates.extend(arm_events)
-        counts[arm] = len(arm_events)
-    if len(candidates) != 1:
-        raise UrdfGripperDataError(
-            f"expected exactly one active-arm loop, got {len(candidates)}; per_arm={counts}"
-        )
-    return candidates[0]
+    except _StateLoopError as exc:
+        raise UrdfGripperDataError(str(exc)) from exc
+    return _legacy_active_loop(events)
 
 
 def load_camera_calibration(

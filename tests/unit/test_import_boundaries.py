@@ -48,6 +48,20 @@ def test_pipeline_package_loads_lightweight_stage_exports_on_demand() -> None:
     )
 
 
+def test_public_timeline_detector_does_not_load_stage_or_dataset_runtime() -> None:
+    _run_import_probe(
+        "import sys\n"
+        "import robotwin_annotation_v2.pipeline as pipeline\n"
+        "detector = pipeline.detect_loop_events\n"
+        "assert detector.__module__ == 'robotwin_annotation_v2.pipeline.timeline_detector'\n"
+        "assert 'robotwin_annotation_v2.pipeline.state_loop' not in sys.modules\n"
+        "assert 'robotwin_annotation_v2.adapters.robotwin_dataset' not in sys.modules\n"
+        "assert not any(name in sys.modules for name in (\n"
+        "    'av', 'pandas', 'cv2', 'torch', 'sam3'\n"
+        "))\n"
+    )
+
+
 def test_mask_qc_stage_does_not_load_artifact_store() -> None:
     _run_import_probe(
         "import sys\n"

@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import robotwin_annotation_v2.pipeline as public_pipeline
 import robotwin_annotation_v2.urdf_gripper_data as urdf_data
 from robotwin_annotation_v2.adapters.robotwin_dataset import EpisodePaths, EpisodeState
 from robotwin_annotation_v2.pipeline.state_loop import (
@@ -73,6 +74,32 @@ def _assert_event_parity(
     )
 
     assert pipeline_event.to_json() == urdf_event.to_json() == expected
+
+
+def test_state_loop_and_public_exports_preserve_canonical_detector_identity() -> None:
+    from robotwin_annotation_v2.pipeline import state_loop
+    from robotwin_annotation_v2.pipeline import timeline_detector as canonical_detector
+
+    public_names = (
+        "StateLoopError",
+        "detect_arm_loops",
+        "detect_episode_loop",
+        "detect_episode_target_only",
+        "detect_loop_events",
+        "detect_target_only_events",
+    )
+    private_names = (
+        "_close_transition",
+        "_first_run",
+        "_median_filter",
+        "_motion_start",
+    )
+    for name in public_names:
+        canonical = getattr(canonical_detector, name)
+        assert getattr(state_loop, name) is canonical
+        assert getattr(public_pipeline, name) is canonical
+    for name in private_names:
+        assert getattr(state_loop, name) is getattr(canonical_detector, name)
 
 
 @pytest.mark.parametrize("arm", ["left", "right"])
