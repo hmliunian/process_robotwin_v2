@@ -1327,10 +1327,7 @@ def _render_processed(
     output_dir: Path,
     reporter: ProcessUI | None = None,
 ) -> dict[str, Any]:
-    try:
-        import render_coverage20_videos as render
-    except ModuleNotFoundError:
-        from scripts import render_coverage20_videos as render
+    render = importlib.import_module("robotwin_annotation_v2.adapters.rendering")
 
     dataset = RoboTwinDataset(
         config.dataset.root,

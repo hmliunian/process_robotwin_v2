@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 import scripts.render_open_set_bad_cases as render_bad_cases
-from scripts.render_coverage20_videos import MaskArtifact
+from robotwin_annotation_v2.adapters.rendering import MaskArtifact
 
 
 def _case(tmp_path: Path, run: str, task: str, episode_id: int) -> tuple[Path, Path]:

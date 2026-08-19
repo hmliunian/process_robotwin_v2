@@ -610,7 +610,11 @@ def test_target_only_review_manifest_lists_only_applicable_roles(
         _sha256=lambda _path: "sha256",
         build_sheets=lambda *_args, **_kwargs: [],
     )
-    monkeypatch.setitem(sys.modules, "render_coverage20_videos", fake_render)
+    monkeypatch.setitem(
+        sys.modules,
+        "robotwin_annotation_v2.adapters.rendering",
+        fake_render,
+    )
     monkeypatch.setattr(process_module, "RoboTwinDataset", FakeDataset)
 
     report = process_module._render_processed(

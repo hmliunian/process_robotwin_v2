@@ -7,8 +7,8 @@ import numpy as np
 import pytest
 from PIL import Image
 
-import scripts.render_coverage20_videos as render_module
-from scripts.render_coverage20_videos import (
+import robotwin_annotation_v2.adapters.rendering as render_module
+from robotwin_annotation_v2.adapters.rendering import (
     HALO_COLOR,
     ROLE_COLORS,
     TARGET_HOLD_COLOR,

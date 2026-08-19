@@ -16,12 +16,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from robotwin_annotation_v2.adapters import rendering as renderer
 from robotwin_annotation_v2.adapters.artifact_store import ArtifactStore
-
-if __package__:
-    from scripts import render_coverage20_videos as renderer
-else:  # Support ``python scripts/render_open_set_bad_cases.py``.
-    import render_coverage20_videos as renderer
 
 
 INPUT_FORMAT = "robotwin_open_set_bad_case_render_input_v1"
