@@ -74,6 +74,7 @@ SAM_EXECUTION_ERRORS = (
 
 __all__ = [
     "SAM_EXECUTION_ERRORS",
+    "EpisodePipeline",
     "GripperEpisodeExecution",
     "SamEpisodeExecution",
     "_emit_gripper_result",
@@ -110,6 +111,38 @@ class GripperEpisodeExecution:
     gripper_status: str
     selected_candidate: str | None
     seed_qc_path: Path | None
+
+
+@dataclass(frozen=True)
+class EpisodePipeline:
+    """Coordinate the configured stages for one episode.
+
+    The stage functions remain module-level compatibility seams for the CLI;
+    this class is the single owner of their execution order.
+    """
+
+    config: PipelineConfig
+
+    def preflight(self) -> None:
+        run_preflight(self.config)
+
+    def build_loop(self, episode_index: int, run_id: str | None = None) -> None:
+        run_loop(self.config, episode_index, run_id)
+
+    def plan_semantics(self, episode_index: int, run_id: str | None = None) -> None:
+        run_qwen(self.config, episode_index, run_id)
+
+    def annotate_objects(self, episode_index: int, run_id: str) -> None:
+        run_sam(self.config, episode_index, run_id)
+
+    def annotate_gripper(self, episode_index: int, run_id: str) -> None:
+        run_gripper(self.config, episode_index, run_id)
+
+    def run(self, episode_index: int, run_id: str | None = None) -> None:
+        selected_run_id = run_id or ArtifactStore.new_run_id()
+        run_qwen(self.config, episode_index, selected_run_id)
+        run_sam(self.config, episode_index, selected_run_id)
+        run_gripper(self.config, episode_index, selected_run_id)
 
 
 def _dataset(config: PipelineConfig) -> RoboTwinDataset:
@@ -1025,10 +1058,7 @@ def run_gripper_batch(
 
 
 def run_pipeline(config: PipelineConfig, episode_index: int, run_id: str | None) -> None:
-    selected_run_id = run_id or ArtifactStore.new_run_id()
-    run_qwen(config, episode_index, selected_run_id)
-    run_sam(config, episode_index, selected_run_id)
-    run_gripper(config, episode_index, selected_run_id)
+    EpisodePipeline(config).run(episode_index, run_id)
 
 
 def parse_args() -> argparse.Namespace:

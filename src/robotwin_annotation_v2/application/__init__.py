@@ -7,7 +7,7 @@ from typing import Any
 
 _EXPORTS = {
     "DatasetPipeline": (".dataset_pipeline", "DatasetPipeline"),
-    "EpisodePipeline": (".episode_pipeline_api", "EpisodePipeline"),
+    "EpisodePipeline": (".episode_pipeline", "EpisodePipeline"),
 }
 
 __all__ = list(_EXPORTS)

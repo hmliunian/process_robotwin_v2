@@ -8,12 +8,22 @@ from typing import Any
 
 import pytest
 
-from robotwin_annotation_v2.application import episode_pipeline
 from robotwin_annotation_v2.adapters import ArtifactStore, Sam3Error
+from robotwin_annotation_v2.application import episode_pipeline
+from robotwin_annotation_v2.application.episode_pipeline import (
+    EpisodePipeline as CanonicalEpisodePipeline,
+)
+from robotwin_annotation_v2.application.episode_pipeline_api import (
+    EpisodePipeline as CompatibilityEpisodePipeline,
+)
 from robotwin_annotation_v2.domain import AnnotationMode
 from robotwin_annotation_v2.models import EpisodeRef, MaskStatus
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_episode_pipeline_compatibility_import_has_one_canonical_owner() -> None:
+    assert CompatibilityEpisodePipeline is CanonicalEpisodePipeline
 
 
 class FakeResidentBackend:
