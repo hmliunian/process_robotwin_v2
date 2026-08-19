@@ -70,6 +70,24 @@ class PickPlaceEvents:
         return FrameWindow(self.t_move_start, self.t_open_done)
 
     @property
+    def start(self) -> int:
+        """Compatibility start of the inclusive active-gripper window."""
+
+        return self.t_move_start
+
+    @property
+    def end(self) -> int:
+        """Compatibility end of the inclusive active-gripper window."""
+
+        return self.t_open_done
+
+    @property
+    def inclusive_window(self) -> tuple[int, int]:
+        """Compatibility tuple view of :attr:`loop_window`."""
+
+        return (self.start, self.end)
+
+    @property
     def target_primary_window(self) -> FrameWindow:
         """Ordinary target encoding through the completed close event."""
 

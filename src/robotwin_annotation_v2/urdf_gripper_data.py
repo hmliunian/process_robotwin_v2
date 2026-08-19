@@ -21,6 +21,7 @@ from .models.timeline import (
     FrameWindow,
     PickPlaceEvents,
     TargetOnlyEvents,
+    TimelineEvents,
 )
 from .pipeline import timeline_detector as _timeline_detector
 
@@ -31,7 +32,7 @@ OPEN_THRESHOLD = _timeline_detector.OPEN_THRESHOLD
 _StateLoopError = _timeline_detector.StateLoopError
 _first_run = _timeline_detector._first_run
 _median_filter = _timeline_detector._median_filter
-_canonical_detect_arm_loops = _timeline_detector.detect_arm_loops
+_detect_arm_loops = _timeline_detector.detect_arm_loops
 _canonical_detect_episode_loop = _timeline_detector.detect_episode_loop
 _canonical_detect_loop_events = _timeline_detector.detect_loop_events
 
@@ -83,65 +84,9 @@ class EpisodeArrays:
         return int(self.joint_absolute.shape[0])
 
 
-@dataclass(frozen=True)
-class ActiveGripperLoop:
-    """One active arm and its ordered, inclusive Stage-1 event boundaries."""
-
-    active_arm: ArmName
-    t_move_start: int
-    t_close_start: int
-    t_close_done: int
-    t_open_start: int
-    t_open_done: int
-
-    def __post_init__(self) -> None:
-        values = (
-            self.t_move_start,
-            self.t_close_start,
-            self.t_close_done,
-            self.t_open_start,
-            self.t_open_done,
-        )
-        if self.active_arm not in {"left", "right"}:
-            raise ValueError(f"invalid active arm: {self.active_arm}")
-        if min(values) < 0:
-            raise ValueError("loop event frames must be non-negative")
-        if not (
-            self.t_move_start <= self.t_close_start
-            < self.t_close_done
-            < self.t_open_start
-            < self.t_open_done
-        ):
-            raise ValueError(f"loop events are not ordered: {values}")
-
-    @property
-    def start(self) -> int:
-        """First frame in the inclusive active-gripper window."""
-
-        return self.t_move_start
-
-    @property
-    def end(self) -> int:
-        """Last frame in the inclusive active-gripper window."""
-
-        return self.t_open_done
-
-    @property
-    def inclusive_window(self) -> tuple[int, int]:
-        return (self.start, self.end)
-
-    def to_json(self) -> dict[str, Any]:
-        return {
-            "active_arm": self.active_arm,
-            "t_move_start": self.t_move_start,
-            "t_close_start": self.t_close_start,
-            "t_close_done": self.t_close_done,
-            "t_open_start": self.t_open_start,
-            "t_open_done": self.t_open_done,
-        }
-
-
-ActiveGripperEvents = ActiveGripperLoop | TargetOnlyEvents
+# Compatibility names retained while URDF callers migrate to the domain types.
+ActiveGripperLoop = PickPlaceEvents
+ActiveGripperEvents = TimelineEvents
 
 
 @dataclass(frozen=True)
@@ -728,19 +673,6 @@ def load_episode_arrays(
     )
 
 
-def _legacy_active_loop(events: PickPlaceEvents) -> ActiveGripperLoop:
-    """Adapt canonical events to the temporary URDF compatibility type."""
-
-    return ActiveGripperLoop(
-        active_arm=events.active_arm,
-        t_move_start=events.t_move_start,
-        t_close_start=events.t_close_start,
-        t_close_done=events.t_close_done,
-        t_open_start=events.t_open_start,
-        t_open_done=events.t_open_done,
-    )
-
-
 def _detect_loop_events(
     gripper_values: np.ndarray,
     eef_values: np.ndarray,
@@ -771,17 +703,7 @@ def _detect_loop_events(
         )
     except _StateLoopError as exc:
         raise UrdfGripperDataError(str(exc)) from exc
-    return _legacy_active_loop(events)
-
-
-def _detect_arm_loops(
-    gripper_values: np.ndarray,
-    eef_values: np.ndarray,
-    *,
-    arm: ArmName,
-) -> tuple[ActiveGripperLoop, ...]:
-    events = _canonical_detect_arm_loops(gripper_values, eef_values, arm=arm)
-    return tuple(_legacy_active_loop(event) for event in events)
+    return events
 
 
 @dataclass(frozen=True)
@@ -812,7 +734,7 @@ def infer_active_loop(observation_state: np.ndarray) -> ActiveGripperLoop:
         )
     except _StateLoopError as exc:
         raise UrdfGripperDataError(str(exc)) from exc
-    return _legacy_active_loop(events)
+    return events
 
 
 def load_camera_calibration(

@@ -8,6 +8,7 @@ import pytest
 import robotwin_annotation_v2.pipeline as public_pipeline
 import robotwin_annotation_v2.urdf_gripper_data as urdf_data
 from robotwin_annotation_v2.adapters.robotwin_dataset import EpisodePaths, EpisodeState
+from robotwin_annotation_v2.models.timeline import PickPlaceEvents, TimelineEvents
 from robotwin_annotation_v2.pipeline.state_loop import (
     StateLoopError,
     detect_arm_loops,
@@ -100,6 +101,14 @@ def test_state_loop_and_public_exports_preserve_canonical_detector_identity() ->
         assert getattr(public_pipeline, name) is canonical
     for name in private_names:
         assert getattr(state_loop, name) is getattr(canonical_detector, name)
+
+
+def test_urdf_event_compatibility_names_are_direct_domain_aliases() -> None:
+    from robotwin_annotation_v2.pipeline import timeline_detector as canonical_detector
+
+    assert urdf_data.ActiveGripperLoop is PickPlaceEvents
+    assert urdf_data.ActiveGripperEvents is TimelineEvents
+    assert urdf_data._detect_arm_loops is canonical_detector.detect_arm_loops
 
 
 @pytest.mark.parametrize("arm", ["left", "right"])
