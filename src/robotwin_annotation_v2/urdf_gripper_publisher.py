@@ -40,7 +40,6 @@ MASK_RUN_FORMAT_VERSION = "robotwin_mask_run_v2"
 PROVENANCE_FORMAT_VERSION = "robotwin_frame_provenance_v2"
 URDF_PRODUCT_FORMAT_VERSION = "robotwin_urdf_gripper_masks_v2"
 PROCESS_SUMMARY_FORMAT_VERSION = "robotwin_process_dataset_summary_v1"
-LOOP_FORMAT_VERSION = "robotwin_loop_context_v1"
 DERIVATION_SOURCE_LINEAGE_FORMAT_VERSION = "robotwin_derivation_source_lineage_v1"
 DERIVATION_SOURCE_LINEAGE_V2_FORMAT_VERSION = (
     "robotwin_derivation_source_lineage_v2"
