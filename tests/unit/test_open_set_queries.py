@@ -20,6 +20,7 @@ from robotwin_annotation_v2.models import (
 )
 from robotwin_annotation_v2.models.semantic_plan import RoleName
 from robotwin_annotation_v2.pipeline import curated_query_aliases, mask_qc, open_set_queries
+from robotwin_annotation_v2.pipeline.object_mask.planner import plan_role_queries
 
 
 def _context(task: str) -> LoopContext:
@@ -188,16 +189,11 @@ def test_query_candidates_keep_four_semantic_queries_and_cap_aliases_at_three() 
         "stand",
     )
 
-    candidates = mask_qc._role_query_candidates(
+    candidates = plan_role_queries(
         _context("place_phone_stand"),
         "receiver",
         semantic,
-        MaskConfig(
-            qc_enabled=True,
-            qc_prompt_template=Path("unused"),
-            qc_max_candidates=8,
-            qc_query_fallback_enabled=True,
-        ),
+        query_fallback_enabled=True,
     )
 
     assert tuple(candidate.field for candidate in candidates) == (
@@ -208,6 +204,32 @@ def test_query_candidates_keep_four_semantic_queries_and_cap_aliases_at_three() 
         "curated_alias_1",
         "curated_alias_2",
         "curated_alias_3",
+    )
+
+
+def test_legacy_query_planner_seam_matches_canonical_planner() -> None:
+    context = _context("place_phone_stand")
+    semantic = _semantic(
+        "receiver",
+        "phonestand",
+        "blue phonestand",
+        "blue rectangular stand",
+        "stand",
+    )
+    config = MaskConfig(
+        qc_enabled=True,
+        qc_prompt_template=Path("unused"),
+        qc_max_candidates=8,
+        qc_query_fallback_enabled=True,
+    )
+
+    assert mask_qc._role_query_candidates(context, "receiver", semantic, config) == (
+        plan_role_queries(
+            context,
+            "receiver",
+            semantic,
+            query_fallback_enabled=True,
+        )
     )
 
 

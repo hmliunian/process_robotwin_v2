@@ -36,7 +36,7 @@ from .bbox_localization import (
     parse_bbox_localization,
     render_bbox_prompt,
 )
-from .open_set_queries import curated_query_aliases
+from .object_mask.planner import QueryCandidate, plan_role_queries
 from .prompt_context import timeline_prompt_fields
 
 _CANDIDATE_MARKER = "{candidate_panels}"
@@ -113,12 +113,6 @@ class _Candidate:
     seed_frame_id: int
     mask: np.ndarray
     info: MaskCandidateInfo
-
-
-@dataclass(frozen=True)
-class _QueryCandidate:
-    field: str
-    query: str
 
 
 @dataclass(frozen=True)
@@ -537,31 +531,16 @@ def _role_query_candidates(
     role: RoleName,
     semantic: RoleSemanticPlan,
     mask_config: MaskConfig,
-) -> tuple[_QueryCandidate, ...]:
+) -> tuple[QueryCandidate, ...]:
+    """Compatibility shim for the canonical object-mask query planner."""
+
     assert semantic.query_bank is not None
-    candidates = [
-        _QueryCandidate(field, query)
-        for field in semantic.query_bank.recommended_order
-        if (query := getattr(semantic.query_bank, field)) is not None
-    ]
-    if mask_config.qc_query_fallback_enabled:
-        candidates.extend(
-            _QueryCandidate(f"curated_alias_{index}", query)
-            for index, query in enumerate(
-                curated_query_aliases(context, role, semantic),
-                start=1,
-            )
-        )
-    output: list[_QueryCandidate] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        query = _normalize_text(candidate.query)
-        key = query.casefold()
-        if not query or key in seen:
-            continue
-        seen.add(key)
-        output.append(_QueryCandidate(candidate.field, query))
-    return tuple(output)
+    return plan_role_queries(
+        context,
+        role,
+        semantic,
+        query_fallback_enabled=mask_config.qc_query_fallback_enabled,
+    )
 
 
 def _visual_report_from_completion(
@@ -770,7 +749,7 @@ def _run_role_qc_at_seed(
     role: RoleName,
     *,
     seed_frame_id: int,
-    query_candidates: tuple[_QueryCandidate, ...],
+    query_candidates: tuple[QueryCandidate, ...],
     backend: MaskQCBackend,
     resource_path: Path,
     seed_image: Image.Image,
