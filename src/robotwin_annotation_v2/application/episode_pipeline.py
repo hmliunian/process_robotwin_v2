@@ -25,6 +25,7 @@ from robotwin_annotation_v2.adapters.sam3_adapter import (
     Sam3Error,
     sam3_video_resource,
 )
+from robotwin_annotation_v2.application.sam_artifacts import save_sam_artifacts
 from robotwin_annotation_v2.config import PipelineConfig, load_config
 from robotwin_annotation_v2.domain import AnnotationMode, ObjectRole, annotation_spec
 from robotwin_annotation_v2.models import (
@@ -58,7 +59,6 @@ from robotwin_annotation_v2.pipeline.sam_stage import (
     compose_visible_mask,
     evaluate_temporal_mask,
     run_sam_stage,
-    save_sam_artifacts,
 )
 from robotwin_annotation_v2.pipeline.state_loop import build_loop_context
 

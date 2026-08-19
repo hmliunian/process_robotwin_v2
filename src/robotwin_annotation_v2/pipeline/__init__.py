@@ -48,6 +48,7 @@ _EXPORT_GROUPS = {
         "run_mask_qc_stage",
     ),
     ".object_mask.artifacts": ("save_mask_qc_artifacts",),
+    "..application.sam_artifacts": ("save_sam_artifacts",),
     ".open_set_queries": ("curated_query_aliases",),
     ".qwen_stage": (
         "QwenStageError",
@@ -66,7 +67,6 @@ _EXPORT_GROUPS = {
         "dilate_envelope",
         "evaluate_temporal_mask",
         "run_sam_stage",
-        "save_sam_artifacts",
     ),
     ".state_loop": (
         "StateLoopError",
