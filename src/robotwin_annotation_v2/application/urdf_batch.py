@@ -21,6 +21,10 @@ from typing import Any, Mapping, Sequence, cast
 
 import numpy as np
 
+from robotwin_annotation_v2.adapters.canonical_masks import (
+    CanonicalMaskError,
+    read_canonical_masks,
+)
 from robotwin_annotation_v2.mask_schema import (
     MASK_FORMAT_VERSION,
     TARGET_HOLD_COLOR_RGB,
@@ -387,7 +391,7 @@ def _small_strings(value: np.ndarray) -> tuple[str, ...]:
     return tuple(str(item) for item in value.tolist())
 
 
-def load_four_channel_masks(path: Path, *, frame_count: int) -> FourChannelMasks:
+def _load_four_channel_masks_compat(path: Path, *, frame_count: int) -> FourChannelMasks:
     source = path.expanduser().resolve()
     if not source.is_file():
         raise FileNotFoundError(f"source four-channel masks are missing: {source}")
@@ -446,6 +450,29 @@ def load_four_channel_masks(path: Path, *, frame_count: int) -> FourChannelMasks
         frame_encoding=frame_encoding,
         annotation_status=statuses,
         qc_status=qc_statuses,
+    )
+
+
+def load_four_channel_masks(path: Path, *, frame_count: int) -> FourChannelMasks:
+    """Read canonical source masks through the shared codec with legacy fallback."""
+
+    try:
+        bundle = read_canonical_masks(path)
+    except CanonicalMaskError:
+        return _load_four_channel_masks_compat(path, frame_count=frame_count)
+    if bundle.frame_count != frame_count:
+        raise UrdfMaskRunError(
+            f"source mask frame count mismatch: stored={bundle.frame_count}, "
+            f"shape={bundle.masks.shape[1]}, parquet={frame_count}"
+        )
+    payload = bundle.to_payload()
+    return FourChannelMasks(
+        path=bundle.path,
+        payload=payload,
+        masks=np.asarray(bundle.masks).copy(),
+        frame_encoding=np.asarray(bundle.frame_encoding).copy(),
+        annotation_status=bundle.annotation_status,
+        qc_status=bundle.qc_status,
     )
 
 

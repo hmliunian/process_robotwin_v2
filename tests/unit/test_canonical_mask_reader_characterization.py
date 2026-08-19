@@ -126,6 +126,25 @@ def test_script_urdf_reader_alias_matches_application_reader(tmp_path: Path) -> 
     assert script_result.payload.keys() == package_result.payload.keys()
 
 
+def test_urdf_reader_uses_shared_codec_for_canonical_archive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _write_archive(tmp_path / "canonical.npz", _archive_payload(version="robotwin_visible_masks_v3"))
+    calls: list[Path] = []
+    original = urdf_batch.read_canonical_masks
+
+    def read(path: Path) -> Any:
+        calls.append(path)
+        return original(path)
+
+    monkeypatch.setattr(urdf_batch, "read_canonical_masks", read)
+
+    urdf_batch.load_four_channel_masks(path, frame_count=FRAME_COUNT)
+
+    assert calls == [path]
+
+
 def test_render_reader_synthesizes_legacy_encoding_and_qc_defaults(tmp_path: Path) -> None:
     payload = _archive_payload(include_qc_status=False)
     path = _write_archive(tmp_path / "legacy-no-qc.npz", payload)
