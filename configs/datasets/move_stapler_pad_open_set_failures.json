@@ -1,0 +1,33 @@
+{
+  "format_version": "robotwin_dataset_manifest_dynamic_v1",
+  "task": "move_stapler_pad",
+  "camera": "cam_high",
+  "frame_shape_hw": [
+    240,
+    320
+  ],
+  "raw_video_frame_surplus": 1,
+  "usable_frame_count_source": "parquet",
+  "dataset_root": "../../dataset/pick_place_20/move_stapler_pad",
+  "smoke_episode_ids": [
+    8251
+  ],
+  "regression_episode_ids": [
+    8251,
+    8262,
+    8272,
+    8275,
+    8284,
+    8292,
+    8417,
+    8561,
+    8675,
+    8798,
+    8799
+  ],
+  "required_relative_files": [
+    "data/chunk-*/episode_{episode_id}.parquet",
+    "videos/chunk-*/observation.images.{camera}/episode_{episode_id}.mp4",
+    "sidecars/episode_{episode_id}.hdf5"
+  ]
+}

@@ -1,0 +1,79 @@
+annotation:
+  mode: pick_place
+
+# The normal PipelineConfig needs one concrete task. The experiment runner below
+# replaces this dataset block with a dynamic manifest for each task while keeping
+# every other inference/QC setting fixed.
+dataset:
+  root: ../../dataset/pick_place_20/move_stapler_pad
+  manifest: datasets/move_stapler_pad_open_set_failures.json
+  task: move_stapler_pad
+  camera: cam_high
+  smoke_episode_ids: [8251]
+  regression_episode_ids:
+    [8251, 8262, 8272, 8275, 8284, 8292, 8417, 8561, 8675, 8798, 8799]
+
+qwen:
+  endpoint: http://127.0.0.1:18086/v1/chat/completions
+  model: qwen3.5-27b
+  prompt_template: prompts/target_receiver_semantic_open_set.txt
+  timeout_seconds: 600
+  max_tokens: 800
+  query_selection: first_recommended
+  allow_query_fallback: false
+
+sam3:
+  checkpoint: ../checkpoints/sam3/sam3.pt
+  # GPU 0 hosts Qwen. GPU 1 was idle when this experiment was prepared; the
+  # runner also accepts --sam-gpu so the choice can be refreshed at launch time.
+  gpus: [1]
+
+mask:
+  target_envelope_padding_px: 4
+  receiver_envelope_padding_px: 4
+  temporal_qc_min_adjacent_iou_p05: 0.5
+  temporal_qc_max_centroid_jump_p95_px: 5.0
+  temporal_qc_max_area_ratio_jump_p95: 0.4
+  temporal_qc_quarantine_signal_count: 2
+  qc_enabled: true
+  qc_prompt_template: prompts/mask_candidate_qc_open_set.txt
+  qc_max_candidates: 8
+  qc_query_fallback_enabled: true
+  qc_seed_fallback_enabled: true
+  qc_max_tokens: 160
+  qc_max_attempts: 2
+  qc_min_confidence: 0.70
+  qc_min_area_fraction: 0.0001
+  qc_max_area_fraction: 0.85
+  qc_duplicate_iou_threshold: 0.98
+
+gripper_roi:
+  prompt:
+    axial_back_m: 0.120
+    axial_front_m: 0.060
+  hard:
+    axial_back_m: 0.120
+    axial_front_m: 0.045
+  fixed_half_width_m: 0.085
+
+output:
+  root: ../artifacts/experiments/open_set_s2_20260818
+
+experiment:
+  format_version: robotwin_open_set_failure_experiment_v1
+  dataset_root: ../../dataset/pick_place_20
+  expected_failure_count: 52
+  run_id_prefix: open-set-s2-20260818
+  smoke_episode_ids: [18710, 14899, 17087, 18209, 16534, 19273]
+  tasks:
+    move_stapler_pad:
+      [8251, 8262, 8272, 8275, 8284, 8292, 8417, 8561, 8675, 8798, 8799]
+    place_container_plate: [14881, 14899, 15050, 15294]
+    place_empty_cup: [16001, 16130, 16246, 16380]
+    place_fan:
+      [16500, 16501, 16511, 16512, 16529, 16534, 16548, 16549, 16550, 16683, 16930]
+    place_mouse_pad: [17050, 17087]
+    place_object_scale: [18166, 18209, 18698, 18699]
+    place_object_stand: [18710, 18722, 18749, 18855, 18892, 18982, 19109, 19248]
+    place_phone_stand: [19250, 19273, 19277, 19298, 19299, 19424, 19545]
+    place_shoe: [19849]

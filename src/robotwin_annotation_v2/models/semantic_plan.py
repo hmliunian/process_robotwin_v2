@@ -84,7 +84,12 @@ class SemanticPlanError(ValueError):
     """Raised when a Qwen semantic response violates the stage contract."""
 
 
-def normalize_query(value: Any, *, field: str = "query") -> str:
+def normalize_query(
+    value: Any,
+    *,
+    field: str = "query",
+    allow_visual_object: bool = False,
+) -> str:
     """Validate a direct SAM3 query's mechanically checkable constraints."""
 
     if not isinstance(value, str) or not value.strip():
@@ -97,7 +102,10 @@ def normalize_query(value: Any, *, field: str = "query") -> str:
             f"{field} must contain 1-{MAX_QUERY_WORDS} lowercase English words"
         )
     words = tuple(normalized.replace("-", " ").split())
-    forbidden = sorted(set(words) & _FORBIDDEN_WORDS)
+    forbidden_words = set(words) & _FORBIDDEN_WORDS
+    if allow_visual_object and len(words) > 1 and words[-1] == "object":
+        forbidden_words.discard("object")
+    forbidden = sorted(forbidden_words)
     if forbidden:
         raise SemanticPlanError(
             f"{field} contains forbidden descriptor(s): {', '.join(forbidden)}"
@@ -122,7 +130,11 @@ class QueryBank:
             if value is None:
                 normalized[field] = None
             else:
-                normalized[field] = normalize_query(value, field=field)
+                normalized[field] = normalize_query(
+                    value,
+                    field=field,
+                    allow_visual_object=field == "general_fallback_query",
+                )
         if normalized["category_query"] is None:
             raise SemanticPlanError("category_query is required")
         if len({value for value in normalized.values() if value is not None}) != len(

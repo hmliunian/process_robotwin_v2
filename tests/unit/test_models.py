@@ -11,7 +11,10 @@ from robotwin_annotation_v2.models import (
     FrameWindow,
     LoopContext,
     LoopEvents,
+    MaskQCStatus,
+    MaskStatus,
     QueryBank,
+    RoleMaskResult,
     RoleSemanticPlan,
     SemanticFrame,
     SemanticPlan,
@@ -205,6 +208,21 @@ def test_sam3_query_rejects_non_native_phrases(query: str) -> None:
         normalize_query(query)
 
 
+def test_query_bank_allows_attributed_object_only_as_general_fallback() -> None:
+    bank = QueryBank(
+        category_query="fan",
+        color_category_query="silver fan",
+        general_fallback_query="silver object",
+    )
+
+    assert bank.general_fallback_query == "silver object"
+
+    with pytest.raises(SemanticPlanError, match="forbidden descriptor"):
+        QueryBank(category_query="silver object")
+    with pytest.raises(SemanticPlanError, match="forbidden descriptor"):
+        QueryBank(category_query="fan", general_fallback_query="object")
+
+
 def test_query_bank_uses_qwen_order_without_automatic_fallback() -> None:
     bank = QueryBank(
         category_query="pad",
@@ -281,3 +299,28 @@ def test_no_clear_seed_cannot_contain_query() -> None:
             exclude=(),
             reason="没有清晰 seed。",
         )
+
+
+def test_role_mask_result_keeps_envelope_as_diagnostic_metadata() -> None:
+    result = RoleMaskResult(
+        role="target",
+        status=MaskStatus.OK,
+        seed_frame_id=0,
+        primary_query="bottle",
+        output_window=FrameWindow(1, 4),
+        seed_rgb_path="target_0/seed.rgb.png",
+        seed_mask_path="target_0/seed.mask.png",
+        canonical_envelope_path="target_0/canonical_envelope.png",
+        native_track_path="target_0/native_track.npz",
+        temporal_qc_path="target_0/temporal_qc.json",
+        nonempty_frames=4,
+        qc_status=MaskQCStatus.PASSED,
+        qc_selected_candidate="query_0_seed_0",
+        qc_reason="candidate matches the target",
+    )
+
+    payload = result.to_json()
+
+    assert payload["canonical_envelope_path"] == "target_0/canonical_envelope.png"
+    assert "canonical_envelope_guard_applied" not in payload
+    assert "pre_envelope_guard_temporal_qc_path" not in payload

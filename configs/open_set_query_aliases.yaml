@@ -1,0 +1,42 @@
+format_version: robotwin_open_set_query_aliases_v1
+
+# Rules are evaluated in order. A rule matches when the role matches and either
+# its task or one query-bank word matches. Python only handles generic matching,
+# color interpolation, normalization, de-duplication, and the three-alias cap.
+rules:
+  - role: receiver
+    tasks: [place_phone_stand]
+    query_words: [phonestand]
+    aliases: ["{color} phone holder", phone holder, phone dock, phone stand]
+  - role: receiver
+    tasks: [place_object_stand]
+    query_words: []
+    aliases: ["{color} box", box, display platform, display base]
+  - role: receiver
+    tasks: [place_empty_cup]
+    query_words: [coaster]
+    aliases: [drink coaster, cup coaster, beverage coaster]
+  - role: receiver
+    tasks: [move_stapler_pad, place_fan, place_mouse_pad]
+    query_words: [mat, pad, placemat, surface]
+    aliases: ["{color} rectangle", "{color} square pad", "{color} table mat"]
+  - role: target
+    tasks: []
+    query_words: [stapler]
+    aliases: [desk stapler, office stapler, paper stapler]
+  - role: target
+    tasks: []
+    query_words: [fan]
+    aliases: [desk fan, table fan, electric fan]
+  - role: target
+    tasks: []
+    query_words: [bowl]
+    aliases: [small bowl, small container, rice bowl]
+  - role: target
+    tasks: []
+    query_words: [mouse]
+    aliases: [computer mouse, wireless mouse, optical mouse]
+  - role: target
+    tasks: [place_phone_stand]
+    query_words: [phone, smartphone]
+    aliases: [smartphone, mobile phone, cell phone]

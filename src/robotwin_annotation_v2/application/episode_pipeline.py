@@ -508,9 +508,7 @@ def _execute_sam_episode(
     semantic_frame_ids = {frame.frame_id for frame in context.semantic_frames}
     stage_images = dataset.read_frames(ref, semantic_frame_ids)
     seed_frame_ids = {
-        role_plan.seed_frame_id
-        for role_plan in plan.role_plans
-        if role_plan.seed_frame_id is not None
+        frame.frame_id for frame in context.semantic_frames if frame.seed_eligible
     }
     seed_images = {frame_id: stage_images[frame_id] for frame_id in seed_frame_ids}
 

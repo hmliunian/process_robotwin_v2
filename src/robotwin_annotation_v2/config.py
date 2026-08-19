@@ -11,6 +11,16 @@ import yaml
 
 from .domain import AnnotationMode, AnnotationSpec, annotation_spec
 
+_REMOVED_S4_MASK_FIELDS = frozenset(
+    {
+        "temporal_envelope_guard_retry_enabled",
+        "qc_bbox_directional_expand_enabled",
+        "qc_border_retry_enabled",
+        "qc_border_retry_prompt_template",
+        "qc_border_retry_max_tokens",
+    }
+)
+
 
 class ConfigError(ValueError):
     """Configuration is missing or violates the pipeline contract."""
@@ -103,6 +113,11 @@ class MaskConfig:
     qc_enabled: bool = False
     qc_prompt_template: Path | None = None
     qc_max_candidates: int = 3
+    qc_query_fallback_enabled: bool = False
+    qc_seed_fallback_enabled: bool = False
+    qc_bbox_fallback_enabled: bool = False
+    qc_bbox_prompt_template: Path | None = None
+    qc_bbox_max_tokens: int = 180
     qc_max_tokens: int = 160
     qc_max_attempts: int = 2
     qc_min_confidence: float = 0.70
@@ -123,8 +138,20 @@ class MaskConfig:
             raise ConfigError("temporal QC quarantine signal count must be in [1, 3]")
         if self.qc_enabled and self.qc_prompt_template is None:
             raise ConfigError("mask.qc_prompt_template is required when QC is enabled")
+        if self.qc_query_fallback_enabled and not self.qc_enabled:
+            raise ConfigError("mask.qc_query_fallback_enabled requires mask QC")
+        if self.qc_seed_fallback_enabled and not self.qc_enabled:
+            raise ConfigError("mask.qc_seed_fallback_enabled requires mask QC")
+        if self.qc_bbox_fallback_enabled and not self.qc_enabled:
+            raise ConfigError("mask.qc_bbox_fallback_enabled requires mask QC")
+        if self.qc_bbox_fallback_enabled and self.qc_bbox_prompt_template is None:
+            raise ConfigError(
+                "mask.qc_bbox_prompt_template is required when bbox fallback is enabled"
+            )
         if self.qc_max_candidates < 1:
             raise ConfigError("mask.qc_max_candidates must be positive")
+        if self.qc_bbox_max_tokens < 1:
+            raise ConfigError("mask.qc_bbox_max_tokens must be positive")
         if self.qc_max_tokens < 1:
             raise ConfigError("mask.qc_max_tokens must be positive")
         if self.qc_max_attempts < 1:
@@ -278,6 +305,9 @@ def load_config(path: Path) -> PipelineConfig:
         gpus=_integers(sam3_raw.get("gpus", [0]), field="sam3.gpus"),
     )
     qc_enabled = bool(mask_raw.get("qc_enabled", False))
+    removed_s4_fields = sorted(_REMOVED_S4_MASK_FIELDS & mask_raw.keys())
+    if removed_s4_fields:
+        raise ConfigError(f"removed S4 mask fields are not supported: {removed_s4_fields}")
     qc_template_value = mask_raw.get(
         "qc_prompt_template",
         "prompts/mask_candidate_qc.txt" if qc_enabled else None,
@@ -289,6 +319,17 @@ def load_config(path: Path) -> PipelineConfig:
             field="mask.qc_prompt_template",
         )
         if qc_template_value is not None
+        else None
+    )
+    qc_bbox_enabled = bool(mask_raw.get("qc_bbox_fallback_enabled", False))
+    qc_bbox_template_value = mask_raw.get("qc_bbox_prompt_template")
+    qc_bbox_template = (
+        _path(
+            qc_bbox_template_value,
+            base_dir=base_dir,
+            field="mask.qc_bbox_prompt_template",
+        )
+        if qc_bbox_template_value is not None
         else None
     )
     mask = MaskConfig(
@@ -309,6 +350,11 @@ def load_config(path: Path) -> PipelineConfig:
         qc_enabled=qc_enabled,
         qc_prompt_template=qc_template,
         qc_max_candidates=int(mask_raw.get("qc_max_candidates", 3)),
+        qc_query_fallback_enabled=bool(mask_raw.get("qc_query_fallback_enabled", False)),
+        qc_seed_fallback_enabled=bool(mask_raw.get("qc_seed_fallback_enabled", False)),
+        qc_bbox_fallback_enabled=qc_bbox_enabled,
+        qc_bbox_prompt_template=qc_bbox_template,
+        qc_bbox_max_tokens=int(mask_raw.get("qc_bbox_max_tokens", 180)),
         qc_max_tokens=int(mask_raw.get("qc_max_tokens", 160)),
         qc_max_attempts=int(mask_raw.get("qc_max_attempts", 2)),
         qc_min_confidence=float(mask_raw.get("qc_min_confidence", 0.70)),

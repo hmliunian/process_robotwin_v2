@@ -6,7 +6,14 @@ from .loop_context import (
     LoopContext,
     SemanticFrame,
 )
-from .mask_qc import MaskCandidateInfo, MaskQCResult, MaskQCStatus, RoleMaskQC
+from .mask_qc import (
+    MaskCandidateInfo,
+    MaskQCAttempt,
+    MaskQCAttemptMethod,
+    MaskQCResult,
+    MaskQCStatus,
+    RoleMaskQC,
+)
 from .mask_run import MaskRun, MaskStatus, RoleMaskResult
 from .semantic_plan import (
     CANDIDATE_FIELDS,
@@ -38,6 +45,8 @@ __all__ = [
     "LoopContext",
     "LoopEvents",
     "MaskCandidateInfo",
+    "MaskQCAttempt",
+    "MaskQCAttemptMethod",
     "MaskQCResult",
     "MaskQCStatus",
     "MaskRun",

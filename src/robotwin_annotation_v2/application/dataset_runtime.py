@@ -28,6 +28,7 @@ import pandas as pd
 
 from robotwin_annotation_v2.adapters.artifact_store import ArtifactStore
 from robotwin_annotation_v2.adapters.robotwin_dataset import RoboTwinDataset
+from robotwin_annotation_v2.application.dataset_input import resolve_dataset_input
 from robotwin_annotation_v2.config import PipelineConfig, load_config
 from robotwin_annotation_v2.domain import (
     AnnotationMode,
@@ -46,13 +47,18 @@ from robotwin_annotation_v2.urdf_gripper_publisher import (
 CHUNK_PATTERN = re.compile(r"chunk-(\d{3})$")
 EPISODE_FILE_PATTERN = re.compile(r"episode_(\d+)\.parquet$")
 GRIPPER_BACKENDS = ("sam", "urdf")
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_BUNDLED_URDF_PATH = (
-    Path(__file__).resolve().parents[3]
+    PROJECT_ROOT
     / "configs"
     / "assets"
     / "aloha-agilex"
     / "arx5_description_isaac_gripper.urdf"
 )
+PATH_MODE_CONFIGS = {
+    AnnotationMode.PICK_PLACE: PROJECT_ROOT / "configs" / "pilot_move_pillbottle_pad.yaml",
+    AnnotationMode.TARGET_ONLY: PROJECT_ROOT / "configs" / "pilot_adjust_bottle_target_only.yaml",
+}
 DEFAULT_URDF_DEPTH_TOLERANCE_MM = 8.0
 DEFAULT_URDF_MINIMUM_ELIGIBLE_NONEMPTY_FRACTION = 0.90
 DEFAULT_URDF_PIPELINE_BUFFER_SIZE = 2
@@ -2981,6 +2987,27 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset-root", type=Path)
     parser.add_argument(
+        "--data-path",
+        "--data_path",
+        type=Path,
+        help="Single-task dataset or collection root",
+    )
+    path_mode = parser.add_mutually_exclusive_group()
+    path_mode.add_argument(
+        "--target-only",
+        "--target_only",
+        dest="path_mode",
+        action="store_const",
+        const=AnnotationMode.TARGET_ONLY.value,
+    )
+    path_mode.add_argument(
+        "--pick-place",
+        "--pick_place",
+        dest="path_mode",
+        action="store_const",
+        const=AnnotationMode.PICK_PLACE.value,
+    )
+    parser.add_argument(
         "--config",
         type=Path,
         default=Path("configs/pilot_move_pillbottle_pad.yaml"),
@@ -3066,12 +3093,120 @@ def _optional_cli_path(value: str | None) -> Path | None:
     return Path(value)
 
 
+def _path_target_args(
+    args: argparse.Namespace,
+    *,
+    config: Path,
+    dataset_root: Path,
+    task: str,
+    camera: str,
+    run_id: str | None,
+) -> argparse.Namespace:
+    values = vars(args) | {
+        "config": config,
+        "data_path": None,
+        "dataset_root": dataset_root,
+        "task": task,
+        "camera": camera,
+        "path_mode": None,
+        "run_id": run_id,
+    }
+    return argparse.Namespace(**values)
+
+
+def _run_path_input(args: argparse.Namespace, reporter: ProcessUI) -> dict[str, Any]:
+    if args.dataset_root is not None:
+        raise ValueError("--data-path and --dataset-root cannot be used together")
+    if args.path_mode is None:
+        raise ValueError("--data-path requires exactly one of --target-only/--pick-place")
+    if _optional_cli_path(args.source_run_dir) is not None:
+        raise ValueError("--source-run-dir is not supported with --data-path")
+    mode = AnnotationMode(args.path_mode)
+    resolved = resolve_dataset_input(args.data_path, mode=mode, task=args.task)
+    if args.camera is not None and any(target.camera != args.camera for target in resolved.targets):
+        raise ValueError("--camera does not match the dataset extract manifest")
+    if resolved.is_collection and args.episode_ids is not None and len(resolved.targets) != 1:
+        raise ValueError("collection --episode-ids requires selecting one --task")
+
+    config = PATH_MODE_CONFIGS[mode]
+    if not resolved.is_collection:
+        target = resolved.targets[0]
+        return _run_from_args(
+            _path_target_args(
+                args,
+                config=config,
+                dataset_root=target.root,
+                task=target.task,
+                camera=target.camera,
+                run_id=args.run_id,
+            ),
+            reporter,
+        )
+
+    collection_run_id = _validate_run_id(args.run_id or ArtifactStore.new_run_id())
+    records: list[dict[str, Any]] = []
+    for target in resolved.targets:
+        task_run_id = _validate_run_id(f"{collection_run_id}-{target.task}")
+        try:
+            summary = _run_from_args(
+                _path_target_args(
+                    args,
+                    config=config,
+                    dataset_root=target.root,
+                    task=target.task,
+                    camera=target.camera,
+                    run_id=task_run_id,
+                ),
+                reporter,
+            )
+        except Exception as exc:  # noqa: BLE001 - one task must not stop a collection
+            reporter.note(
+                f"collection task {target.task} failed: {type(exc).__name__}: {exc}",
+                level="error",
+            )
+            records.append(
+                {
+                    "task": target.task,
+                    "run_id": task_run_id,
+                    "status": "failed",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+        else:
+            records.append(
+                {
+                    "task": target.task,
+                    "run_id": task_run_id,
+                    "status": "completed" if summary["passed"] else "failed",
+                    "artifact": summary.get("artifact"),
+                }
+            )
+    result: dict[str, Any] = {
+        "format_version": "robotwin_process_collection_summary_v1",
+        "run_id": collection_run_id,
+        "dataset_root": str(resolved.root),
+        "annotation_mode": mode.value,
+        "records": records,
+        "passed": all(record["status"] == "completed" for record in records),
+    }
+    artifact = ArtifactStore.write_json(
+        args.output_dir.expanduser().resolve() / f"{collection_run_id}-collection-summary.json",
+        result,
+    )
+    result["artifact"] = str(artifact)
+    return result
+
+
 def _run_from_args(
     args: argparse.Namespace,
     reporter: ProcessUI,
 ) -> dict[str, Any]:
     if args.run_id is not None:
         _validate_run_id(args.run_id)
+    if args.data_path is not None:
+        return _run_path_input(args, reporter)
+    if args.path_mode is not None:
+        raise ValueError("--target-only/--pick-place require --data-path")
     config = load_config(args.config)
     source_run_dir = _optional_cli_path(args.source_run_dir)
     urdf_path = _optional_cli_path(args.urdf_path)

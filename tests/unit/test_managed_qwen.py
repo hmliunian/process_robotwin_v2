@@ -295,3 +295,25 @@ def test_forwarded_config_uses_last_argparse_value() -> None:
     )
 
     assert manager_script._effective_config_path(args) == Path("last.yaml")
+
+
+def test_settings_preserve_symlinked_qwen_virtualenv_python(tmp_path: Path) -> None:
+    qwen_python = tmp_path / "qwen-venv" / "bin" / "python"
+    qwen_python.parent.mkdir(parents=True)
+    qwen_python.symlink_to(sys.executable)
+    args = manager_script._parse_args(
+        (
+            "--config",
+            "configs/pilot_move_pillbottle_pad.yaml",
+            "--qwen-python",
+            str(qwen_python),
+            "--qwen-model-path",
+            str(tmp_path / "model"),
+        )
+    )
+
+    settings = manager_script._settings(args, args.config)
+
+    assert settings.python_executable == qwen_python
+    assert settings.python_executable.is_symlink()
+    assert settings.python_executable.resolve() == Path(sys.executable).resolve()

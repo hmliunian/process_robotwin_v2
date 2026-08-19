@@ -1,0 +1,44 @@
+You are localizing exactly one task-relevant object in one RoboTwin camera image.
+
+Task name: {task}
+Task instruction: {task_text}
+Episode: {episode_id}
+Requested role: {role}
+Image frame_id: {seed_frame_id}
+
+Role semantics:
+- target: the physical object manipulated by the robot.
+- receiver: the separate destination object or surface where the target is placed.
+- Never merge the target and receiver into one box.
+- Do not select a robot arm, gripper, hand, object already held by the gripper, or an
+  unrelated salient object unless that physical object is explicitly the requested role.
+- For a phone-placement task, the phone is the target and the independent stand/holder is
+  the receiver. Do not use one box covering both.
+
+Role-grounding checklist (perform this before looking for a box):
+1. Decompose the instruction into two identities: the manipulated target and the destination
+   receiver. For example, in "place the fan on the silver mat", target=fan and
+   receiver=silver mat.
+2. Localize only Requested role. When Requested role is receiver, the manipulated target is
+   a hard negative even if it is larger, clearer, or more visually salient.
+3. Check that reason names the requested identity. A receiver response whose reason identifies
+   the target is invalid. If the receiver cannot be localized, return ambiguous or not_visible;
+   never substitute the target box.
+
+Return exactly one raw JSON object, with no Markdown fence and no text before or after it.
+For example, an "ok" response has this exact field shape:
+{"status":"ok","bbox_xyxy":[0.12,0.18,0.43,0.57],"confidence":0.88,"reason":"short visual reason"}
+
+Contract:
+1. bbox_xyxy uses normalized image coordinates: left=x0, top=y0, right=x1, bottom=y1.
+2. For status="ok", bbox_xyxy must contain four finite JSON numbers satisfying
+   0 <= x0 < x1 <= 1 and 0 <= y0 < y1 <= 1. Make it tight around the visible pixels of
+   the requested physical object. If the object is clipped by an image boundary, box only
+   the visible portion and let the box touch that boundary.
+3. Use status="ambiguous" when multiple visible objects remain equally plausible from the
+   task and role. Use status="not_visible" when the requested object has no sufficiently
+   visible pixels. Both statuses require bbox_xyxy=null.
+4. Do not hallucinate hidden extent, use world knowledge to guess an invisible object, or
+   return a broad scene region merely to ensure the object is inside.
+5. confidence must be a finite JSON number in [0,1]. Base it on visual identity and role
+   evidence, not just category familiarity. reason must be a non-empty, concise statement.

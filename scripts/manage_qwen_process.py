@@ -103,7 +103,10 @@ def _settings(args: argparse.Namespace, config_path: Path) -> ManagedQwenSetting
     return ManagedQwenSettings(
         endpoint=pipeline_config.qwen.endpoint,
         model_name=pipeline_config.qwen.model,
-        python_executable=args.qwen_python.expanduser().resolve(),
+        # Keep the executable inside its virtual environment. Resolving this path follows
+        # ``bin/python`` to the base interpreter, which bypasses the venv's pyvenv.cfg and
+        # site-packages when the subprocess starts.
+        python_executable=Path(os.path.abspath(args.qwen_python.expanduser())),
         server_script=PROJECT_ROOT / "scripts" / "serve_qwen.py",
         model_path=args.qwen_model_path.expanduser().resolve(),
         log_directory=PROJECT_ROOT / "artifacts" / "qwen-services",
