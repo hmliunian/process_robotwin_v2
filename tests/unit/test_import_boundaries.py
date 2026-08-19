@@ -27,6 +27,14 @@ def test_application_package_does_not_eagerly_load_runtime() -> None:
     )
 
 
+def test_adapters_package_does_not_eagerly_load_optional_backends() -> None:
+    _run_import_probe(
+        "import sys\n"
+        "import robotwin_annotation_v2.adapters\n"
+        "assert not any(name in sys.modules for name in ('cv2', 'torch', 'sam3', 'av'))\n"
+    )
+
+
 def test_pipeline_package_loads_lightweight_stage_exports_on_demand() -> None:
     _run_import_probe(
         "import sys\n"
