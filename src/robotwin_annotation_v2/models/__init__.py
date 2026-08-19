@@ -15,6 +15,7 @@ from .mask_qc import (
     RoleMaskQC,
 )
 from .mask_run import MaskRun, MaskStatus, RoleMaskResult
+from .process_run import EpisodeRecord, ProcessRequest, ProcessSummary
 from .semantic_plan import (
     CANDIDATE_FIELDS,
     MAX_QUERY_WORDS,
@@ -38,6 +39,7 @@ from .timeline import (
 __all__ = [
     "CANDIDATE_FIELDS",
     "MAX_QUERY_WORDS",
+    "EpisodeRecord",
     "EpisodeRef",
     "EpisodeWindows",
     "FramePurpose",
@@ -52,6 +54,8 @@ __all__ = [
     "MaskRun",
     "MaskStatus",
     "PickPlaceEvents",
+    "ProcessRequest",
+    "ProcessSummary",
     "QueryBank",
     "RoleMaskQC",
     "RoleMaskResult",

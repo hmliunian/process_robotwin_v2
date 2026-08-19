@@ -22,9 +22,10 @@ from pathlib import Path
 from queue import Full
 from typing import Any
 
+import robotwin_annotation_v2.application.discovery as _discovery
+import robotwin_annotation_v2.application.streaming as _streaming
 from robotwin_annotation_v2.adapters.artifact_store import ArtifactStore
 from robotwin_annotation_v2.adapters.robotwin_dataset import RoboTwinDataset
-from robotwin_annotation_v2.application import discovery as _discovery
 from robotwin_annotation_v2.application.dataset_input import resolve_dataset_input
 from robotwin_annotation_v2.config import PipelineConfig, load_config
 from robotwin_annotation_v2.domain import (
@@ -32,7 +33,7 @@ from robotwin_annotation_v2.domain import (
     ObjectRole,
     annotation_spec,
 )
-from robotwin_annotation_v2.models import EpisodeRef
+from robotwin_annotation_v2.models import EpisodeRecord, EpisodeRef, ProcessSummary
 from robotwin_annotation_v2.terminal_ui import UI_MODES, ProcessUI, create_process_ui
 from robotwin_annotation_v2.urdf_gripper_publisher import (
     UrdfGripperPublishError,
@@ -309,7 +310,7 @@ class _ProcessEventSender(ProcessUI):
         self._lane_total = len(episode_ids)
 
     def _send(self, method: str, *args: Any, **kwargs: Any) -> None:
-        self._connection.send(("event", method, args, kwargs))
+        self._connection.send(_streaming.event(method, *args, **kwargs))
 
     def phase_started(self, label: str, *, total: int | None = None) -> None:
         self._send("phase_started", label, total=total)
@@ -422,7 +423,7 @@ class _ProcessEventSender(ProcessUI):
             episode_id,
             status,
         )
-        self._connection.send(("source_episode", episode_id, status))
+        self._connection.send(_streaming.source_episode(episode_id, status))
 
     def note(self, message: str, *, level: str = "info") -> None:
         self._send("note", message, level=level)
@@ -475,15 +476,10 @@ def _object_source_process_entry(
         )
     except BaseException as exc:  # noqa: BLE001 - serialize child termination
         connection.send(
-            (
-                "error",
-                type(exc).__name__,
-                str(exc),
-                traceback.format_exc(),
-            )
+            _streaming.error(type(exc).__name__, str(exc), traceback.format_exc())
         )
     else:
-        connection.send(("result", summary))
+        connection.send(_streaming.source_result(summary))
     finally:
         sys.stdout = original_stdout
         sys.stderr = original_stderr
@@ -516,20 +512,18 @@ def _incremental_urdf_process_entry(
                 item = ready_queue.get()
                 if item is None:
                     break
-                episode_id, position = item
+                ready_episode = _streaming.decode_ready_episode(item)
+                episode_id = ready_episode.episode_id
+                position = ready_episode.position
                 connection.send(
-                    (
-                        "event",
+                    _streaming.event(
                         "lane_progress",
-                        (
-                            "urdf",
-                            completed,
-                            len(run_config.episode_ids),
-                            episode_id,
-                            "rendering",
-                            f"source position {position}",
-                        ),
-                        {},
+                        "urdf",
+                        completed,
+                        len(run_config.episode_ids),
+                        episode_id,
+                        "rendering",
+                        f"source position {position}",
                     )
                 )
                 if worker is None:
@@ -538,25 +532,20 @@ def _incremental_urdf_process_entry(
                 completed += 1
                 status = str(record.get("status", "failed"))
                 connection.send(
-                    (
-                        "event",
+                    _streaming.event(
                         "lane_progress",
-                        (
-                            "urdf",
-                            completed,
-                            len(run_config.episode_ids),
-                            episode_id,
-                            status,
-                        ),
-                        {},
+                        "urdf",
+                        completed,
+                        len(run_config.episode_ids),
+                        episode_id,
+                        status,
                     )
                 )
-                connection.send(("urdf_episode", episode_id, record))
+                connection.send(_streaming.urdf_episode(episode_id, record))
 
             if worker is None:
                 connection.send(
-                    (
-                        "result",
+                    _streaming.urdf_result(
                         None,
                         "no source episode became ready for the URDF worker",
                     )
@@ -566,25 +555,19 @@ def _incremental_urdf_process_entry(
                     result = worker.finalize()
                 except urdf_runner.UrdfBatchIncompleteError as exc:
                     connection.send(
-                        (
-                            "result",
+                        _streaming.urdf_result(
                             exc.result,
                             f"{type(exc).__name__}: {exc}",
                         )
                     )
                 else:
-                    connection.send(("result", result, None))
+                    connection.send(_streaming.urdf_result(result, None))
         finally:
             if worker is not None:
                 worker.close()
     except BaseException as exc:  # noqa: BLE001 - serialize child termination
         connection.send(
-            (
-                "error",
-                type(exc).__name__,
-                str(exc),
-                traceback.format_exc(),
-            )
+            _streaming.error(type(exc).__name__, str(exc), traceback.format_exc())
         )
     finally:
         sys.stdout = original_stdout
@@ -645,16 +628,15 @@ def _run_streaming_source_urdf_workers(
     urdf_result_received = False
     backend_error: str | None = None
     child_error: tuple[str, str, str] | None = None
-    ready_backlog: deque[tuple[int, int]] = deque()
+    ready_backlog: deque[_streaming.ReadyEpisode] = deque()
     source_position = 0
     source_open = True
     urdf_open = True
     sentinel_sent = False
 
-    def forward_event(message: tuple[Any, ...]) -> None:
+    def forward_event(message: _streaming.EventMessage) -> None:
         if reporter is not None:
-            _, method, args, kwargs = message
-            getattr(reporter, method)(*args, **kwargs)
+            getattr(reporter, message.method)(*message.args, **message.kwargs)
 
     def receive_source() -> None:
         nonlocal child_error, source_open, source_position, source_result_received
@@ -670,19 +652,22 @@ def _run_streaming_source_urdf_workers(
                     "",
                 )
             return
-        kind = message[0] if isinstance(message, tuple) and message else None
-        if kind == "event":
-            forward_event(message)
-        elif kind == "source_episode":
-            _, episode_id, status = message
+        decoded = _streaming.try_decode_message(message)
+        if isinstance(decoded, _streaming.EventMessage):
+            forward_event(decoded)
+        elif isinstance(decoded, _streaming.SourceEpisodeMessage):
             source_position += 1
-            if status in {"completed", "skipped_complete"}:
-                ready_backlog.append((int(episode_id), source_position))
+            if decoded.status in {"completed", "skipped_complete"}:
+                ready_backlog.append(
+                    _streaming.ReadyEpisode(int(decoded.episode_id), source_position)
+                )
             elif reporter is not None:
-                reporter.episode_finished(int(episode_id), status=str(status))
-        elif kind == "result":
+                reporter.episode_finished(
+                    int(decoded.episode_id), status=str(decoded.status)
+                )
+        elif isinstance(decoded, _streaming.SourceResultMessage):
             source_result_received = True
-            raw_summary = message[1]
+            raw_summary = decoded.summary
             if not isinstance(raw_summary, Mapping):
                 child_error = (
                     "ProtocolError",
@@ -691,9 +676,8 @@ def _run_streaming_source_urdf_workers(
                 )
             else:
                 source_summary = dict(raw_summary)
-        elif kind == "error":
-            _, error_type, error, child_traceback = message
-            child_error = (error_type, error, child_traceback)
+        elif isinstance(decoded, _streaming.ErrorMessage):
+            child_error = (decoded.error_type, decoded.error, decoded.traceback)
         else:
             child_error = ("ProtocolError", "invalid source-process message", "")
 
@@ -711,24 +695,22 @@ def _run_streaming_source_urdf_workers(
                     "",
                 )
             return
-        kind = message[0] if isinstance(message, tuple) and message else None
-        if kind == "event":
-            forward_event(message)
-        elif kind == "urdf_episode":
-            _, episode_id, record = message
-            if record.get("status") != "complete" and reporter is not None:
+        decoded = _streaming.try_decode_message(message)
+        if isinstance(decoded, _streaming.EventMessage):
+            forward_event(decoded)
+        elif isinstance(decoded, _streaming.UrdfEpisodeMessage):
+            if decoded.record.get("status") != "complete" and reporter is not None:
                 reporter.episode_finished(
-                    int(episode_id),
+                    int(decoded.episode_id),
                     status="gripper_incomplete",
-                    detail=str(record.get("error", "URDF episode failed")),
+                    detail=str(decoded.record.get("error", "URDF episode failed")),
                 )
-        elif kind == "result":
+        elif isinstance(decoded, _streaming.UrdfResultMessage):
             urdf_result_received = True
-            raw_result, backend_error = message[1], message[2]
+            raw_result, backend_error = decoded.result, decoded.error
             backend_result = None if raw_result is None else dict(raw_result)
-        elif kind == "error":
-            _, error_type, error, child_traceback = message
-            child_error = (error_type, error, child_traceback)
+        elif isinstance(decoded, _streaming.ErrorMessage):
+            child_error = (decoded.error_type, decoded.error, decoded.traceback)
         else:
             child_error = ("ProtocolError", "invalid URDF-process message", "")
 
@@ -864,18 +846,16 @@ def _run_object_source_process(
         except EOFError:
             connection_open = False
             return
-        if not isinstance(message, tuple) or not message:
-            child_error = ("ProtocolError", "invalid child-process message", "")
-            return
-        if message[0] == "event":
+        decoded = _streaming.try_decode_message(message)
+        if isinstance(decoded, _streaming.EventMessage):
             if reporter is not None:
-                _, method, args, kwargs = message
-                getattr(reporter, method)(*args, **kwargs)
-        elif message[0] == "result":
-            summary = message[1]
-        elif message[0] == "error":
-            _, error_type, error, child_traceback = message
-            child_error = (error_type, error, child_traceback)
+                getattr(reporter, decoded.method)(*decoded.args, **decoded.kwargs)
+        elif isinstance(decoded, _streaming.SourceResultMessage):
+            summary = dict(decoded.summary)
+        elif isinstance(decoded, _streaming.ErrorMessage):
+            child_error = (decoded.error_type, decoded.error, decoded.traceback)
+        else:
+            child_error = ("ProtocolError", "invalid child-process message", "")
 
     process.start()
     send_connection.close()
@@ -2032,31 +2012,36 @@ def process_urdf_source_run(
         "source_lineage_changed",
         "canonical_validation_failed",
     }
-    summary = {
-        "format_version": "robotwin_process_dataset_summary_v1",
-        "annotation_mode": source_annotation_mode,
-        "required_object_roles": list(source_required_roles),
-        "gripper_backend": "urdf",
-        "run_id": selected_run_id,
-        "dataset_root": str(config.dataset_root),
-        "task": task,
-        "camera": camera,
-        "discovered_episode_ids": list(public_discovery.episode_ids),
-        "requested_episode_ids": (
-            list(public_discovery.episode_ids)
+    qwen_health = (
+        selection.source_summary.get("qwen_health")
+        if source_mode in {"live_object_source_stage", "live_target_receiver_stage"}
+        else None
+    )
+    passed = (
+        batch_error is None
+        and not any(record.get("status") in failure_statuses for record in records)
+    )
+    summary_model = ProcessSummary(
+        format_version=PROCESS_SUMMARY_FORMAT_VERSION,
+        annotation_mode=source_annotation_mode,
+        required_object_roles=tuple(source_required_roles),
+        gripper_backend="urdf",
+        run_id=selected_run_id,
+        dataset_root=str(config.dataset_root),
+        task=task,
+        camera=camera,
+        discovered_episode_ids=tuple(public_discovery.episode_ids),
+        requested_episode_ids=(
+            tuple(public_discovery.episode_ids)
             if episode_ids is None
-            else list(episode_ids)
+            else tuple(episode_ids)
         ),
-        "dynamic_manifest": dynamic_manifest,
-        "qwen_health": (
-            selection.source_summary.get("qwen_health")
-            if source_mode in {"live_object_source_stage", "live_target_receiver_stage"}
-            else None
-        ),
-        "records": records,
-        "render": render_report,
-        "fatal_error": batch_error,
-        "backend": {
+        dynamic_manifest=dynamic_manifest,
+        qwen_health=qwen_health,
+        records=tuple(EpisodeRecord.from_payload(record) for record in records),
+        render=render_report,
+        fatal_error=batch_error,
+        backend={
             "type": "urdf",
             "source_mode": source_mode,
             "source_release": (
@@ -2078,22 +2063,17 @@ def process_urdf_source_run(
             "status": result.get("status"),
             "error": batch_error,
         },
-        "passed": (
-            batch_error is None
-            and not any(
-                record.get("status") in failure_statuses for record in records
-            )
-        ),
-    }
+        passed=passed,
+        plan=result if dry_run else None,
+    )
     if dry_run:
-        summary["plan"] = result
-        return summary
+        return summary_model.to_json()
+    summary = summary_model.to_json()
     summary_path = ArtifactStore.write_json(
         canonical_run_dir / "process_summary.json",
         summary,
     )
-    summary["artifact"] = str(summary_path)
-    return summary
+    return summary_model.with_artifact(str(summary_path)).to_json()
 
 
 def process_dataset(
@@ -2506,30 +2486,6 @@ def process_dataset(
         )
         reporter.note(f"canonical_render skipped: {reason}", level="warning")
 
-    summary = {
-        "format_version": "robotwin_process_dataset_summary_v1",
-        "annotation_mode": config.annotation.mode.value,
-        "required_object_roles": list(config.annotation.spec.required_role_names),
-        "gripper_backend": None if source_only else "sam",
-        "run_id": selected_run_id,
-        "dataset_root": str(dataset_root.expanduser().resolve()),
-        "task": task,
-        "camera": camera,
-        "discovered_episode_ids": list(discovery.episode_ids),
-        "requested_episode_ids": list(selected_ids),
-        "dynamic_manifest": manifest,
-        "qwen_health": health,
-        "records": records,
-        "render": render_report,
-        "fatal_error": None if fatal_error is None else str(fatal_error),
-        "backend": {
-            "object_masks": "sam",
-            "gripper": None if source_only else "sam",
-        },
-        "stage_mode": (
-            "object_source_only" if source_only else "full_sam"
-        ),
-    }
     failure_statuses = {
         "failed",
         "sam_incomplete",
@@ -2537,16 +2493,39 @@ def process_dataset(
         "not_run_after_fatal_cuda",
         "render_failed",
     }
-    summary["passed"] = (
+    passed = (
         fatal_error is None
         and not any(record.get("status") in failure_statuses for record in records)
     )
+    summary_model = ProcessSummary(
+        format_version=PROCESS_SUMMARY_FORMAT_VERSION,
+        annotation_mode=config.annotation.mode.value,
+        required_object_roles=tuple(config.annotation.spec.required_role_names),
+        gripper_backend=None if source_only else "sam",
+        run_id=selected_run_id,
+        dataset_root=str(dataset_root.expanduser().resolve()),
+        task=task,
+        camera=camera,
+        discovered_episode_ids=tuple(discovery.episode_ids),
+        requested_episode_ids=tuple(selected_ids),
+        dynamic_manifest=manifest,
+        qwen_health=health,
+        records=tuple(EpisodeRecord.from_payload(record) for record in records),
+        render=render_report,
+        fatal_error=None if fatal_error is None else str(fatal_error),
+        backend={
+            "object_masks": "sam",
+            "gripper": None if source_only else "sam",
+        },
+        passed=passed,
+        stage_mode="object_source_only" if source_only else "full_sam",
+    )
+    persisted_summary = summary_model.to_json()
     summary_path = store.write_json(
         canonical_run_dir / "process_summary.json",
-        summary,
+        persisted_summary,
     )
-    summary["artifact"] = str(summary_path)
-    return summary
+    return summary_model.with_artifact(str(summary_path)).to_json()
 
 
 def process_live_urdf_pipeline(
