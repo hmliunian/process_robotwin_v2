@@ -10,16 +10,22 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import scripts.process_dataset as process_module
+import scripts.process_dataset as legacy_process_cli
 import scripts.render_urdf_gripper_masks as urdf_module
+from robotwin_annotation_v2.application import dataset_runtime as process_module
+from robotwin_annotation_v2.application.dataset_runtime import (
+    select_urdf_source_episodes,
+)
 from robotwin_annotation_v2.application.discovery import (
     DiscoveredEpisode,
     build_dynamic_manifest,
     discover_episodes,
 )
-from scripts.process_dataset import (
-    select_urdf_source_episodes,
-)
+
+
+def test_process_dataset_launcher_delegates_to_canonical_runtime() -> None:
+    assert legacy_process_cli.main is process_module.main
+    assert legacy_process_cli._run_from_args is process_module._run_from_args
 
 
 class _EpisodeRecordingUI(process_module.ProcessUI):

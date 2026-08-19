@@ -8,13 +8,16 @@ from typing import Any
 
 import pytest
 
+from robotwin_annotation_v2.application.dataset_runtime import (
+    _captured_json_progress,
+    _captured_stage_output,
+)
 from robotwin_annotation_v2.terminal_ui import (
     PlainProcessUI,
     ProcessUI,
     RichProcessUI,
     create_process_ui,
 )
-from scripts.process_dataset import _captured_json_progress, _captured_stage_output
 
 
 class FakeClock:
