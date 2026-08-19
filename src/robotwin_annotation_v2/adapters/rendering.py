@@ -21,6 +21,10 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from robotwin_annotation_v2.adapters.artifact_store import ArtifactStore
+from robotwin_annotation_v2.adapters.canonical_masks import (
+    CanonicalMaskError,
+    read_canonical_masks,
+)
 from robotwin_annotation_v2.adapters.robotwin_dataset import RoboTwinDataset
 from robotwin_annotation_v2.config import PipelineConfig, load_config
 from robotwin_annotation_v2.mask_schema import (
@@ -262,7 +266,7 @@ def select_best_masks(
     }
 
 
-def _load_masks(path: Path) -> MaskArtifact:
+def _load_masks_compat(path: Path) -> MaskArtifact:
     with np.load(path, allow_pickle=False) as archive:
         required = {
             "format_version",
@@ -324,6 +328,25 @@ def _load_masks(path: Path) -> MaskArtifact:
         format_version,
         qc_statuses,
         frame_encoding,
+    )
+
+
+def _load_masks(path: Path) -> MaskArtifact:
+    """Read canonical masks through the shared codec with legacy fallback."""
+
+    try:
+        bundle = read_canonical_masks(path)
+    except CanonicalMaskError:
+        return _load_masks_compat(path)
+    return MaskArtifact(
+        masks=np.asarray(bundle.masks).copy(),
+        instance_names=bundle.instance_names,
+        roles=bundle.roles,
+        annotation_status=bundle.annotation_status,
+        frame_count=bundle.frame_count,
+        format_version=bundle.format_version,
+        qc_status=bundle.qc_status,
+        frame_encoding=np.asarray(bundle.frame_encoding).copy(),
     )
 
 

@@ -94,6 +94,25 @@ def test_render_and_urdf_readers_match_on_canonical_v2_v3_inputs(
         assert rendered.frame_encoding[0].tolist() == [1, FrameEncoding.TARGET_GRASP_HOLD.value]
 
 
+def test_render_reader_uses_shared_codec_for_canonical_archive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _write_archive(tmp_path / "canonical.npz", _archive_payload(version="robotwin_visible_masks_v3"))
+    calls: list[Path] = []
+    original = rendering.read_canonical_masks
+
+    def read(path: Path) -> Any:
+        calls.append(path)
+        return original(path)
+
+    monkeypatch.setattr(rendering, "read_canonical_masks", read)
+
+    rendering._load_masks(path)
+
+    assert calls == [path]
+
+
 def test_script_urdf_reader_alias_matches_application_reader(tmp_path: Path) -> None:
     script_module = importlib.import_module("scripts.render_urdf_gripper_masks")
     assert script_module.load_four_channel_masks is urdf_batch.load_four_channel_masks
