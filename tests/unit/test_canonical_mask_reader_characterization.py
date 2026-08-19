@@ -8,8 +8,10 @@ from typing import Any
 import numpy as np
 import pytest
 
+import robotwin_annotation_v2.urdf_gripper_publisher as publisher
 from robotwin_annotation_v2.adapters import rendering
 from robotwin_annotation_v2.application import urdf_batch
+from robotwin_annotation_v2.domain import ObjectRole
 from robotwin_annotation_v2.mask_schema import (
     FrameEncoding,
     default_frame_encoding,
@@ -143,6 +145,29 @@ def test_urdf_reader_uses_shared_codec_for_canonical_archive(
     urdf_batch.load_four_channel_masks(path, frame_count=FRAME_COUNT)
 
     assert calls == [path]
+
+
+def test_publisher_reader_uses_shared_codec_for_canonical_archive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _write_archive(tmp_path / "canonical.npz", _archive_payload(version="robotwin_visible_masks_v3"))
+    calls: list[Path] = []
+    original = publisher.read_canonical_masks
+
+    def read(path: Path) -> Any:
+        calls.append(path)
+        return original(path)
+
+    monkeypatch.setattr(publisher, "read_canonical_masks", read)
+
+    result = publisher._load_source_masks(
+        path,
+        required_roles=(ObjectRole.TARGET, ObjectRole.RECEIVER),
+    )
+
+    assert calls == [path]
+    assert result["format_version"] == "robotwin_visible_masks_v3"
 
 
 def test_render_reader_synthesizes_legacy_encoding_and_qc_defaults(tmp_path: Path) -> None:

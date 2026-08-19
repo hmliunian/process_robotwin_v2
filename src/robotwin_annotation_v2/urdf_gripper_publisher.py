@@ -17,6 +17,10 @@ from typing import Any
 
 import numpy as np
 
+from .adapters.canonical_masks import (
+    CanonicalMaskError,
+    read_canonical_masks,
+)
 from .domain import AnnotationMode, ObjectRole, annotation_spec
 from .mask_schema import (
     FRAME_ENCODING_LEGEND,
@@ -321,7 +325,7 @@ def _scalar_int(value: np.ndarray, *, label: str) -> int:
     return int(array.item())
 
 
-def _load_source_masks(
+def _load_source_masks_compat(
     path: Path,
     *,
     required_roles: tuple[ObjectRole, ...],
@@ -410,6 +414,45 @@ def _load_source_masks(
         "frame_encoding": frame_encoding,
         "annotation_status": statuses,
         "qc_status": qc_statuses,
+    }
+
+
+def _load_source_masks(
+    path: Path,
+    *,
+    required_roles: tuple[ObjectRole, ...],
+) -> dict[str, Any]:
+    """Read canonical source masks through the shared codec with a shim."""
+
+    try:
+        bundle = read_canonical_masks(path)
+    except (CanonicalMaskError, FileNotFoundError):
+        return _load_source_masks_compat(path, required_roles=required_roles)
+    required_names = {role.value for role in required_roles}
+    for index, role in enumerate((ObjectRole.TARGET, ObjectRole.RECEIVER)):
+        if role.value in required_names:
+            if (
+                bundle.annotation_status[index] != "valid"
+                or bundle.qc_status[index] != "passed"
+            ):
+                raise UrdfGripperPublishError(
+                    f"source {role.value} must be valid and QC-passed"
+                )
+        elif (
+            bundle.annotation_status[index] != "not_applicable"
+            or bundle.qc_status[index] != "not_applicable"
+            or bundle.masks[index].any()
+        ):
+            raise UrdfGripperPublishError(
+                f"source {role.value} must be zero and not_applicable"
+            )
+    return {
+        "format_version": bundle.format_version,
+        "frame_count": bundle.frame_count,
+        "masks": np.asarray(bundle.masks).copy(),
+        "frame_encoding": np.asarray(bundle.frame_encoding).copy(),
+        "annotation_status": bundle.annotation_status,
+        "qc_status": bundle.qc_status,
     }
 
 
