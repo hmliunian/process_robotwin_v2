@@ -107,3 +107,12 @@ def test_urdf_batch_import_does_not_load_optional_backends() -> None:
         "import robotwin_annotation_v2.application.urdf_batch\n"
         "assert not any(name in sys.modules for name in ('cv2', 'torch', 'sam3', 'av'))\n"
     )
+
+
+def test_urdf_finger_fit_import_does_not_load_render_backends() -> None:
+    _run_import_probe(
+        "import sys\n"
+        "import robotwin_annotation_v2.adapters.urdf.finger_fit\n"
+        "assert not any(name in sys.modules for name in "
+        "('pyrender', 'trimesh', 'OpenGL', 'cv2', 'torch', 'sam3'))\n"
+    )

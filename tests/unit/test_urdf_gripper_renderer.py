@@ -10,6 +10,8 @@ from typing import Any
 import numpy as np
 import pytest
 
+import robotwin_annotation_v2.urdf_gripper_renderer as legacy_renderer
+from robotwin_annotation_v2.adapters.urdf import finger_fit
 from robotwin_annotation_v2.urdf_gripper_renderer import (
     ALOHA_RENDER_LINKS,
     AlohaUrdfRenderer,
@@ -126,6 +128,24 @@ def test_gripper_command_mapping_distinguishes_drive_target_and_urdf_q() -> None
     assert gripper_command_to_kinematic_q(0.0) == 0.0
     assert gripper_command_to_drive_target(1.0) == pytest.approx(0.045)
     assert gripper_command_to_kinematic_q(1.0) == pytest.approx(0.045)
+
+
+def test_renderer_reexports_canonical_finger_fit_primitives_by_identity() -> None:
+    for name in (
+        "DepthAgreement",
+        "FingerCandidateScore",
+        "active_gripper_link_names",
+        "agreement_has_minimum_support",
+        "candidate_has_minimum_support",
+        "compute_visible_gripper_mask",
+        "depth_agreement",
+        "gripper_command_to_drive_target",
+        "gripper_command_to_kinematic_q",
+        "rank_finger_candidates",
+        "_grid",
+        "_normalize_active_side",
+    ):
+        assert getattr(legacy_renderer, name) is getattr(finger_fit, name)
 
 
 def test_depth_visible_mask_requires_positive_scene_depth_within_tolerance() -> None:

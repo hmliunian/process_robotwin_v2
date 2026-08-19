@@ -1697,6 +1697,7 @@ def _git_revision() -> str | None:
 def _implementation_identity() -> dict[str, Any]:
     paths = (
         Path(__file__).resolve(),
+        PROJECT_ROOT / "src/robotwin_annotation_v2/adapters/urdf/finger_fit.py",
         PROJECT_ROOT / "src/robotwin_annotation_v2/urdf_gripper_data.py",
         PROJECT_ROOT / "src/robotwin_annotation_v2/urdf_gripper_renderer.py",
         PROJECT_ROOT / "src/robotwin_annotation_v2/urdf_gripper_publisher.py",
