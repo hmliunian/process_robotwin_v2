@@ -6,13 +6,14 @@ from typing import Any
 
 import numpy as np
 
-from ...models import MaskCandidateInfo
+from ...models import MaskCandidateInfo, MaskQCStatus, RoleMaskQC
+from ...models.loop_context import RoleName
 
 NDArray = np.ndarray[Any, Any]
 
 
 class MaskQCError(RuntimeError):
-    """A mask-QC request, response, or candidate violated its contract."""
+    """The candidate-mask QC request or response violated its contract."""
 
     def __init__(
         self,
@@ -24,6 +25,37 @@ class MaskQCError(RuntimeError):
         super().__init__(message)
         self.rendered_prompt = rendered_prompt
         self.raw_response = raw_response
+
+
+def normalize_text(value: str) -> str:
+    return " ".join(value.split())
+
+
+def error_report(
+    role: RoleName,
+    status: MaskQCStatus,
+    reason: str,
+    *,
+    model: str | None = None,
+    raw_response: str | None = None,
+    rendered_prompt: str | None = None,
+    candidates: tuple[MaskCandidateInfo, ...] = (),
+) -> RoleMaskQC:
+    """Build the shared fail-closed report shape for one object role."""
+
+    return RoleMaskQC(
+        role=role,
+        status=status,
+        selected_candidate=None,
+        selected_query_field=None,
+        selected_query=None,
+        confidence=None,
+        reason=normalize_text(reason),
+        candidates=candidates,
+        model=model,
+        raw_response=raw_response,
+        rendered_prompt=rendered_prompt,
+    )
 
 
 def _component_count(mask: NDArray) -> int:
@@ -111,4 +143,10 @@ def mask_iou(first: NDArray, second: NDArray) -> float:
     return float((first_mask & second_mask).sum() / union.sum())
 
 
-__all__ = ["MaskQCError", "candidate_info", "mask_iou"]
+__all__ = [
+    "MaskQCError",
+    "candidate_info",
+    "error_report",
+    "mask_iou",
+    "normalize_text",
+]

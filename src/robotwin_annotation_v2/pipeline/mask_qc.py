@@ -6,8 +6,6 @@ import json
 import math
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
-from dataclasses import field as dataclass_field
 from pathlib import Path
 from typing import Any, Protocol, cast
 
@@ -19,15 +17,12 @@ from ..adapters.qwen_client import QwenCompletion, image_data_url
 from ..config import MaskConfig
 from ..models import (
     LoopContext,
-    MaskCandidateInfo,
-    MaskQCAttempt,
     MaskQCAttemptMethod,
     MaskQCResult,
     MaskQCStatus,
     RoleMaskQC,
     RoleSemanticPlan,
     SemanticPlan,
-    SemanticStatus,
 )
 from ..models.loop_context import RoleName
 from .bbox_localization import (
@@ -38,7 +33,19 @@ from .bbox_localization import (
 )
 from .object_mask.planner import QueryCandidate, plan_role_queries
 from .object_mask.proposals import blue_planar_region
-from .object_mask.qc import MaskQCError, candidate_info, mask_iou
+from .object_mask.qc import (
+    MaskQCError,
+    candidate_info,
+    error_report,
+    mask_iou,
+    normalize_text,
+)
+from .object_mask.resolver import (
+    ObjectMaskCandidate,
+    ObjectMaskResolver,
+    RoleAttemptExecution,
+    RoleResolution,
+)
 from .prompt_context import timeline_prompt_fields
 
 _CANDIDATE_MARKER = "{candidate_panels}"
@@ -92,38 +99,6 @@ class MaskQCClient(Protocol):
     ) -> QwenCompletion: ...
 
 
-@dataclass(frozen=True)
-class _Candidate:
-    candidate_id: str
-    query_field: str
-    query: str
-    seed_frame_id: int
-    mask: np.ndarray
-    info: MaskCandidateInfo
-
-
-@dataclass(frozen=True)
-class _RoleAttemptExecution:
-    seed_frame_id: int
-    report: RoleMaskQC
-    candidates: tuple[_Candidate, ...]
-    panels: tuple[Image.Image, ...] = ()
-    method: MaskQCAttemptMethod = MaskQCAttemptMethod.TEXT_QUERY
-    provenance: dict[str, Any] = dataclass_field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class _RoleExecution:
-    report: RoleMaskQC
-    candidates: tuple[_Candidate, ...]
-    panels: tuple[Image.Image, ...] = ()
-    attempts: tuple[_RoleAttemptExecution, ...] = ()
-
-
-def _normalize_text(value: str) -> str:
-    return " ".join(value.split())
-
-
 def _dilate(mask: np.ndarray, radius: int = 2) -> np.ndarray:
     value = np.asarray(mask, dtype=bool)
     if radius <= 0:
@@ -142,7 +117,7 @@ def _dilate(mask: np.ndarray, radius: int = 2) -> np.ndarray:
 
 def _panel_image(
     seed_image: Image.Image,
-    candidate: _Candidate,
+    candidate: ObjectMaskCandidate,
     *,
     scale: int = 2,
 ) -> Image.Image:
@@ -275,7 +250,7 @@ def parse_mask_qc_response(
     reason = payload["reason"]
     if not isinstance(reason, str) or not reason.strip():
         raise MaskQCError("reason must be a non-empty string")
-    return decision, selected, confidence, _normalize_text(reason)
+    return decision, selected, confidence, normalize_text(reason)
 
 
 def _render_request(
@@ -284,7 +259,7 @@ def _render_request(
     role: RoleName,
     seed_frame_id: int,
     seed_image: Image.Image,
-    candidates: Sequence[_Candidate],
+    candidates: Sequence[ObjectMaskCandidate],
     context_images: Mapping[int, Image.Image],
     template: str,
 ) -> tuple[str, list[dict[str, Any]], tuple[Image.Image, ...]]:
@@ -360,31 +335,6 @@ def _render_request(
     return rendered, [{"role": "user", "content": content}], panels
 
 
-def _error_report(
-    role: RoleName,
-    status: MaskQCStatus,
-    reason: str,
-    *,
-    model: str | None = None,
-    raw_response: str | None = None,
-    rendered_prompt: str | None = None,
-    candidates: tuple[MaskCandidateInfo, ...] = (),
-) -> RoleMaskQC:
-    return RoleMaskQC(
-        role=role,
-        status=status,
-        selected_candidate=None,
-        selected_query_field=None,
-        selected_query=None,
-        confidence=None,
-        reason=_normalize_text(reason),
-        candidates=candidates,
-        model=model,
-        raw_response=raw_response,
-        rendered_prompt=rendered_prompt,
-    )
-
-
 def _role_query_candidates(
     context: LoopContext,
     role: RoleName,
@@ -405,8 +355,8 @@ def _role_query_candidates(
 def _visual_report_from_completion(
     role: RoleName,
     *,
-    candidates: tuple[_Candidate, ...],
-    valid: tuple[_Candidate, ...],
+    candidates: tuple[ObjectMaskCandidate, ...],
+    valid: tuple[ObjectMaskCandidate, ...],
     completion: QwenCompletion,
     rendered_prompt: str,
     mask_config: MaskConfig,
@@ -420,7 +370,7 @@ def _visual_report_from_completion(
             candidate_ids=tuple(candidate.candidate_id for candidate in valid),
         )
     except MaskQCError as exc:
-        return _error_report(
+        return error_report(
             role,
             MaskQCStatus.ERROR,
             str(exc),
@@ -488,14 +438,14 @@ def _evaluate_candidate_visual_qc(
     role: RoleName,
     *,
     seed_frame_id: int,
-    candidates: tuple[_Candidate, ...],
+    candidates: tuple[ObjectMaskCandidate, ...],
     seed_image: Image.Image,
     context_images: Mapping[int, Image.Image],
     mask_config: MaskConfig,
     client: MaskQCClient,
     method: MaskQCAttemptMethod,
     provenance: dict[str, Any] | None = None,
-) -> _RoleAttemptExecution:
+) -> RoleAttemptExecution:
     """Apply the same mechanical and visual gate to text- and bbox-seeded masks."""
 
     info_tuple = tuple(candidate.info for candidate in candidates)
@@ -503,9 +453,9 @@ def _evaluate_candidate_visual_qc(
     panels = tuple(_panel_image(seed_image, candidate) for candidate in candidates)
     attempt_provenance = {} if provenance is None else provenance
     if not valid:
-        return _RoleAttemptExecution(
+        return RoleAttemptExecution(
             seed_frame_id,
-            _error_report(
+            error_report(
                 role,
                 MaskQCStatus.REJECTED,
                 "all_candidate_masks_failed_basic_checks",
@@ -518,9 +468,9 @@ def _evaluate_candidate_visual_qc(
         )
     template_path = mask_config.qc_prompt_template
     if template_path is None or not template_path.is_file():
-        return _RoleAttemptExecution(
+        return RoleAttemptExecution(
             seed_frame_id,
-            _error_report(
+            error_report(
                 role,
                 MaskQCStatus.ERROR,
                 f"mask QC prompt template is missing: {template_path}",
@@ -543,9 +493,9 @@ def _evaluate_candidate_visual_qc(
             template=template,
         )
     except (OSError, MaskQCError) as exc:
-        return _RoleAttemptExecution(
+        return RoleAttemptExecution(
             seed_frame_id,
-            _error_report(
+            error_report(
                 role,
                 MaskQCStatus.ERROR,
                 f"mask QC request could not be rendered: {exc}",
@@ -566,9 +516,9 @@ def _evaluate_candidate_visual_qc(
             request_error = exc
     if completion is None:
         assert request_error is not None
-        return _RoleAttemptExecution(
+        return RoleAttemptExecution(
             seed_frame_id,
-            _error_report(
+            error_report(
                 role,
                 MaskQCStatus.ERROR,
                 (
@@ -593,7 +543,7 @@ def _evaluate_candidate_visual_qc(
         mask_config=mask_config,
     )
 
-    return _RoleAttemptExecution(
+    return RoleAttemptExecution(
         seed_frame_id,
         report,
         candidates,
@@ -616,11 +566,11 @@ def _run_role_qc_at_seed(
     frame_shape: tuple[int, int],
     mask_config: MaskConfig,
     client: MaskQCClient,
-) -> _RoleAttemptExecution:
-    def generation_error(reason: str) -> _RoleAttemptExecution:
-        return _RoleAttemptExecution(
+) -> RoleAttemptExecution:
+    def generation_error(reason: str) -> RoleAttemptExecution:
+        return RoleAttemptExecution(
             seed_frame_id,
-            _error_report(
+            error_report(
                 role,
                 MaskQCStatus.ERROR,
                 f"text candidate generation failed: {reason}",
@@ -658,7 +608,7 @@ def _run_role_qc_at_seed(
         return generation_error(
             "text backend omitted mask(s) for query: " + ", ".join(missing_queries)
         )
-    candidates: list[_Candidate] = []
+    candidates: list[ObjectMaskCandidate] = []
     for index, (field, query_value) in enumerate(zip(fields, queries, strict=True)):
         assert query_value is not None
         query = query_value
@@ -703,7 +653,9 @@ def _run_role_qc_at_seed(
                     duplicate_of=duplicate.candidate_id,
                     seed_frame_id=seed_frame_id,
                 )
-        candidates.append(_Candidate(candidate_id, field, query, seed_frame_id, mask, info))
+        candidates.append(
+            ObjectMaskCandidate(candidate_id, field, query, seed_frame_id, mask, info)
+        )
     if reserve_prior:
         candidate_id = chr(ord("A") + len(candidates))
         query = "blue planar region"
@@ -739,7 +691,7 @@ def _run_role_qc_at_seed(
                     seed_frame_id=seed_frame_id,
                 )
         candidates.append(
-            _Candidate(
+            ObjectMaskCandidate(
                 candidate_id,
                 "blue_region_prior",
                 query,
@@ -773,7 +725,7 @@ def _run_bbox_qc_at_seed(
     frame_shape: tuple[int, int],
     mask_config: MaskConfig,
     client: MaskQCClient,
-) -> _RoleAttemptExecution:
+) -> RoleAttemptExecution:
     """Generate one Qwen-box/SAM candidate and pass it through normal visual QC."""
 
     method = MaskQCAttemptMethod.BBOX_FALLBACK
@@ -783,9 +735,9 @@ def _run_bbox_qc_at_seed(
     }
     template_path = mask_config.qc_bbox_prompt_template
     if template_path is None or not template_path.is_file():
-        return _RoleAttemptExecution(
+        return RoleAttemptExecution(
             seed_frame_id,
-            _error_report(
+            error_report(
                 role,
                 MaskQCStatus.ERROR,
                 f"bbox localization prompt template is missing: {template_path}",
@@ -808,9 +760,9 @@ def _run_bbox_qc_at_seed(
         )
         messages = build_bbox_messages(rendered_prompt, seed_image.convert("RGB"))
     except (OSError, BboxLocalizationError) as exc:
-        return _RoleAttemptExecution(
+        return RoleAttemptExecution(
             seed_frame_id,
-            _error_report(
+            error_report(
                 role,
                 MaskQCStatus.ERROR,
                 f"bbox localization request could not be rendered: {exc}",
@@ -832,9 +784,9 @@ def _run_bbox_qc_at_seed(
     if completion is None:
         assert request_error is not None
         provenance["localization_rendered_prompt"] = rendered_prompt
-        return _RoleAttemptExecution(
+        return RoleAttemptExecution(
             seed_frame_id,
-            _error_report(
+            error_report(
                 role,
                 MaskQCStatus.ERROR,
                 (
@@ -860,9 +812,9 @@ def _run_bbox_qc_at_seed(
     try:
         localization = parse_bbox_localization(completion.content)
     except BboxLocalizationError as exc:
-        return _RoleAttemptExecution(
+        return RoleAttemptExecution(
             seed_frame_id,
-            _error_report(
+            error_report(
                 role,
                 MaskQCStatus.ERROR,
                 f"invalid bbox localization response: {exc}",
@@ -880,9 +832,9 @@ def _run_bbox_qc_at_seed(
         status = (
             MaskQCStatus.AMBIGUOUS if localization.status == "ambiguous" else MaskQCStatus.REJECTED
         )
-        return _RoleAttemptExecution(
+        return RoleAttemptExecution(
             seed_frame_id,
-            _error_report(
+            error_report(
                 role,
                 status,
                 f"bbox localization {localization.status}: {localization.reason}",
@@ -908,9 +860,9 @@ def _run_bbox_qc_at_seed(
             dtype=bool,
         )
     except Exception as exc:  # noqa: BLE001 - external SAM backend boundary
-        return _RoleAttemptExecution(
+        return RoleAttemptExecution(
             seed_frame_id,
-            _error_report(
+            error_report(
                 role,
                 MaskQCStatus.ERROR,
                 f"SAM bbox candidate generation failed: {exc}",
@@ -921,9 +873,9 @@ def _run_bbox_qc_at_seed(
             provenance,
         )
     if mask.shape != frame_shape:
-        return _RoleAttemptExecution(
+        return RoleAttemptExecution(
             seed_frame_id,
-            _error_report(
+            error_report(
                 role,
                 MaskQCStatus.ERROR,
                 f"{role} bbox candidate has shape {mask.shape}, expected {frame_shape}",
@@ -956,7 +908,7 @@ def _run_bbox_qc_at_seed(
         max_area_fraction=mask_config.qc_max_area_fraction,
         seed_frame_id=seed_frame_id,
     )
-    candidate = _Candidate(
+    candidate = ObjectMaskCandidate(
         candidate_id,
         query_field,
         query,
@@ -978,47 +930,7 @@ def _run_bbox_qc_at_seed(
     )
 
 
-def _attempt_report(execution: _RoleAttemptExecution) -> MaskQCAttempt:
-    report = execution.report
-    return MaskQCAttempt(
-        seed_frame_id=execution.seed_frame_id,
-        status=report.status,
-        selected_candidate=report.selected_candidate,
-        selected_query_field=report.selected_query_field,
-        selected_query=report.selected_query,
-        confidence=report.confidence,
-        reason=report.reason,
-        method=execution.method,
-        candidates=report.candidates,
-        model=report.model,
-        raw_response=report.raw_response,
-        rendered_prompt=report.rendered_prompt,
-        provenance=execution.provenance,
-    )
-
-
-def _finalize_role_execution(
-    final: _RoleAttemptExecution,
-    attempts: Sequence[_RoleAttemptExecution],
-    *,
-    reason: str | None = None,
-) -> _RoleExecution:
-    report = final.report
-    if reason is not None:
-        report = replace(report, reason=_normalize_text(reason))
-    report = replace(
-        report,
-        attempts=tuple(_attempt_report(attempt) for attempt in attempts),
-    )
-    return _RoleExecution(
-        report=report,
-        candidates=final.candidates,
-        panels=final.panels,
-        attempts=tuple(attempts),
-    )
-
-
-def _run_role_qc(
+def _resolve_role(
     context: LoopContext,
     role: RoleName,
     semantic: RoleSemanticPlan,
@@ -1030,30 +942,16 @@ def _run_role_qc(
     frame_shape: tuple[int, int],
     mask_config: MaskConfig,
     client: MaskQCClient,
-) -> _RoleExecution:
-    if semantic.status is SemanticStatus.NO_CLEAR_SEED:
-        return _RoleExecution(
-            _error_report(role, MaskQCStatus.REJECTED, "semantic_plan_no_clear_seed"),
-            (),
-        )
-    assert semantic.seed_frame_id is not None
-    assert semantic.query_bank is not None
-    query_candidates = _role_query_candidates(context, role, semantic, mask_config)
-    seed_frame_ids = [semantic.seed_frame_id]
-    if mask_config.qc_seed_fallback_enabled:
-        seed_frame_ids.extend(
-            frame_id
-            for frame_id in context.seed_candidates(role)
-            if frame_id != semantic.seed_frame_id
-        )
-
-    executions: list[_RoleAttemptExecution] = []
-    for seed_frame_id in seed_frame_ids:
+) -> RoleResolution:
+    def run_text_attempt(
+        seed_frame_id: int,
+        query_candidates: tuple[QueryCandidate, ...],
+    ) -> RoleAttemptExecution:
         try:
             seed_image = seed_images[seed_frame_id]
         except KeyError as exc:
             raise MaskQCError(f"missing seed RGB image for {role} frame {seed_frame_id}") from exc
-        execution = _run_role_qc_at_seed(
+        return _run_role_qc_at_seed(
             context,
             role,
             seed_frame_id=seed_frame_id,
@@ -1066,49 +964,29 @@ def _run_role_qc(
             mask_config=mask_config,
             client=client,
         )
-        executions.append(execution)
-        if execution.report.status in {MaskQCStatus.PASSED, MaskQCStatus.ERROR}:
-            return _finalize_role_execution(execution, executions)
 
-    bbox_seed_frame_ids: list[int] = []
-    if mask_config.qc_bbox_fallback_enabled:
-        # This block is deliberately after the complete text/seed loop.  A box
-        # proposal must never pre-empt a text candidate that passed visual QC.
-        bbox_seed_frame_ids = list(seed_frame_ids)
-        for seed_frame_id in bbox_seed_frame_ids:
-            seed_image = seed_images[seed_frame_id]
-            execution = _run_bbox_qc_at_seed(
-                context,
-                role,
-                seed_frame_id=seed_frame_id,
-                backend=backend,
-                resource_path=resource_path,
-                seed_image=seed_image,
-                context_images=context_images,
-                frame_shape=frame_shape,
-                mask_config=mask_config,
-                client=client,
-            )
-            executions.append(execution)
-            if execution.report.status in {MaskQCStatus.PASSED, MaskQCStatus.ERROR}:
-                return _finalize_role_execution(execution, executions)
+    def run_bbox_attempt(seed_frame_id: int) -> RoleAttemptExecution:
+        return _run_bbox_qc_at_seed(
+            context,
+            role,
+            seed_frame_id=seed_frame_id,
+            backend=backend,
+            resource_path=resource_path,
+            seed_image=seed_images[seed_frame_id],
+            context_images=context_images,
+            frame_shape=frame_shape,
+            mask_config=mask_config,
+            client=client,
+        )
 
-    meaningful = [
-        execution
-        for execution in executions
-        if any(candidate.info.basic_valid for candidate in execution.candidates)
-    ]
-    final = meaningful[-1] if meaningful else executions[-1]
-    attempted = ",".join(str(frame_id) for frame_id in seed_frame_ids)
-    bbox_attempted = ",".join(str(frame_id) for frame_id in bbox_seed_frame_ids)
-    suffix = f"; text seed frames: {attempted}"
-    if bbox_seed_frame_ids:
-        suffix += f"; bbox fallback seed frames: {bbox_attempted}"
-    return _finalize_role_execution(
-        final,
-        executions,
-        reason=f"{final.report.reason}{suffix}",
+    resolver = ObjectMaskResolver(
+        run_text_attempt=run_text_attempt,
+        run_bbox_attempt=run_bbox_attempt,
+        query_fallback_enabled=mask_config.qc_query_fallback_enabled,
+        seed_fallback_enabled=mask_config.qc_seed_fallback_enabled,
+        bbox_fallback_enabled=mask_config.qc_bbox_fallback_enabled,
     )
+    return resolver.resolve(context, role, semantic)
 
 
 def run_mask_qc_stage(
@@ -1137,7 +1015,7 @@ def run_mask_qc_stage(
         except Exception as exc:  # noqa: BLE001 - health failures must fail closed
             error = str(exc)
             reports = tuple(
-                _error_report(
+                error_report(
                     semantic.role,
                     MaskQCStatus.ERROR,
                     f"mask QC health failed: {error}",
@@ -1149,11 +1027,11 @@ def run_mask_qc_stage(
                 selected_masks={},
                 health={"status": "error", "error": error},
             )
-    executions: list[_RoleExecution] = []
+    executions: list[RoleResolution] = []
     for semantic in semantic_plan.role_plans:
         role = semantic.role
         executions.append(
-            _run_role_qc(
+            _resolve_role(
                 context,
                 role,
                 semantic,
