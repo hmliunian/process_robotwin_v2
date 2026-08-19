@@ -77,6 +77,15 @@ def _context() -> LoopContext:
     )
 
 
+def _write_qc_prompt(path: Path) -> None:
+    path.write_text(
+        "task={task_text}; arm={active_arm}; ids={candidate_ids}\n"
+        "{candidate_records}\n{candidate_panels}\n{context_frames}\n"
+        "events={move_start},{close_start},{close_done},{open_start},{open_done}",
+        encoding="utf-8",
+    )
+
+
 def _candidate(candidate_id: str, *, frame_id: int = 5) -> GripperSeedCandidate:
     raw = np.zeros(SHAPE, dtype=bool)
     raw[3:9, 5:11] = True
@@ -119,6 +128,8 @@ class FakeQwenClient:
     ) -> QwenCompletion:
         self.messages.append(messages)
         assert max_tokens == 100
+        if self.decision == "error":
+            raise RuntimeError("unavailable")
         if self.decision == "accept":
             payload = {
                 "decision": "accept",
@@ -267,12 +278,7 @@ def test_gripper_qwen_qc_receives_candidate_and_context_images(tmp_path: Path) -
     rgb = Image.fromarray(np.zeros((*SHAPE, 3), dtype=np.uint8))
     panel = render_gripper_candidate_panel(rgb, candidate, _roi())
     prompt = tmp_path / "prompt.txt"
-    prompt.write_text(
-        "task={task_text}; arm={active_arm}; ids={candidate_ids}\n"
-        "{candidate_records}\n{candidate_panels}\n{context_frames}\n"
-        "events={move_start},{close_start},{close_done},{open_start},{open_done}",
-        encoding="utf-8",
-    )
+    _write_qc_prompt(prompt)
     client = FakeQwenClient()
 
     result = run_gripper_seed_qc(
@@ -296,12 +302,7 @@ def test_gripper_qwen_qc_forces_one_candidate_when_qwen_rejects(tmp_path: Path) 
     rgb = Image.fromarray(np.zeros((*SHAPE, 3), dtype=np.uint8))
     panel = render_gripper_candidate_panel(rgb, candidate, _roi())
     prompt = tmp_path / "prompt.txt"
-    prompt.write_text(
-        "task={task_text}; arm={active_arm}; ids={candidate_ids}\n"
-        "{candidate_records}\n{candidate_panels}\n{context_frames}\n"
-        "events={move_start},{close_start},{close_done},{open_start},{open_done}",
-        encoding="utf-8",
-    )
+    _write_qc_prompt(prompt)
 
     result = run_gripper_seed_qc(
         _context(),
@@ -317,6 +318,57 @@ def test_gripper_qwen_qc_forces_one_candidate_when_qwen_rejects(tmp_path: Path) 
     assert result.selected_candidate == "A"
     assert result.forced_fallback
     assert "forced fallback candidate A" in result.reason
+
+
+def test_gripper_qwen_qc_rejects_when_no_fallback_candidate_exists(tmp_path: Path) -> None:
+    result = run_gripper_seed_qc(
+        _context(),
+        (),
+        {},
+        {},
+        prompt_template_path=tmp_path / "missing.txt",
+        client=FakeQwenClient(),
+        max_tokens=100,
+    )
+
+    assert result.status is MaskQCStatus.REJECTED
+    assert result.selected_candidate is None
+    assert not result.forced_fallback
+    assert result.reason == "all_gripper_candidates_failed_basic_checks"
+
+
+def test_gripper_qwen_qc_retries_then_stably_selects_first_tied_fallback(
+    tmp_path: Path,
+) -> None:
+    first = _candidate("A", frame_id=5)
+    second = _candidate("B", frame_id=6)
+    rgb = Image.fromarray(np.zeros((*SHAPE, 3), dtype=np.uint8))
+    prompt = tmp_path / "prompt.txt"
+    _write_qc_prompt(prompt)
+    client = FakeQwenClient(decision="error")
+
+    result = run_gripper_seed_qc(
+        _context(),
+        (first, second),
+        {
+            "A": render_gripper_candidate_panel(rgb, first, _roi()),
+            "B": render_gripper_candidate_panel(rgb, second, _roi()),
+        },
+        {1: rgb},
+        prompt_template_path=prompt,
+        client=client,
+        max_tokens=100,
+        max_attempts=2,
+    )
+
+    assert len(client.messages) == 2
+    assert result.status is MaskQCStatus.PASSED
+    assert result.selected_candidate == "A"
+    assert result.forced_fallback
+    assert result.reason == (
+        "forced fallback candidate A; "
+        "gripper QC request failed after 2 attempt(s): unavailable"
+    )
 
 
 def test_load_qc_native_tracks_includes_approved_seed_masks(tmp_path: Path) -> None:
