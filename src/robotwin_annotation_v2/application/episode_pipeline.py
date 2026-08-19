@@ -37,10 +37,12 @@ from robotwin_annotation_v2.models import (
     MaskStatus,
     SemanticPlan,
 )
-from robotwin_annotation_v2.pipeline.gripper_stage import (
-    GripperSeedQualityGateConfig,
+from robotwin_annotation_v2.pipeline.gripper.sam.annotator import (
     GripperStageError,
     run_gripper_stage,
+)
+from robotwin_annotation_v2.pipeline.gripper.sam.candidates import (
+    GripperSeedQualityGateConfig,
 )
 from robotwin_annotation_v2.pipeline.mask_qc import (
     MaskQCError,

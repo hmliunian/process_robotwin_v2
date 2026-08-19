@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from PIL import Image
@@ -28,8 +28,10 @@ from ..models import (
     RoleMaskResult,
     SemanticPlan,
 )
-from ..pipeline.gripper_stage import GripperStageResult
 from ..pipeline.sam_stage import RoleMaskData, SamStageError, SamStageResult
+
+if TYPE_CHECKING:
+    from ..pipeline.gripper.sam.annotator import GripperStageResult
 
 
 def _window_coverage(

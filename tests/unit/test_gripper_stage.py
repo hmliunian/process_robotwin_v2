@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
+import robotwin_annotation_v2.pipeline as public_pipeline
 from robotwin_annotation_v2.adapters import QwenCompletion
 from robotwin_annotation_v2.config import GripperRoiConfig
 from robotwin_annotation_v2.domain import AnnotationMode, ObjectRole
@@ -25,6 +26,8 @@ from robotwin_annotation_v2.pipeline import (
     GripperStageError,
     run_gripper_stage,
 )
+from robotwin_annotation_v2.pipeline import gripper_stage as legacy_stage
+from robotwin_annotation_v2.pipeline.gripper.sam import annotator
 
 FRAME_SHAPE = (240, 320)
 FRAME_COUNT = 24
@@ -346,3 +349,29 @@ def test_target_only_gripper_rejects_sam_backend_before_inference(tmp_path: Path
 
     assert backend.text_box_calls == []
     assert backend.propagate_calls == []
+
+
+def test_legacy_annotator_exports_preserve_canonical_identity() -> None:
+    public_names = (
+        "GripperStageError",
+        "GripperStageResult",
+        "gripper_keyframes",
+        "run_gripper_stage",
+    )
+    for name in public_names:
+        canonical = getattr(annotator, name)
+        assert getattr(legacy_stage, name) is canonical
+        assert getattr(public_pipeline, name) is canonical
+    assert legacy_stage.GripperSamBackend is annotator.GripperSamBackend
+    for name in (
+        "_build_gripper_candidates",
+        "_build_roi_track",
+        "_context_frame_ids",
+        "_load_resource_image",
+        "_load_state_arrays",
+        "_polygon_mask",
+        "_roi_geometries",
+        "_roi_policy",
+        "_track_summary",
+    ):
+        assert getattr(legacy_stage, name) is getattr(annotator, name)

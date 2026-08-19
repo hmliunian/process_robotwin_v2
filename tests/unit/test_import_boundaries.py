@@ -83,6 +83,24 @@ def test_gripper_qc_does_not_load_model_backends() -> None:
     )
 
 
+def test_gripper_annotator_does_not_load_model_backends() -> None:
+    _run_import_probe(
+        "import sys\n"
+        "import robotwin_annotation_v2.pipeline.gripper.sam.annotator\n"
+        "assert not any(name in sys.modules for name in ('torch', 'sam3', 'av'))\n"
+    )
+
+
+def test_sam_artifacts_does_not_load_gripper_annotator() -> None:
+    _run_import_probe(
+        "import sys\n"
+        "import robotwin_annotation_v2.application.sam_artifacts\n"
+        "assert 'robotwin_annotation_v2.pipeline.gripper.sam.annotator' not in sys.modules\n"
+        "assert 'robotwin_annotation_v2.pipeline.gripper_stage' not in sys.modules\n"
+        "assert 'cv2' not in sys.modules\n"
+    )
+
+
 def test_urdf_batch_import_does_not_load_optional_backends() -> None:
     _run_import_probe(
         "import sys\n"

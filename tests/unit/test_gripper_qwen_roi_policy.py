@@ -7,8 +7,10 @@ from pathlib import Path
 import pytest
 
 from robotwin_annotation_v2.config import GripperRoiConfig
-from robotwin_annotation_v2.pipeline.gripper_stage import _roi_geometries, _roi_policy
-
+from robotwin_annotation_v2.pipeline.gripper.sam.annotator import (
+    _roi_geometries,
+    _roi_policy,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
