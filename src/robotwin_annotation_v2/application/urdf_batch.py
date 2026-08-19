@@ -32,8 +32,8 @@ from robotwin_annotation_v2.mask_schema import (
     default_frame_encoding,
     validate_frame_encoding,
 )
+from robotwin_annotation_v2.models.timeline import TimelineEvents
 from robotwin_annotation_v2.urdf_gripper_data import (
-    ActiveGripperEvents,
     CameraCalibrationSeries,
     UrdfGripperEpisodeData,
     load_authoritative_loop_context,
@@ -115,7 +115,7 @@ class EpisodePlan:
     episode_index: int
     frame_count: int
     frame_shape: tuple[int, int]
-    events: ActiveGripperEvents
+    events: TimelineEvents
     active_arm: str
     active_window: tuple[int, int]
     source_masks: Path
@@ -140,7 +140,7 @@ class EpisodePlan:
             )
 
     @property
-    def loop(self) -> ActiveGripperEvents:
+    def loop(self) -> TimelineEvents:
         """Compatibility alias; execution consumes ``active_window`` directly."""
 
         return self.events
