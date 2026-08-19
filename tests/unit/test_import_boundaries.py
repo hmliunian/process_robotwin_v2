@@ -35,6 +35,20 @@ def test_adapters_package_does_not_eagerly_load_optional_backends() -> None:
     )
 
 
+def test_loop_context_codec_does_not_load_pipeline_or_optional_backends() -> None:
+    _run_import_probe(
+        "import sys\n"
+        "import robotwin_annotation_v2.adapters.loop_context_codec as codec\n"
+        "assert callable(codec.load_authoritative_loop_context)\n"
+        "assert 'robotwin_annotation_v2.urdf_gripper_data' not in sys.modules\n"
+        "assert not any(name == 'robotwin_annotation_v2.pipeline' or "
+        "name.startswith('robotwin_annotation_v2.pipeline.') for name in sys.modules)\n"
+        "assert not any(name in sys.modules for name in (\n"
+        "    'av', 'pandas', 'cv2', 'torch', 'sam3'\n"
+        "))\n"
+    )
+
+
 def test_pipeline_package_loads_lightweight_stage_exports_on_demand() -> None:
     _run_import_probe(
         "import sys\n"

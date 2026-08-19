@@ -6,10 +6,17 @@ from typing import Any
 
 import pytest
 
+from robotwin_annotation_v2.adapters import loop_context_codec as canonical_codec
 from robotwin_annotation_v2.domain import AnnotationMode
-from robotwin_annotation_v2.models.timeline import TargetOnlyEvents
+from robotwin_annotation_v2.models.timeline import (
+    PickPlaceEvents,
+    TargetOnlyEvents,
+    TimelineEvents,
+)
 from robotwin_annotation_v2.urdf_gripper_data import (
+    ActiveGripperEvents,
     ActiveGripperLoop,
+    AuthoritativeLoopContext,
     UrdfGripperDataError,
     load_authoritative_loop_context,
 )
@@ -122,12 +129,18 @@ def _write_payload(tmp_path: Path, payload: dict[str, Any]) -> Path:
     return path
 
 
+def test_legacy_codec_exports_canonical_dto_identity() -> None:
+    assert ActiveGripperLoop is PickPlaceEvents
+    assert ActiveGripperEvents is TimelineEvents
+    assert AuthoritativeLoopContext is canonical_codec.AuthoritativeLoopContext
+
+
 @pytest.mark.parametrize(
     ("format_version", "mode"),
     VALID_CASES,
     ids=lambda case: "-".join(case) if isinstance(case, tuple) else str(case),
 )
-def test_loader_preserves_versioned_events_windows_mode_and_kind(
+def test_canonical_and_legacy_loaders_preserve_exact_context_parity(
     tmp_path: Path,
     format_version: str,
     mode: str,
@@ -135,12 +148,25 @@ def test_loader_preserves_versioned_events_windows_mode_and_kind(
     payload = _payload(format_version, mode)
     path = _write_payload(tmp_path, payload)
 
-    context = load_authoritative_loop_context(
+    canonical_context = canonical_codec.load_authoritative_loop_context(
         path,
         expected_task=TASK,
         expected_episode_index=EPISODE_INDEX,
         expected_camera=CAMERA,
     )
+    legacy_context = load_authoritative_loop_context(
+        path,
+        expected_task=TASK,
+        expected_episode_index=EPISODE_INDEX,
+        expected_camera=CAMERA,
+    )
+
+    assert legacy_context == canonical_context
+    assert legacy_context.events == canonical_context.events
+    assert legacy_context.events.to_json() == canonical_context.events.to_json()
+    assert legacy_context.windows == canonical_context.windows
+    assert legacy_context.windows.to_json() == canonical_context.windows.to_json()
+    context = canonical_context
 
     if mode == "pick_place":
         expected_events = ActiveGripperLoop("right", 2, 5, 8, 12, 15)
@@ -174,6 +200,38 @@ def test_loader_preserves_versioned_events_windows_mode_and_kind(
     assert context.annotation_mode is AnnotationMode(mode)
     assert context.timeline_kind == expected_kind
     assert context.target_hold_window == expected_hold_window
+
+
+@pytest.mark.parametrize(
+    ("format_version", "mode"),
+    VALID_CASES,
+    ids=lambda case: "-".join(case) if isinstance(case, tuple) else str(case),
+)
+def test_legacy_codec_maps_canonical_error_without_changing_message(
+    tmp_path: Path,
+    format_version: str,
+    mode: str,
+) -> None:
+    payload = _payload(format_version, mode)
+    payload["frame_count"] = True
+    path = _write_payload(tmp_path, payload)
+
+    with pytest.raises(canonical_codec.LoopContextCodecError) as canonical_error:
+        canonical_codec.load_authoritative_loop_context(
+            path,
+            expected_task=TASK,
+            expected_episode_index=EPISODE_INDEX,
+            expected_camera=CAMERA,
+        )
+    with pytest.raises(UrdfGripperDataError) as legacy_error:
+        load_authoritative_loop_context(
+            path,
+            expected_task=TASK,
+            expected_episode_index=EPISODE_INDEX,
+            expected_camera=CAMERA,
+        )
+
+    assert str(legacy_error.value) == str(canonical_error.value)
 
 
 def test_v1_rejects_target_only_timeline(tmp_path: Path) -> None:
