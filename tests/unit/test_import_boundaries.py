@@ -66,6 +66,15 @@ def test_sam_stage_does_not_load_artifact_or_gripper_modules() -> None:
     )
 
 
+def test_gripper_composition_does_not_load_opencv() -> None:
+    _run_import_probe(
+        "import sys\n"
+        "import robotwin_annotation_v2.pipeline.gripper.sam.composition\n"
+        "assert 'robotwin_annotation_v2.pipeline.gripper_stage' not in sys.modules\n"
+        "assert 'cv2' not in sys.modules\n"
+    )
+
+
 def test_urdf_batch_import_does_not_load_optional_backends() -> None:
     _run_import_probe(
         "import sys\n"

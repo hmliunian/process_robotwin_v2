@@ -26,9 +26,14 @@ from ..domain import AnnotationMode, ObjectRole
 from ..models.loop_context import EpisodeRef, LoopContext
 from ..models.mask_qc import MaskQCStatus
 from ..models.timeline import FrameWindow, LoopEvents
+from .gripper.sam import composition as _composition
 from .gripper.sam import geometry as _geometry
 from .mask_qc import MaskQCError, parse_mask_qc_response
 
+GripperTrackResult = _composition.GripperTrackResult
+ObjectExclusionResult = _composition.ObjectExclusionResult
+compose_gripper_track = _composition.compose_gripper_track
+exclude_known_objects = _composition.exclude_known_objects
 CAM_HIGH_CALIBRATION = _geometry.CAM_HIGH_CALIBRATION
 DEFAULT_GRIPPER_ROI_GEOMETRY = _geometry.DEFAULT_GRIPPER_ROI_GEOMETRY
 CameraCalibration = _geometry.CameraCalibration
@@ -39,28 +44,6 @@ _project_world_points = _geometry._project_world_points
 normalized_roi_box = _geometry.normalized_roi_box
 project_gripper_roi = _geometry.project_gripper_roi
 rotation_from_rpy = _geometry.rotation_from_rpy
-
-
-@dataclass(frozen=True)
-class ObjectExclusionResult:
-    """Exact partition of a candidate mask after known-object exclusion."""
-
-    gripper_mask: np.ndarray
-    removed_mask: np.ndarray
-    target_removed: np.ndarray
-    receiver_removed: np.ndarray
-
-
-@dataclass(frozen=True)
-class GripperTrackResult:
-    """Exact visible-track partition after pose cropping and object exclusion."""
-
-    roi_mask: np.ndarray
-    candidate_mask: np.ndarray
-    gripper_mask: np.ndarray
-    removed_mask: np.ndarray
-    target_removed: np.ndarray
-    receiver_removed: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -157,76 +140,6 @@ class GripperStageResult:
 
 class GripperStageError(RuntimeError):
     """The gripper stage cannot execute its pose/seed/propagation contract."""
-
-
-def exclude_known_objects(
-    candidate_mask: np.ndarray,
-    target_mask: np.ndarray,
-    receiver_mask: np.ndarray,
-) -> ObjectExclusionResult:
-    """Subtract visible target/receiver masks without spatial post-processing.
-
-    Target has priority only when attributing a pixel covered by both known
-    object masks. The final gripper mask is independent of that attribution.
-    """
-
-    candidate = np.asarray(candidate_mask, dtype=bool)
-    target = np.asarray(target_mask, dtype=bool)
-    receiver = np.asarray(receiver_mask, dtype=bool)
-    if candidate.ndim < 2:
-        raise ValueError("candidate mask must have at least two dimensions")
-    if target.shape != candidate.shape or receiver.shape != candidate.shape:
-        raise ValueError(
-            "candidate, target, and receiver masks must have identical shapes"
-        )
-
-    target_removed = candidate & target
-    receiver_removed = candidate & receiver & ~target
-    removed = target_removed | receiver_removed
-    return ObjectExclusionResult(
-        gripper_mask=candidate & ~removed,
-        removed_mask=removed,
-        target_removed=target_removed,
-        receiver_removed=receiver_removed,
-    )
-
-
-def compose_gripper_track(
-    native_track: np.ndarray,
-    roi_track: np.ndarray,
-    target_track: np.ndarray,
-    receiver_track: np.ndarray,
-    *,
-    active_window: tuple[int, int],
-) -> GripperTrackResult:
-    """Crop one propagated gripper track and subtract visible known objects."""
-
-    native = np.asarray(native_track, dtype=bool)
-    roi = np.asarray(roi_track, dtype=bool)
-    target = np.asarray(target_track, dtype=bool)
-    receiver = np.asarray(receiver_track, dtype=bool)
-    if native.ndim != 3:
-        raise ValueError("gripper tracks must have [T,H,W] shape")
-    if any(value.shape != native.shape for value in (roi, target, receiver)):
-        raise ValueError("native, ROI, target, and receiver tracks must match")
-
-    start, end = active_window
-    if not 0 <= start <= end < native.shape[0]:
-        raise ValueError("active_window must be inclusive and inside the track")
-    active = np.zeros(native.shape[0], dtype=bool)
-    active[start : end + 1] = True
-    active_pixels = active[:, None, None]
-    visible_roi = roi & active_pixels
-    candidate = native & visible_roi
-    excluded = exclude_known_objects(candidate, target, receiver)
-    return GripperTrackResult(
-        roi_mask=visible_roi,
-        candidate_mask=candidate,
-        gripper_mask=excluded.gripper_mask,
-        removed_mask=excluded.removed_mask,
-        target_removed=excluded.target_removed,
-        receiver_removed=excluded.receiver_removed,
-    )
 
 
 CYAN = np.asarray([15, 230, 185], dtype=np.uint8)

@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import numpy as np
-
 import pytest
 
+import robotwin_annotation_v2.pipeline as public_pipeline
 from robotwin_annotation_v2.pipeline import (
     CameraCalibration,
     GripperRoiGeometry,
-    compose_gripper_track,
-    exclude_known_objects,
     project_gripper_roi,
     rotation_from_rpy,
 )
+from robotwin_annotation_v2.pipeline import gripper_stage as legacy
+from robotwin_annotation_v2.pipeline.gripper.sam import composition
+
+compose_gripper_track = composition.compose_gripper_track
+exclude_known_objects = composition.exclude_known_objects
 
 
 def test_rotation_from_rpy_is_rz_ry_rx() -> None:
@@ -152,3 +155,19 @@ def test_compose_gripper_track_rejects_invalid_inputs() -> None:
             track,
             active_window=(0, 3),
         )
+
+
+@pytest.mark.parametrize(
+    "name",
+    (
+        "GripperTrackResult",
+        "ObjectExclusionResult",
+        "compose_gripper_track",
+        "exclude_known_objects",
+    ),
+)
+def test_legacy_composition_exports_preserve_canonical_identity(name: str) -> None:
+    canonical = getattr(composition, name)
+
+    assert getattr(legacy, name) is canonical
+    assert getattr(public_pipeline, name) is canonical
