@@ -11,8 +11,8 @@ import pandas as pd
 import pytest
 
 import scripts.process_dataset as legacy_process_cli
-import scripts.render_urdf_gripper_masks as urdf_module
 from robotwin_annotation_v2.application import dataset_runtime as process_module
+from robotwin_annotation_v2.application import urdf_batch as urdf_module
 from robotwin_annotation_v2.application.dataset_runtime import (
     select_urdf_source_episodes,
 )
@@ -519,6 +519,33 @@ def test_process_dataset_target_receiver_only_skips_gripper_and_uses_sam_resume(
     assert summary["stage_mode"] == "object_source_only"
 
 
+def test_process_dataset_rejects_deprecated_alias_conflict_before_runtime_load(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_runtime_load() -> Any:
+        pytest.fail("deprecated alias validation must precede model loading")
+
+    monkeypatch.setattr(process_module, "_load_sam_runtime", unexpected_runtime_load)
+    config = process_module.load_config(
+        Path("configs/pilot_move_pillbottle_pad.yaml")
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="object_source_only and deprecated target_receiver_only",
+    ):
+        process_module.process_dataset(
+            config,
+            dataset_root=tmp_path / "unused",
+            task="task",
+            camera="cam_high",
+            output_root=tmp_path / "output",
+            object_source_only=False,
+            target_receiver_only=True,
+        )
+
+
 def test_target_only_rejects_sam_gripper_before_loading_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -606,10 +633,10 @@ def test_target_only_review_manifest_lists_only_applicable_roles(
         select_best_masks=lambda *_args, **_kwargs: {
             0: SimpleNamespace(path=masks_path, run_id="target-only")
         },
-        _load_masks=lambda _path: artifact,
-        _output_video_name=lambda **_kwargs: "episode_000000.mp4",
+        load_masks=lambda _path: artifact,
+        output_video_name=lambda **_kwargs: "episode_000000.mp4",
         render_video=render_video,
-        _sha256=lambda _path: "sha256",
+        file_sha256=lambda _path: "sha256",
         build_sheets=lambda *_args, **_kwargs: [],
     )
     monkeypatch.setitem(

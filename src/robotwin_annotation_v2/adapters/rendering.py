@@ -170,7 +170,7 @@ def _text_prompt_slug(text: str, *, max_length: int = TEXT_PROMPT_SLUG_MAX_LENGT
     return slug or "task"
 
 
-def _output_video_name(
+def output_video_name(
     *,
     episode_id: int,
     camera: str,
@@ -185,12 +185,37 @@ def _output_video_name(
     raise ValueError(f"unsupported filename mode: {filename_mode}")
 
 
-def _sha256(path: Path) -> str:
+def _output_video_name(
+    *,
+    episode_id: int,
+    camera: str,
+    task_text: str,
+    filename_mode: str,
+) -> str:
+    """Compatibility wrapper for callers migrating to :func:`output_video_name`."""
+
+    return output_video_name(
+        episode_id=episode_id,
+        camera=camera,
+        task_text=task_text,
+        filename_mode=filename_mode,
+    )
+
+
+def file_sha256(path: Path) -> str:
+    """Return the SHA-256 hex digest for one file."""
+
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _sha256(path: Path) -> str:
+    """Compatibility wrapper for callers migrating to :func:`file_sha256`."""
+
+    return file_sha256(path)
 
 
 def _small_strings(archive: Any, key: str) -> tuple[str, ...]:
@@ -333,7 +358,7 @@ def _load_masks_compat(path: Path) -> MaskArtifact:
     )
 
 
-def _load_masks(path: Path) -> MaskArtifact:
+def load_masks(path: Path) -> MaskArtifact:
     """Read canonical masks through the shared codec with legacy fallback."""
 
     try:
@@ -350,6 +375,12 @@ def _load_masks(path: Path) -> MaskArtifact:
         qc_status=bundle.qc_status,
         frame_encoding=np.asarray(bundle.frame_encoding).copy(),
     )
+
+
+def _load_masks(path: Path) -> MaskArtifact:
+    """Compatibility wrapper for callers migrating to :func:`load_masks`."""
+
+    return load_masks(path)
 
 
 def _dilate_mask(mask: NDArray, radius: int) -> NDArray:
@@ -698,7 +729,7 @@ def main() -> None:
     records: list[dict[str, Any]] = []
     for position, episode_id in enumerate(episode_ids, start=1):
         candidate = selected[episode_id]
-        artifact = _load_masks(candidate.path)
+        artifact = load_masks(candidate.path)
         ref = EpisodeRef(config.dataset.task, episode_id, config.dataset.camera)
         video_path = dataset.paths(ref).video
         task_text = dataset.task_text(episode_id)
@@ -729,7 +760,7 @@ def main() -> None:
             "run_id": candidate.run_id,
             "source_video": str(video_path),
             "source_masks": str(candidate.path),
-            "mask_sha256": _sha256(candidate.path),
+            "mask_sha256": file_sha256(candidate.path),
             "mask_format": artifact.format_version,
             "annotation_status": dict(
                 zip(artifact.instance_names, artifact.annotation_status, strict=True)
@@ -739,7 +770,7 @@ def main() -> None:
             ),
             "nonempty_frames": nonempty_frames,
             "output_video": output_path.name,
-            "output_sha256": _sha256(output_path),
+            "output_sha256": file_sha256(output_path),
             "output_bytes": output_path.stat().st_size,
             **video,
         }

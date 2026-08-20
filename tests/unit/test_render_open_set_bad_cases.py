@@ -103,7 +103,7 @@ def test_render_cases_uses_only_explicit_cross_task_sources(
         output_path.write_bytes(f"rendered:{video_path}".encode())
         return {"frame_count": 11, "frame_rate": "50/1"}
 
-    monkeypatch.setattr(render_bad_cases.renderer, "_load_masks", fake_load)
+    monkeypatch.setattr(render_bad_cases.renderer, "load_masks", fake_load)
     monkeypatch.setattr(render_bad_cases.renderer, "render_video", fake_render)
 
     output_manifest = render_bad_cases.render_cases(input_manifest, tmp_path / "output")

@@ -5,6 +5,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from robotwin_annotation_v2.adapters import (
+    CanonicalMaskPublisher as ExportedCanonicalMaskPublisher,
+)
 from robotwin_annotation_v2.adapters.canonical_masks import (
     CANONICAL_INSTANCE_NAMES,
     CANONICAL_ROLES,
@@ -13,7 +16,14 @@ from robotwin_annotation_v2.adapters.canonical_masks import (
     read_canonical_masks,
     write_canonical_masks,
 )
+from robotwin_annotation_v2.adapters.canonical_publication import (
+    CanonicalMaskPublisher,
+)
 from robotwin_annotation_v2.mask_schema import MASK_FORMAT_VERSION
+
+
+def test_adapter_export_has_one_canonical_publisher_owner() -> None:
+    assert ExportedCanonicalMaskPublisher is CanonicalMaskPublisher
 
 
 def _payload(*, version: str = MASK_FORMAT_VERSION) -> dict[str, np.ndarray]:
@@ -108,7 +118,7 @@ def test_rejects_invalid_v3_encoding(tmp_path: Path) -> None:
         read_canonical_masks(_write(tmp_path / "invalid.npz", payload))
 
 
-def test_v3_builder_and_writer_preserve_exact_payload(tmp_path: Path) -> None:
+def test_v3_builder_and_public_publisher_preserve_exact_payload(tmp_path: Path) -> None:
     expected = _payload()
     destination = tmp_path / "nested" / "masks.npz"
 
@@ -120,7 +130,7 @@ def test_v3_builder_and_writer_preserve_exact_payload(tmp_path: Path) -> None:
         qc_status=expected["qc_status"],
         frame_encoding=expected["frame_encoding"],
     )
-    written = write_canonical_masks(destination, bundle)
+    written = CanonicalMaskPublisher().publish(destination, bundle)
 
     assert written == destination
     with np.load(written, allow_pickle=False) as archive:

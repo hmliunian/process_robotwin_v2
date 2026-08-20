@@ -10,9 +10,9 @@ from typing import Any
 import numpy as np
 import pytest
 
-import scripts.render_urdf_gripper_masks as render_module
-from robotwin_annotation_v2.urdf_gripper_data import ActiveGripperLoop
-from scripts.render_urdf_gripper_masks import (
+import scripts.render_urdf_gripper_masks as legacy_render_cli
+from robotwin_annotation_v2.application import urdf_batch as render_module
+from robotwin_annotation_v2.application.urdf_batch import (
     TARGET_HOLD_COLOR,
     IncrementalUrdfEpisodeWorker,
     RunConfig,
@@ -27,6 +27,14 @@ from scripts.render_urdf_gripper_masks import (
     run_experiment,
     save_episode_artifacts,
 )
+from robotwin_annotation_v2.urdf_gripper_data import ActiveGripperLoop
+from robotwin_annotation_v2.urdf_gripper_publisher import (
+    publisher_implementation_identity,
+)
+
+
+def test_launcher_delegates_to_application_main() -> None:
+    assert legacy_render_cli.main is render_module.main
 
 
 def _write_masks(path: Path, *, frame_count: int = 3) -> np.ndarray:
@@ -584,9 +592,10 @@ def test_dry_run_preflights_without_creating_output_or_renderer(
         item["path"]
         for item in result["run_contract"]["implementation"]["files"]
     }
-    assert "src/robotwin_annotation_v2/urdf_gripper_publisher.py" in (
-        implementation_paths
-    )
+    publisher_paths = {
+        item["path"] for item in publisher_implementation_identity()["files"]
+    }
+    assert publisher_paths <= implementation_paths
     assert result["run_contract"]["minimum_eligible_nonempty_fraction"] == 0.90
     assert not output_root.exists()
 

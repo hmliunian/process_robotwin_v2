@@ -9,10 +9,8 @@ import numpy as np
 from PIL import Image
 
 from ..adapters.artifact_store import ArtifactStore
-from ..adapters.canonical_masks import (
-    build_canonical_mask_bundle,
-    write_canonical_masks,
-)
+from ..adapters.canonical_masks import build_canonical_mask_bundle
+from ..adapters.canonical_publication import CanonicalMaskPublisher
 from ..mask_schema import (
     FRAME_ENCODING_LEGEND,
     MASK_FORMAT_VERSION,
@@ -32,6 +30,9 @@ from ..pipeline.sam_stage import RoleMaskData, SamStageError, SamStageResult
 
 if TYPE_CHECKING:
     from ..pipeline.gripper.sam.annotator import GripperStageResult
+
+
+_CANONICAL_MASK_PUBLISHER = CanonicalMaskPublisher()
 
 
 def _window_coverage(
@@ -64,6 +65,7 @@ def save_sam_artifacts(
     *,
     seed_images: Mapping[int, Image.Image],
     gripper_result: GripperStageResult | None = None,
+    canonical_mask_publisher: CanonicalMaskPublisher | None = None,
 ) -> MaskRun:
     """Persist Stage-3 diagnostics, compatible masks, and provenance."""
 
@@ -283,7 +285,8 @@ def save_sam_artifacts(
         qc_status=qc_status,
         frame_encoding=frame_encoding,
     )
-    masks_path = write_canonical_masks(masks_path, canonical_bundle)
+    publisher = canonical_mask_publisher or _CANONICAL_MASK_PUBLISHER
+    masks_path = publisher.publish(masks_path, canonical_bundle)
     provenance_channels: dict[str, Any] = {
         "gripper_left": {"status": "not_annotated"},
         "gripper_right": {"status": "not_annotated"},

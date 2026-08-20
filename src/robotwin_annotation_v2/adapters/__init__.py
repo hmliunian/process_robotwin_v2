@@ -22,6 +22,7 @@ _EXPORT_GROUPS = {
         "read_canonical_masks",
         "write_canonical_masks",
     ),
+    ".canonical_publication": ("CanonicalMaskPublisher",),
     ".qwen_client": (
         "OpenAICompatibleQwenClient",
         "QwenCompletion",
@@ -42,25 +43,7 @@ _EXPORTS = {
     for name in names
 }
 
-__all__ = [
-    "CANONICAL_INSTANCE_NAMES",
-    "CANONICAL_ROLES",
-    "ArtifactStore",
-    "CanonicalMaskBundle",
-    "CanonicalMaskError",
-    "DatasetError",
-    "EpisodePaths",
-    "EpisodeState",
-    "OpenAICompatibleQwenClient",
-    "QwenCompletion",
-    "QwenServiceError",
-    "RoboTwinDataset",
-    "Sam3Adapter",
-    "Sam3Error",
-    "image_data_url",
-    "read_canonical_masks",
-    "sam3_video_resource",
-]
+__all__ = list(_EXPORTS)
 
 
 def __getattr__(name: str) -> Any:

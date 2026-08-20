@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -11,6 +12,9 @@ from PIL import Image
 
 from robotwin_annotation_v2.adapters import ArtifactStore
 from robotwin_annotation_v2.adapters.canonical_masks import read_canonical_masks
+from robotwin_annotation_v2.adapters.canonical_publication import (
+    CanonicalMaskPublisher,
+)
 from robotwin_annotation_v2.config import MaskConfig
 from robotwin_annotation_v2.domain import AnnotationMode
 from robotwin_annotation_v2.mask_schema import FrameEncoding, target_hold_window
@@ -673,6 +677,8 @@ def test_save_sam_artifacts_marks_grippers_not_annotated(tmp_path: Path) -> None
         mask_config=MaskConfig(0, 0),
     )
     seed_image = Image.fromarray(np.zeros((*FRAME_SHAPE, 3), dtype=np.uint8))
+    publisher = Mock(spec=CanonicalMaskPublisher)
+    publisher.publish.side_effect = CanonicalMaskPublisher().publish
 
     mask_run = save_sam_artifacts(
         ArtifactStore(tmp_path),
@@ -681,9 +687,14 @@ def test_save_sam_artifacts_marks_grippers_not_annotated(tmp_path: Path) -> None
         plan,
         result,
         seed_images={0: seed_image},
+        canonical_mask_publisher=publisher,
     )
 
     episode_dir = Path(mask_run.artifact_dir)
+    publisher.publish.assert_called_once()
+    published_path, published_bundle = publisher.publish.call_args.args
+    assert published_path == episode_dir / "masks.npz"
+    assert published_bundle.frame_count == context.frame_count
     with np.load(episode_dir / "masks.npz", allow_pickle=False) as archive:
         assert archive["format_version"].item() == "robotwin_visible_masks_v3"
         assert archive["frame_count"].item() == 20

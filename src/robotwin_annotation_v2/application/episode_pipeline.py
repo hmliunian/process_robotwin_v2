@@ -25,6 +25,7 @@ from robotwin_annotation_v2.adapters.sam3_adapter import (
     Sam3Error,
     sam3_video_resource,
 )
+from robotwin_annotation_v2.application.mask_qc_artifacts import save_mask_qc_artifacts
 from robotwin_annotation_v2.application.sam_artifacts import save_sam_artifacts
 from robotwin_annotation_v2.config import PipelineConfig, load_config
 from robotwin_annotation_v2.domain import AnnotationMode, ObjectRole, annotation_spec
@@ -45,7 +46,6 @@ from robotwin_annotation_v2.pipeline.gripper.sam.candidates import (
     GripperSeedQualityGateConfig,
 )
 from robotwin_annotation_v2.pipeline.mask_qc import run_mask_qc_stage
-from robotwin_annotation_v2.pipeline.object_mask.artifacts import save_mask_qc_artifacts
 from robotwin_annotation_v2.pipeline.object_mask.qc import MaskQCError
 from robotwin_annotation_v2.pipeline.object_mask.temporal_qc import (
     compose_visible_mask,

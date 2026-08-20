@@ -1711,6 +1711,8 @@ def _implementation_identity() -> dict[str, Any]:
         PROJECT_ROOT / "src/robotwin_annotation_v2/urdf_gripper_data.py",
         PROJECT_ROOT / "src/robotwin_annotation_v2/urdf_gripper_renderer.py",
         PROJECT_ROOT / "src/robotwin_annotation_v2/urdf_gripper_publisher.py",
+        PROJECT_ROOT / "src/robotwin_annotation_v2/adapters/canonical_masks.py",
+        PROJECT_ROOT / "src/robotwin_annotation_v2/adapters/canonical_publication.py",
         PROJECT_ROOT / "src/robotwin_annotation_v2/mask_schema.py",
     )
     return {

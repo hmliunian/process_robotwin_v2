@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-import tempfile
 import zipfile
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -249,29 +247,14 @@ def read_canonical_masks(path: Path) -> CanonicalMaskBundle:
         raise CanonicalMaskError(f"invalid canonical masks {source}: {exc}") from exc
 
 
+# Compatibility shim: remove after external callers migrate to
+# CanonicalMaskPublisher and the function seam has remained for one release.
 def write_canonical_masks(path: Path, bundle: CanonicalMaskBundle) -> Path:
-    """Atomically write one validated v3 canonical mask archive."""
+    """Compatibility entry point for the canonical publication owner."""
 
-    if bundle.format_version != MASK_FORMAT_VERSION:
-        raise CanonicalMaskError(
-            f"canonical writer only supports {MASK_FORMAT_VERSION}: {bundle.format_version}"
-        )
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{target.name}.",
-        suffix=".npz",
-        dir=target.parent,
-    )
-    os.close(descriptor)
-    temporary = Path(temporary_name)
-    try:
-        np.savez_compressed(temporary, **bundle.to_payload())
-        os.replace(temporary, target)
-    except BaseException:
-        temporary.unlink(missing_ok=True)
-        raise
-    return target
+    from .canonical_publication import CanonicalMaskPublisher
+
+    return CanonicalMaskPublisher().publish(path, bundle)
 
 
 __all__ = [

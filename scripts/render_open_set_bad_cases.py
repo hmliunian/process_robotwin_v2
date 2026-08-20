@@ -220,7 +220,7 @@ def render_cases(
     records: list[dict[str, Any]] = []
     for case in cases:
         run_manifest = _run_manifest(case)
-        artifact = renderer._load_masks(case.masks_path)
+        artifact = renderer.load_masks(case.masks_path)
         relative_video = (
             Path(case.group) / f"{case.task}__episode_{case.episode_id:06d}" / "mask_overlay.mp4"
         )
@@ -248,18 +248,18 @@ def render_cases(
                 "source_run": case.source_run,
                 "source_episode_dir": str(case.episode_dir),
                 "source_run_manifest": str(case.run_manifest_path),
-                "source_run_manifest_sha256": renderer._sha256(case.run_manifest_path),
+                "source_run_manifest_sha256": renderer.file_sha256(case.run_manifest_path),
                 "source_masks": str(case.masks_path),
-                "source_masks_sha256": renderer._sha256(case.masks_path),
+                "source_masks_sha256": renderer.file_sha256(case.masks_path),
                 "source_video": str(case.video_path),
-                "source_video_sha256": renderer._sha256(case.video_path),
+                "source_video_sha256": renderer.file_sha256(case.video_path),
                 "annotation_status": dict(
                     zip(artifact.instance_names, artifact.annotation_status, strict=True)
                 ),
                 "qc_status": dict(zip(artifact.instance_names, artifact.qc_status, strict=True)),
                 "role_results": run_manifest.get("roles"),
                 "output_video": str(relative_video),
-                "output_video_sha256": renderer._sha256(output_video),
+                "output_video_sha256": renderer.file_sha256(output_video),
                 "output_bytes": output_video.stat().st_size,
                 **video_metadata,
             }
@@ -271,7 +271,7 @@ def render_cases(
         "format_version": OUTPUT_FORMAT,
         "created_at": datetime.now(UTC).isoformat(),
         "input_manifest": str(resolved_input),
-        "input_manifest_sha256": renderer._sha256(resolved_input),
+        "input_manifest_sha256": renderer.file_sha256(resolved_input),
         "selection": "explicit episode_dir/video_path only; no run discovery or ranking",
         "episode_count": len(records),
         "group_counts": dict(sorted(group_counts.items())),

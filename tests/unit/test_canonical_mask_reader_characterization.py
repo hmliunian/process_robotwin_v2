@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -113,19 +112,6 @@ def test_render_reader_uses_shared_codec_for_canonical_archive(
     rendering._load_masks(path)
 
     assert calls == [path]
-
-
-def test_script_urdf_reader_alias_matches_application_reader(tmp_path: Path) -> None:
-    script_module = importlib.import_module("scripts.render_urdf_gripper_masks")
-    assert script_module.load_four_channel_masks is urdf_batch.load_four_channel_masks
-
-    path = _write_archive(tmp_path / "source.npz", _archive_payload())
-    script_result = script_module.load_four_channel_masks(path, frame_count=FRAME_COUNT)
-    package_result = urdf_batch.load_four_channel_masks(path, frame_count=FRAME_COUNT)
-
-    np.testing.assert_array_equal(script_result.masks, package_result.masks)
-    np.testing.assert_array_equal(script_result.frame_encoding, package_result.frame_encoding)
-    assert script_result.payload.keys() == package_result.payload.keys()
 
 
 def test_urdf_reader_uses_shared_codec_for_canonical_archive(
