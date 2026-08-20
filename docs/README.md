@@ -1,14 +1,15 @@
 # 文档总览
 
-> 更新时间：2026-08-18。本文是 `docs/` 的入口；当前实现契约以
+> 更新时间：2026-08-20。本文是 `docs/` 的入口；当前实现契约以
 > [architecture.md](architecture.md) 为准，实验数字以
 > [experiments.md](experiments.md) 为准。
 
-本项目为 RoboTwin 单次 pick-and-place episode 生成 visible-only mask：
+本项目为 RoboTwin 单 active-arm、单 loop episode 生成 visible-only mask，正式支持
+pick-place 与 target-only 两种 annotation mode：
 
 ```text
-state loop
-  -> Qwen target/receiver semantic plan
+mode-specific state loop
+  -> Qwen mode-required object semantic plan
   -> SAM3 seed candidate + Qwen identity QC
   -> SAM3 native video propagation
   -> gripper backend (SAM pose-ROI 或 URDF geometry/depth)
@@ -21,45 +22,49 @@ state loop
 target_0, receiver_0, gripper_left, gripper_right
 ```
 
-当前正式范围是 `cam_high`、单 active arm、一次闭合—张开操作循环。mask 只描述 RGB
-中实际可见的像素；遮挡区域不会做 amodal 补全。
+target-only 仍保留固定四通道，但 `receiver_0` 全零并标记 `not_applicable`。当前正式范围是
+`cam_high`、单 active arm、单次 mode-specific loop：pick-place 为闭合—搬运—张开，
+target-only 为接近/移除—闭合—持有。mask 只描述 RGB 中实际可见的像素；遮挡区域不会做
+amodal 补全。
 
 ## 当前能力
 
 | 模式 | target/receiver | gripper | 状态 |
 | --- | --- | --- | --- |
-| 默认 `sam` | 当前 run 内由 Qwen + SAM3 生成 | pose ROI + SAM3 + Qwen QC | 已实施；默认入口 |
-| `urdf` live | 先生成并冻结内部 Qwen/SAM source run | joints + calibration + depth + URDF | 入口已实施；fresh-only |
+| 默认 `urdf` live | 先生成并冻结内部 Qwen/SAM source run | joints + calibration + depth + URDF | 已实施；默认入口、fresh-only |
 | `urdf` frozen-source | 逐像素复用已有 QC-passed source run | joints + calibration + depth + URDF | 已实施；coverage20 20/20 验收 |
+| 显式 `sam` | 当前 run 内由 Qwen + SAM3 生成 | pose ROI + SAM3 + Qwen QC | 仅 pick-place；需传 `--gripper-backend sam` |
 | `active_wrist` | close/open 阶段分别选 seed | 不生成 | 仅完成可行性实验，尚未接入 pipeline |
 
-`urdf` 只替换 gripper producer；target/receiver 始终来自 Qwen/SAM。两种 backend
-发布相同的四通道 `masks.npz`、manifest/provenance schema 和 overlay/review 结构。
+`urdf` 只替换 gripper producer；annotation mode 要求的 object channel 始终来自 Qwen/SAM。
+两种 backend 发布相同的四通道 `masks.npz`、manifest/provenance schema 和 overlay/review
+结构。完整 dataset 的 target-only 模式只支持 URDF gripper；显式 SAM gripper 会 fail closed。
 
 ## 推荐入口
 
-默认 SAM gripper：
+默认 URDF gripper（仍使用 Qwen/SAM 生成 mode-required object）：
 
 ```bash
 # Qwen endpoint 不可用时会自动选卡、启动，并在 process 退出后释放
 just process DATASET_ROOT [OUTPUT_ROOT]
 ```
 
-从原始数据一体化生成 URDF gripper：
+显式使用 SAM gripper：
 
 ```bash
-# 需要 Qwen 服务，因为仍要生成 target/receiver
-just process DATASET_ROOT [OUTPUT_ROOT] --gripper-backend urdf
+just process DATASET_ROOT [OUTPUT_ROOT] --gripper-backend sam
 ```
 
-该模式默认使用仓库内置的
+默认 URDF 模式使用仓库内置的
 `configs/assets/aloha-agilex/arx5_description_isaac_gripper.urdf`，先将对象结果冻结到：
 
 ```text
-OUTPUT_ROOT/_sources/<run-id>-target-receiver/
+OUTPUT_ROOT/_sources/<run-id>-object-source/
 ```
 
-随后发布最终 run。内部 source 是最终 lineage 的组成部分，不能删除、移动或修改。
+有独立 EGL GPU 时，完成的 source episode 会通过有界队列交给 URDF worker 并行消费；否则先
+完成整个 source run、释放 SAM/CUDA，再串行运行 URDF。两条路径都会发布最终 run。内部 source
+是最终 lineage 的组成部分，不能删除、移动或修改。
 
 复用已有 frozen source，可跳过 Qwen/SAM：
 
@@ -98,7 +103,7 @@ live URDF 模式不支持 `--dry-run` 或 `--resume`；二者要求显式
     run_manifest.json
     frame_provenance.json
     target_0/...
-    receiver_0/...
+    receiver_0/...                 # pick-place only
     gripper_<active-arm>/...
   rendered_videos/
     manifest.json
@@ -127,6 +132,7 @@ canonical episode 目录和 `process_summary.json`。
 | [experiments.md](experiments.md) | Qwen/SAM、tracking、SAM gripper、URDF 和 active-wrist 实验结论 | 查参数依据和证据边界 |
 | [datasets.md](datasets.md) | RoboTwin pick-and-place 兼容任务、深度完整性和迁移顺序 | 选择新数据集 |
 | [open_set_mask_fallback_s1_s3.md](open_set_mask_fallback_s1_s3.md) | 52 个 mask 失败的 S1–S3 改动、复现与人工 QC；明确排除 S4 | 开放集 mask 救回与验收 |
+| [refactoring_architecture.md](refactoring_architecture.md) / [refactoring_ai_guide.md](refactoring_ai_guide.md) | 已完成精简重构的架构结果、实施记录与兼容层清单 | 理解当前模块 owner 或继续清理兼容层 |
 
 推荐阅读顺序：本页 → `architecture.md` 的“运行入口”和“公共产物契约”；只有需要理解
 参数来源、历史失败或实验数字时再看 `experiments.md`。
@@ -150,6 +156,7 @@ canonical episode 目录和 `process_summary.json`。
 | v3 | SAM gripper stage 接入正式 pipeline；统一四通道 NPZ；render 自动生成 review sheets；新增 `just process` |
 | v3.1 | 增加 URDF derived-run backend、canonical publisher、source lineage、immutable resume 和共享 renderer |
 | 当前增量 | URDF 可在未提供 source run 时先生成内部 target/receiver source；提供 bundled render-only URDF |
+| 结构重构 | 统一 timeline、object resolver 和 canonical codec/publisher owner；将 dataset/episode/workflow 编排迁入 package |
 
 旧架构设计、实施进度和逐轮实验流水账已经合并到上述三份文档。需要逐字查看历史内容时使用
 Git history；不要再把旧版本设计中的计划项当作当前接口。

@@ -1,15 +1,20 @@
 # 当前架构与运行契约
 
-> 本文合并原 v2、v3、v3.1 架构设计和实施进度，只描述当前工作树中的生效行为。
+> 本文合并原 v2、v3、v3.1 架构设计和实施进度，只描述当前实现中的生效行为。
 > 历史实验和数字见 [experiments.md](experiments.md)。
+> 2026-08-20 完成的结构重构结果与兼容层清单见
+> [refactoring_architecture.md](refactoring_architecture.md) 和
+> [refactoring_ai_guide.md](refactoring_ai_guide.md#13-实施结果与兼容层清单)。
 
 ## 1. 范围与总流程
 
-输入是 RoboTwin 格式的单次 pick-and-place episode。当前 pipeline 假设：
+输入是 RoboTwin 格式的单次 episode。当前 pipeline 假设：
 
 - 一个 active arm；
-- 一次完整的 approach → close → transport → open 循环；
-- 一个 `target_0` 和一个 `receiver_0`；
+- 一个由 annotation mode 声明的 loop：pick-place 为
+  approach → close → transport → open，target-only 为 remove/approach → close → hold；
+- pick-place 需要一个 `target_0` 和一个 `receiver_0`；target-only 只需要 `target_0`，
+  `receiver_0` 保留为全零的 canonical `not_applicable` channel；
 - 固定 `cam_high` 视角；
 - 输出 visible-only mask，不补全遮挡区域。
 
@@ -19,18 +24,18 @@
 RoboTwin episode
   │
   ├─ Stage 1: State Loop
-  │    state -> active arm, five events, role windows, semantic frames
+  │    state -> active arm, mode-specific events, role windows, semantic frames
   │
   ├─ Stage 2: Qwen Semantic Plan
-  │    sparse RGB + action context -> target/receiver identity, seed, query bank
+  │    sparse RGB + action context -> mode-required object identity, seed, query bank
   │
   ├─ Stage 3: Object SAM
-  │    query candidates -> candidate masks -> Qwen identity QC
+  │    required-role queries -> candidate masks -> Qwen identity QC
   │    -> native propagation -> role-window composition -> temporal QC
   │
   ├─ Gripper backend
-  │    ├─ sam: pose ROI + text/box seed + Qwen QC + native propagation
-  │    └─ urdf: joints + calibration + scene depth + visual geometry
+  │    ├─ urdf（默认）: joints + calibration + scene depth + visual geometry
+  │    └─ sam（显式）: pose ROI + text/box seed + Qwen QC + native propagation
   │
   └─ Canonical publication
        four-channel masks.npz + manifests + overlay + review sheets
@@ -43,13 +48,13 @@ LoopContext -> SemanticPlan -> MaskQCResult -> MaskRun
 ```
 
 Qwen HTTP、SAM3 session、URDF renderer 和文件写入分别封装在 adapter/stage/publisher 中；
-顶层脚本只负责发现数据、调度和汇总。
+顶层脚本只启动 package API，application 层负责发现、调度和汇总。
 
 ## 2. 输入与数据发现
 
 ### 2.1 基础目录合同
 
-默认 SAM backend 发现：
+SAM backend（以及 live URDF 的 object-source 阶段）发现：
 
 ```text
 <dataset-root>/
@@ -58,7 +63,7 @@ Qwen HTTP、SAM3 session、URDF renderer 和文件写入分别封装在 adapter/
   sidecars/episode_<id>.hdf5
 ```
 
-URDF backend 还要求同一 camera 的 depth：
+默认 URDF backend 还要求同一 camera 的 depth：
 
 ```text
 sidecars/videos/chunk-*/observation.depths.<camera>/episode_<id>.mkv
@@ -92,13 +97,19 @@ Stage 1 只读取 metadata、state 和帧数，不判断视觉实例，也不调
 
 ### 3.1 事件和窗口
 
-事件顺序必须满足：
+pick-place 事件顺序必须满足：
 
 ```text
 t_move_start <= t_close_start < t_close_done < t_open_start < t_open_done
 ```
 
-语义阶段：
+target-only 使用独立三边界合同：
+
+```text
+t_remove_start <= t_close_start < t_close_end < frame_count
+```
+
+下表语义阶段适用于 pick-place：
 
 | 阶段 | 时间范围 | 含义 |
 | --- | --- | --- |
@@ -107,7 +118,7 @@ t_move_start <= t_close_start < t_close_done < t_open_start < t_open_done
 | hold/transport | `(close_done, open_start)` | 移动 target |
 | open/release | `[open_start, open_done]` | 释放 target |
 
-当前输出窗口：
+pick-place 输出窗口：
 
 ```text
 loop      = [move_start, open_done]
@@ -137,25 +148,31 @@ receiver 可以用动作前帧做 seed，但只在 receiver 输出窗口发布 m
 
 ### 3.3 输出与失败
 
-`loop.json` 使用 `robotwin_loop_context_v1`，至少保存 episode/camera、frame count、active
-arm、五个事件、三个窗口、语义帧和 state/video source。state 缺失、多个/零合法 loop、事件
-顺序错误或窗口越界时保存失败原因，后续阶段不得运行。
+新写 `loop.json` 使用 `robotwin_loop_context_v3`，至少保存 episode/camera、frame count、active
+arm、事件、窗口、语义帧、annotation mode 和 state/video source。统一 codec 只读兼容 v1/v2/v3；
+兼容读取不会授权新 writer 降级。state 缺失、多个/零合法 loop、事件顺序错误或窗口越界时保存
+失败原因，后续阶段不得运行。
 
 ## 4. Stage 2：Qwen Semantic Plan
 
 ### 4.1 client/server 边界
 
-Qwen server 是独立基础设施，只加载模型并提供 OpenAI-compatible endpoint；client 负责：
+Qwen server 是独立基础设施，只加载模型并提供 OpenAI-compatible endpoint。
+`adapters/qwen_client.py` 只负责 health/completion HTTP transport 和图像编码；prompt 渲染与
+response parser 属于各 pipeline stage，artifact persistence 属于 application 层。当前有四个
+彼此独立的 Qwen 边界：
 
-- 读取 prompt 文件；
-- 填充 task、event 和 frame label；
-- 发送 sparse multimodal request；
-- 解析严格 JSON；
-- 保存 rendered prompt、raw response、模型信息和 hash。
+| 边界 | owner | 合同 |
+| --- | --- | --- |
+| semantic plan | `pipeline/qwen_stage.py` | sparse labeled RGB → mode-required role、seed、query bank |
+| object visual QC | `pipeline/mask_qc.py` | 实际 SAM contour panel → select/reject/ambiguous |
+| bbox localization fallback | `pipeline/bbox_localization.py` + `pipeline/mask_qc.py` | strict bbox prompt/parser + Qwen/SAM execution；全局进入顺序由 object resolver 控制 |
+| SAM gripper keyframe QC | `pipeline/gripper/sam/` | 只供显式 SAM gripper backend 使用；服务/合同失败时按已记录的 availability policy 处理 |
 
-target 和 receiver 在同一次请求中联合判断，避免角色交换或两者指向同一实例。pipeline
-内部仍只做 health check；`just process` 的外层 launcher 在 endpoint 不可用时自动选卡并
-启动本地 server，且只在退出时回收自己启动的进程。已有健康服务保持外部所有权。
+pick-place 的 target 和 receiver 在一次 semantic request 中联合判断，避免角色交换或指向同一
+实例；target-only request/response 只包含 target。pipeline 内部只检查 endpoint health；
+`just process` 的外层 launcher 在 endpoint 不可用时自动选卡并启动本地 server，且只在退出时
+回收自己启动的进程。已有健康服务保持外部所有权。
 
 ### 4.2 角色语义
 
@@ -190,31 +207,41 @@ target 和 receiver 在同一次请求中联合判断，避免角色交换或两
 - 每条 query 是 1–4 个小写英文词、单数完整物体名词短语；
 - 可使用可靠的颜色/形状/材质修饰，但不能只有颜色、形状或 cap/logo 等子部件；
 - 禁止位置关系、比较级、动作、OCR/品牌和 `object/thing/item` 等空泛词；
-- 非空候选必须互异；general fallback 永远最后；
+- canonical query bank 中的非空候选必须互异；完全相同的输入候选只做窄 canonicalization；
+  general fallback 永远最后；
 - `recommended_order` 由 Qwen 按预期分割可靠性排序，而不是按描述长度排序；
 - Python/YAML 不写死 `bottle`、`pad` 等任务特定文本；
 - schema 不要求 Qwen bbox。历史实验表明 bbox 可能过紧或只覆盖子部件。
 
-client 只允许对完全相同的候选做窄去重，不生成新语义。JSON、seed frame、query 格式或排序
-合同不合法时拒绝该角色，不伪造 plan。
+semantic parser 要求 exact role/field schema，但允许单层 JSON fence，并对两个已冻结的窄情况
+做 canonicalization：合并完全相同的候选；从 `recommended_order` 删除 null field、按字段稳定
+顺序补上遗漏的非空候选，再把 general fallback 移到末尾。未知 field、重复 order entry、非法
+seed/query 或其他合同错误仍拒绝该角色；parser 不生成新的对象语义。
 
-## 5. Stage 3：target/receiver SAM
+## 5. Stage 3：mode-required object SAM
 
 ### 5.1 seed candidate 和身份 QC
 
-对每个角色：
+对每个 mode-required role：
 
-1. 读取 Qwen 选择的 seed frame；
-2. 对 `recommended_order` 前 `mask.qc_max_candidates` 个 query 分别生成 SAM3 mask；
-3. 拒绝空 mask、异常面积和基本机械合同失败项；
-4. 按 IoU 删除近重复候选；
-5. 必要时给蓝色平面 receiver 加 saturated-blue planar proposal，但不能按面积自动接受；
-6. 生成只显示轮廓、不遮挡纹理的 A/B/C panel；
-7. Qwen 根据任务、动作关系和实际候选轮廓选择一个实例，或返回
-   `reject_all/ambiguous`。
+1. `no_clear_seed` 直接 rejected；target-only 不创建 receiver candidates；
+2. 先按 semantic `recommended_order` 读取最多四个 query；启用 query fallback 时，再追加配置
+   驱动、规范化并去重的 curated aliases；
+3. 先尝试 semantic plan 选择的 seed；启用 seed fallback 时，再按
+   `LoopContext.seed_candidates(role)` 的稳定顺序尝试其他合法 seed；
+4. 每个 seed 的实际 proposal 总数不超过 `mask.qc_max_candidates`；必要时加入的 saturated-blue
+   planar receiver proposal 也占该上限；
+5. 拒绝空 mask、异常面积和机械合同失败项，按 IoU 去除近重复候选，再生成不遮挡纹理的 contour
+   panel 交给 Qwen visual QC；
+6. `passed` 立即停止；`rejected/ambiguous` 才进入下一合法 seed；request、parser、prompt、候选
+   生成或 shape error 立即停止当前角色；
+7. 只有所有 text seed attempts 都是 rejected/ambiguous，才按相同 seed 顺序进入可选 bbox
+   fallback；Qwen bbox 必须通过 strict parser，原 bbox 生成的 SAM mask 仍经过同一 mechanical
+   gate 和 visual QC。
 
-object seed QC 是 fail-closed：候选全空、响应解析失败、置信度不足、身份歧义或服务错误都
-停止该角色传播。不得按像素面积自动选择、把候选做并集或静默切到宽泛 query。
+object seed QC 是 fail-closed：全部 attempts 未通过、置信度不足、身份歧义或服务/合同错误都
+停止该角色传播。curated alias、seed retry 和 bbox 是显式配置的恢复链路；不得按像素面积自动
+选择、合并候选或静默生成任务特定 query。
 
 ### 5.2 native video propagation
 
@@ -269,10 +296,14 @@ target 的严格 temporal QC 只覆盖普通编码段（截至 close 完成）�
 ### 6.1 公共语义
 
 两种 backend 都只写 active arm 的 visible gripper，inactive channel 全空且为
-`not_annotated/not_run`。active window 为 `[move_start, open_done]`。target/receiver 的
-像素归属优先于 gripper；任何 producer 都不能在发布或 render 时偷偷把对象像素并入 gripper。
+`not_annotated/not_run`。pick-place active window 为 `[move_start, open_done]`；target-only 为
+`[remove_start, T - 1]`。object channel 的像素归属优先于 gripper；任何 producer 都不能在发布
+或 render 时偷偷把对象像素并入 gripper。
 
-### 6.2 默认 SAM pose-ROI backend
+### 6.2 显式 SAM pose-ROI backend
+
+完整 dataset 入口只允许 pick-place 使用该 backend；target-only 显式请求 SAM gripper 会
+fail closed，必须改用默认 URDF 或只运行 object-source 阶段。
 
 状态提供两臂 EEF `xyz + roll/pitch/yaw` 与开合量。TCP 位于 EEF local `+x` 方向
 `0.120 m`：
@@ -320,7 +351,7 @@ fallback，并在 `forced_fallback` 中显式记录。该策略提高批量可�
 gripper stage 复用已保存的 target/receiver native tracks，不重跑对象传播。结果与对象通道
 一起原子重写同一份 canonical `masks.npz`，不存在独立 `gripper_masks.npz` 的下游合并步骤。
 
-### 6.3 URDF geometry/depth backend
+### 6.3 默认 URDF geometry/depth backend
 
 URDF backend 不运行 gripper SAM 或 gripper Qwen QC。每帧算法：
 
@@ -356,35 +387,46 @@ meshes，省略无关 robot branch/collision geometry。可用 `--urdf-path` 和
 
 ### 6.4 live source 与 frozen source
 
-live URDF：
+live URDF 总是先冻结 mode-required object source，内部 run ID 后缀固定为 `-object-source`：
 
 ```text
-Qwen/SAM target/receiver subprocess
-  -> freeze OUTPUT/_sources/<final-id>-target-receiver
-  -> release subprocess/CUDA lifetime
-  -> URDF backend
+depth-complete episode discovery
+  -> freeze OUTPUT/_sources/<final-id>-object-source
+  -> object Qwen/SAM source
+       ├─ independent EGL GPU available: per-episode completion receipt
+       │    -> bounded ready queue -> persistent URDF worker（与 source 重叠）
+       └─ no independent EGL GPU / --no-urdf-pipeline: source 完成并释放后串行 URDF
   -> canonical publisher + shared renderer
 ```
 
-内部 source 只生成 target/receiver，不运行 SAM gripper、不渲染；其 summary、loop、masks 和
-role artifacts 随后被内容寻址。live 模式 fresh-only，source 或 final run 已存在即拒绝，不能
+默认会尝试 streaming；streaming 时 EGL 必须使用与 SAM 不同的 physical GPU，显式选择同一
+GPU 会拒绝，自动选择不到独立设备则退回串行。串行路径在 EGL 启动前释放 SAM，因此可共享
+physical GPU。`--urdf-pipeline-buffer-size` 限制 source-ready episode queue，
+`--no-urdf-pipeline` 强制串行。streaming source 在推理前写 immutable run contract，并在每个
+完整 episode 后原子写 completion receipt；URDF worker 只消费 receipt 校验通过的 episode。
+
+内部 source 只生成 annotation mode 要求的对象，不运行 SAM gripper、不渲染：pick-place 生成
+target/receiver；target-only 只生成 target，receiver channel 必须全零且为 `not_applicable`，也
+不得存在 receiver role artifacts。live 模式 fresh-only，source 或 final run 已存在即拒绝，不能
 用 `--resume`/`--dry-run` 接着跑。
 
 显式 `--source-run-dir` 是 frozen-source 快速路径：不启动 Qwen/SAM，可用于 A/B、dry-run
-和 immutable resume。source 的 target/receiver 必须同时 `annotation_status=valid`、
-`qc_status=passed`，且 loop、帧数、identity 和引用 artifacts 全部通过校验。
+和 immutable resume。所有 mode-required object role 必须 `annotation_status=valid`、
+`qc_status=passed`；非 required receiver 必须是全零 `not_applicable`。loop、帧数、annotation
+mode、identity 和引用 artifacts 也必须全部通过校验。
 
 ## 7. 运行入口
 
 ### 7.1 一键入口
 
-默认 backend：
+未传 `--gripper-backend` 时，CLI 与 `AnnotationSpec` 都选择 `urdf`：
 
 ```bash
 just process DATASET_ROOT [OUTPUT_ROOT] [PROCESS_ARGS...]
 ```
 
-该入口自动复用健康 Qwen endpoint；若 endpoint 不可用，会排除 SAM 和显式 EGL GPU 后按
+默认 live URDF 仍需先用 Qwen/SAM 生成 mode-required object source，并要求发现同 camera
+depth。该入口自动复用健康 Qwen endpoint；若 endpoint 不可用，会排除 SAM 和显式 EGL GPU 后按
 空闲显存选卡，等待服务就绪，并在 process 成功、失败或中断后回收服务。分阶段入口仍可用
 `just serve-qwen` 手动维持服务。
 
@@ -405,7 +447,7 @@ just process DATASET_ROOT [OUTPUT_ROOT] [PROCESS_ARGS...]
 若第二个 positional token 以 `-` 开头，它会被当作 process 参数，输出根仍为
 `artifacts/runs`。
 
-也可以只提供带 `EXTRACT_MANIFEST.json` 的单任务目录或 collection，而不显式传 pipeline
+也可以只提供带兼容 `EXTRACT_MANIFEST.json` 的单任务目录或 collection，而不显式传 pipeline
 配置：
 
 ```bash
@@ -419,6 +461,10 @@ path 模式分别加载 `configs/pilot_move_pillbottle_pad.yaml` 和
 open-set object-mask 路径：最多 8 个候选、curated query fallback、多合法 seed fallback、
 mode-specific appearance prompt，以及所有文本尝试失败后的 Qwen bbox → SAM box fallback。
 因此 collection 中的每个 task 使用同一套 mode profile，不需要逐 task 配置这些开关。
+
+`EXTRACT_MANIFEST.json` 必须显式声明与 mode 匹配的 `profile`。缺少该字段的旧 extract 会
+fail closed；此时使用 `just process DATASET_ROOT [OUTPUT_ROOT] --config PROFILE`，不要同时传
+`--pick-place/--target-only`。
 
 live URDF：
 
@@ -448,6 +494,9 @@ URDF-only 参数：
 --urdf-depth-tolerance-mm
 --urdf-minimum-eligible-nonempty-fraction
 --urdf-fit-config-json
+--urdf-egl-device-id GPU       # physical EGL GPU；streaming 时必须与 SAM GPU 不同
+--urdf-pipeline-buffer-size N  # live streaming source-ready queue，默认 2
+--no-urdf-pipeline             # live 模式强制串行 Source -> URDF
 --allow-partial-source
 --dry-run                  # frozen source only
 --resume                   # frozen source + explicit run ID
@@ -476,7 +525,7 @@ just sam RUN_ID EPISODE_ID
 ```
 
 `run` 子命令按 `qwen -> sam -> gripper` 运行单 episode。`gripper` 前置要求同一 run 的
-target/receiver SAM 已完成且 QC passed。
+mode-required object SAM 已完成且 QC passed。
 
 配置里的 `sam3.gpus` 使用物理 GPU index 时，不要同时用 `CUDA_VISIBLE_DEVICES` 把同一设备
 重新映射为 logical 0。
@@ -518,7 +567,7 @@ import 不要求 torch/SAM/OpenCV；live 模式仍需要对象 Qwen/SAM runtime�
       native_track.npz
       temporal_qc.json
       ...
-    receiver_0/...
+    receiver_0/...                 # pick-place only；target-only 仅保留 canonical N/A channel
     gripper_<active-arm>/...
   rendered_videos/
     manifest.json
@@ -526,7 +575,7 @@ import 不要求 torch/SAM/OpenCV；live 模式仍需要对象 Qwen/SAM runtime�
     review_sheets/
       target_early.jpg
       target_late.jpg
-      receiver_early.jpg
+      receiver_early.jpg           # applicable roles only
       receiver_late.jpg
       gripper_early.jpg
       gripper_late.jpg
@@ -602,9 +651,11 @@ SAM 填 candidate/confidence/fallback；URDF 将这些视觉字段设为 `null/f
 
 ### 8.4 shared renderer
 
-renderer 只读 canonical `masks.npz`，不修复 mask。默认：内部填充 alpha 0.32、mask 外侧
-3 px 角色色轮廓、扩张到总计 5 px 的黑色 halo。处理完自动生成 target/receiver/gripper
-early/late 六张 review sheet；`--skip-review-sheets` 可关闭二次解码。
+当前 canonical 路径先用 strict codec 只读 `masks.npz`，不修复 mask；strict 读取拒绝时，仅为
+已登记的历史 archive 启用受控 read-only compatibility fallback，该 fallback 不是新 schema 或
+writer authority。默认：内部填充 alpha 0.32、mask 外侧 3 px 角色色轮廓、扩张到总计 5 px 的
+黑色 halo。处理完为 applicable 的 target/receiver/gripper 自动生成 early/late review sheet；
+pick-place 最多六张，target-only 不生成 receiver sheet。`--skip-review-sheets` 可关闭二次解码。
 
 普通 target 使用 `(36, 180, 92)`，`frame_encoding=2` 的 held target 使用黄色
 `(255, 255, 0)`；shared renderer 与 URDF standalone renderer 共用这一约定。
@@ -615,14 +666,20 @@ early/late 六张 review sheet；`--skip-review-sheets` 可关闭二次解码。
 
 ### 9.1 source lineage
 
-每个 derived episode 的 `robotwin_derivation_source_lineage_v1` 内容寻址：
+`SourceLineageValidator` 同时接受两种 derived-episode lineage；版本由 source 是否存在 immutable
+`source_run_contract.json` 决定：
 
-- source `process_summary.json`；
-- `loop.json`、`run_manifest.json`、`frame_provenance.json`、`masks.npz`；
-- manifest 实际引用的 target/receiver seed、track、QC artifacts；
-- 每个文件的 path、SHA-256 和 byte size；
-- source run/dataset/task/camera/episode/frame identity；
-- publisher implementation identity。
+- `robotwin_derivation_source_lineage_v1`：source 不含 `source_run_contract.json` 时使用，包括
+  串行 live source 和历史 frozen source；锚定 source `process_summary.json`、四个 control
+  artifacts 及 manifest 实际引用的 role artifacts；
+- `robotwin_derivation_source_lineage_v2`：source 含 immutable run contract 时使用，当前由
+  streaming source 生成；锚定 source run contract、完整 episode artifact identity 和原子
+  completion receipt。receipt 是 episode 可交给 URDF worker 的 readiness gate，不由目录存在性
+  替代。
+
+两版都记录 source run/dataset/task/camera/episode/frame identity，以及每个引用 regular file 的
+run-relative path、SHA-256 和 byte size。publisher implementation identity 由 private URDF run
+contract 和最终 canonical derivation 另行锚定，不混入 source lineage。
 
 引用路径必须位于 source run 内且为 regular file；symlink、目录逃逸、缺失或 hash/size 不符
 都 fail closed。source `loop.json` 是 URDF event authority；URDF 不从 Parquet 重新猜事件。
@@ -666,7 +723,10 @@ mask:
   temporal_qc_max_area_ratio_jump_p95: 0.4
   temporal_qc_quarantine_signal_count: 2
   qc_enabled: true
-  qc_max_candidates: 3
+  qc_max_candidates: 8
+  qc_query_fallback_enabled: true
+  qc_seed_fallback_enabled: true
+  qc_bbox_fallback_enabled: true
   qc_min_confidence: 0.70
 gripper_roi:
   prompt: {axial_back_m: 0.120, axial_front_m: 0.060}
@@ -678,23 +738,65 @@ output: {root}
 关键代码职责：
 
 ```text
-scripts/process_dataset.py                   discovery/backend dispatch/summary
-scripts/run_target_receiver.py               分阶段 Qwen/SAM/gripper CLI
-scripts/render_coverage20_videos.py           shared public renderer
-scripts/render_urdf_gripper_masks.py           private URDF batch engine
+scripts/process_dataset.py                    薄 CLI/兼容启动入口
+scripts/run_target_receiver.py                薄分阶段 CLI/兼容启动入口
+scripts/render_coverage20_videos.py            薄 canonical renderer 启动入口
+scripts/render_urdf_gripper_masks.py           薄 URDF batch 启动入口
+
+src/robotwin_annotation_v2/application/
+  dataset_pipeline.py                         typed public facade、SAM convenience API 与 backend dispatcher
+  episode_pipeline.py                         stage 实现/分阶段 CLI seam 与单 episode executors
+  sam_workflow.py                             正式 SAM dataset/per-episode 顺序、resume 与失败策略 owner
+  urdf_workflow.py                            frozen/live URDF 用例编排
+  urdf_runtime.py                             URDF runner、GPU/EGL handoff、spawn/streaming IPC owner
+  urdf_batch.py                               package-owned private URDF batch engine
+  mask_qc_artifacts.py                        object-mask QC diagnostics publication
+  dataset_runtime.py                          CLI/path-mode 参数、hook wiring 与旧调用兼容层
+  sam_artifacts.py                            SAM 结果到 canonical publication
 
 src/robotwin_annotation_v2/pipeline/
-  state_loop.py                               event/window extraction
-  qwen_stage.py                               semantic plan
-  mask_qc.py                                  object candidate identity QC
-  sam_stage.py                                object propagation/public SAM artifacts
-  gripper_stage.py                            pose-ROI SAM gripper
+  timeline_detector.py                        唯一当前 timeline detector
+  state_loop.py                               LoopContext 与 semantic frame 构造
+  qwen_stage.py                               semantic prompt/render/parser owner
+  bbox_localization.py                        strict bbox prompt/parser contract
+  mask_qc.py                                  object visual-QC 与 bbox-localization execution boundary
+  object_mask/resolver.py                     text -> legal seed -> bbox 唯一顺序 owner
+  object_mask/{planner,proposals,qc}.py        query/proposal/mechanical QC
+  sam_stage.py                                object propagation 纯 stage 结果
+  gripper/sam/                                pose-ROI SAM gripper 分层实现
 
-src/robotwin_annotation_v2/
-  urdf_gripper_data.py                        state/calibration/depth/source loading
-  urdf_gripper_renderer.py                    geometry + visibility
-  urdf_gripper_publisher.py                   lineage/canonical atomic publication
+src/robotwin_annotation_v2/adapters/
+  canonical_masks.py                          canonical v2 reader/v3 DTO/validator
+  canonical_publication.py                    SAM/URDF 共用的 v3 原子 NPZ publisher
+  loop_context_codec.py                       loop v1/v2/v3 读取与 v3 当前语义
+  rendering.py                                package-owned public renderer
+
+src/robotwin_annotation_v2/urdf_gripper_publisher.py
+                                                SourceLineageValidator 与
+                                                UrdfCanonicalEpisodePublisher owner
 ```
+
+正式 `just process` 的当前调用图是：
+
+```text
+manage_qwen_process.py -> scripts/process_dataset.py -> dataset_runtime._run_from_args
+  ├─ SAM -> DatasetPipeline.run dispatch -> process_dataset compatibility adapter
+  │          -> DatasetPipeline.run dispatch -> SamWorkflow.run
+  │          -> episode_pipeline module-level executors
+  ├─ live URDF -> DatasetPipeline dispatch -> UrdfWorkflow.run_live
+  │          -> urdf_runtime streaming/serial workers
+  │          -> process_urdf_source_run compatibility adapter -> UrdfWorkflow.run
+  └─ frozen URDF -> DatasetPipeline dispatch -> UrdfWorkflow.run
+             -> urdf_batch -> UrdfCanonicalEpisodePublisher -> shared renderer
+```
+
+`EpisodePipeline` class 仍是分阶段 CLI 使用的单 episode facade；正式 dataset run 的
+Qwen → object SAM → optional SAM gripper 顺序由 `SamWorkflow` 持有。`DatasetPipeline.run()` 只按
+typed `ProcessRequest` 选择注入的 backend runner，不重复实现 SAM/URDF 生命周期。
+
+`dataset_runtime.py`、旧私有 renderer 名称、timeline type alias 和 publisher 函数入口仍为受控
+兼容面，不是第二套事实来源；剩余调用方与删除条件记录在
+[refactoring_ai_guide.md](refactoring_ai_guide.md#132-compatibility-inventory)。
 
 ## 11. 验证与明确非目标
 
@@ -707,9 +809,24 @@ just lint
 git diff --check
 ```
 
+2026-08-20 的结构重构 CPU/static 验收记录：`just test` 为 662 passed，`just test-all` 为
+669 passed，`just lint` 通过，
+`.venv/bin/python -m mypy src` 为 0 issues，`git diff --check` 通过。该结果覆盖 unit、filesystem/
+dataset contract、fake backend、resume/tamper、import boundary 和 schema 测试；它不等于重新运行
+Qwen、SAM3、CUDA/EGL、URDF 实际数据或人工 overlay QC。
+
 涉及真实 backend 时再做：单 episode smoke → 左右臂各一条 → coverage subset → full batch →
 exact-run overlay/review。URDF 还需核对 source object channels 逐像素相同、inactive arm 全空、
 八键 NPZ、lineage 和 resume tamper tests。
+
+2026-08-20 已新增重构后真实默认 URDF 单 episode 证据：pick-place episode 7152（right arm）和
+target-only episode 0（left arm）分别通过 direct CLI 与正式 `just process`，四个 run 均
+`passed=true`。正式入口结果的严格八键四通道 NPZ、source object 逐像素一致、inactive arm
+全零、target-only receiver `not_applicable`、publisher validator、lineage/provenance、默认 URDF
+资产 identity 与 overlay/review 均通过。exact run ID 见
+[refactoring_ai_guide.md](refactoring_ai_guide.md#21-实施完成快照)。该结果只完成单 episode/左右臂
+smoke；文档中既有 coverage20 20/20 仍是重构前证据，coverage subset、full batch 与像素级人工
+签字仍须按上一段单独执行。
 
 当前不保证：
 
