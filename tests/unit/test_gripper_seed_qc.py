@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
+import robotwin_annotation_v2.pipeline as public_pipeline
 from robotwin_annotation_v2.adapters import QwenCompletion
 from robotwin_annotation_v2.domain import ObjectRole
 from robotwin_annotation_v2.models import (
@@ -30,6 +31,8 @@ from robotwin_annotation_v2.pipeline import (
     render_gripper_candidate_panel,
     run_gripper_seed_qc,
 )
+from robotwin_annotation_v2.pipeline import gripper_stage as legacy_stage
+from robotwin_annotation_v2.pipeline.gripper.sam import candidates, qc
 
 SHAPE = (12, 16)
 
@@ -71,6 +74,15 @@ def _context() -> LoopContext:
         ),
         state_source="state.parquet",
         video_source="video.mp4",
+    )
+
+
+def _write_qc_prompt(path: Path) -> None:
+    path.write_text(
+        "task={task_text}; arm={active_arm}; ids={candidate_ids}\n"
+        "{candidate_records}\n{candidate_panels}\n{context_frames}\n"
+        "events={move_start},{close_start},{close_done},{open_start},{open_done}",
+        encoding="utf-8",
     )
 
 
@@ -116,6 +128,8 @@ class FakeQwenClient:
     ) -> QwenCompletion:
         self.messages.append(messages)
         assert max_tokens == 100
+        if self.decision == "error":
+            raise RuntimeError("unavailable")
         if self.decision == "accept":
             payload = {
                 "decision": "accept",
@@ -236,17 +250,35 @@ def test_same_frame_duplicate_is_not_submitted_as_valid() -> None:
     assert marked[1].duplicate_of == "A"
 
 
+def test_component_metrics_preserve_opencv_eight_connectivity() -> None:
+    diagonal = np.eye(3, dtype=bool)
+
+    assert candidates._component_metrics(diagonal) == (1, 1.0)
+
+
+def test_legacy_candidate_exports_preserve_canonical_identity() -> None:
+    public_names = (
+        "GripperSeedCandidate",
+        "GripperSeedQualityGateConfig",
+        "apply_gripper_seed_quality_gate",
+        "build_gripper_seed_candidate",
+        "mark_same_frame_duplicates",
+        "phase_for_frame",
+    )
+    for name in public_names:
+        canonical = getattr(candidates, name)
+        assert getattr(legacy_stage, name) is canonical
+        assert getattr(public_pipeline, name) is canonical
+    assert legacy_stage._component_metrics is candidates._component_metrics
+    assert legacy_stage._tcp_distance is candidates._tcp_distance
+
+
 def test_gripper_qwen_qc_receives_candidate_and_context_images(tmp_path: Path) -> None:
     candidate = _candidate("A")
     rgb = Image.fromarray(np.zeros((*SHAPE, 3), dtype=np.uint8))
     panel = render_gripper_candidate_panel(rgb, candidate, _roi())
     prompt = tmp_path / "prompt.txt"
-    prompt.write_text(
-        "task={task_text}; arm={active_arm}; ids={candidate_ids}\n"
-        "{candidate_records}\n{candidate_panels}\n{context_frames}\n"
-        "events={move_start},{close_start},{close_done},{open_start},{open_done}",
-        encoding="utf-8",
-    )
+    _write_qc_prompt(prompt)
     client = FakeQwenClient()
 
     result = run_gripper_seed_qc(
@@ -270,12 +302,7 @@ def test_gripper_qwen_qc_forces_one_candidate_when_qwen_rejects(tmp_path: Path) 
     rgb = Image.fromarray(np.zeros((*SHAPE, 3), dtype=np.uint8))
     panel = render_gripper_candidate_panel(rgb, candidate, _roi())
     prompt = tmp_path / "prompt.txt"
-    prompt.write_text(
-        "task={task_text}; arm={active_arm}; ids={candidate_ids}\n"
-        "{candidate_records}\n{candidate_panels}\n{context_frames}\n"
-        "events={move_start},{close_start},{close_done},{open_start},{open_done}",
-        encoding="utf-8",
-    )
+    _write_qc_prompt(prompt)
 
     result = run_gripper_seed_qc(
         _context(),
@@ -291,6 +318,73 @@ def test_gripper_qwen_qc_forces_one_candidate_when_qwen_rejects(tmp_path: Path) 
     assert result.selected_candidate == "A"
     assert result.forced_fallback
     assert "forced fallback candidate A" in result.reason
+
+
+def test_gripper_qwen_qc_rejects_when_no_fallback_candidate_exists(tmp_path: Path) -> None:
+    result = run_gripper_seed_qc(
+        _context(),
+        (),
+        {},
+        {},
+        prompt_template_path=tmp_path / "missing.txt",
+        client=FakeQwenClient(),
+        max_tokens=100,
+    )
+
+    assert result.status is MaskQCStatus.REJECTED
+    assert result.selected_candidate is None
+    assert not result.forced_fallback
+    assert result.reason == "all_gripper_candidates_failed_basic_checks"
+
+
+def test_gripper_qwen_qc_retries_then_stably_selects_first_tied_fallback(
+    tmp_path: Path,
+) -> None:
+    first = _candidate("A", frame_id=5)
+    second = _candidate("B", frame_id=6)
+    rgb = Image.fromarray(np.zeros((*SHAPE, 3), dtype=np.uint8))
+    prompt = tmp_path / "prompt.txt"
+    _write_qc_prompt(prompt)
+    client = FakeQwenClient(decision="error")
+
+    result = run_gripper_seed_qc(
+        _context(),
+        (first, second),
+        {
+            "A": render_gripper_candidate_panel(rgb, first, _roi()),
+            "B": render_gripper_candidate_panel(rgb, second, _roi()),
+        },
+        {1: rgb},
+        prompt_template_path=prompt,
+        client=client,
+        max_tokens=100,
+        max_attempts=2,
+    )
+
+    assert len(client.messages) == 2
+    assert result.status is MaskQCStatus.PASSED
+    assert result.selected_candidate == "A"
+    assert result.forced_fallback
+    assert result.reason == (
+        "forced fallback candidate A; "
+        "gripper QC request failed after 2 attempt(s): unavailable"
+    )
+
+
+def test_legacy_qc_exports_preserve_canonical_identity() -> None:
+    public_names = (
+        "GripperSeedQCResult",
+        "build_gripper_qwen_request",
+        "render_gripper_candidate_panel",
+        "render_gripper_candidate_sheet",
+        "run_gripper_seed_qc",
+    )
+    for name in public_names:
+        canonical = getattr(qc, name)
+        assert getattr(legacy_stage, name) is canonical
+        assert getattr(public_pipeline, name) is canonical
+    assert legacy_stage.GripperQwenClient is qc.GripperQwenClient
+    assert legacy_stage._fallback_candidate is qc._fallback_candidate
 
 
 def test_load_qc_native_tracks_includes_approved_seed_masks(tmp_path: Path) -> None:

@@ -3,12 +3,15 @@ from __future__ import annotations
 import importlib.util
 import json
 import math
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import numpy as np
 import pytest
 
+import robotwin_annotation_v2.urdf_gripper_renderer as legacy_renderer
+from robotwin_annotation_v2.adapters.urdf import finger_fit
 from robotwin_annotation_v2.urdf_gripper_renderer import (
     ALOHA_RENDER_LINKS,
     AlohaUrdfRenderer,
@@ -125,6 +128,27 @@ def test_gripper_command_mapping_distinguishes_drive_target_and_urdf_q() -> None
     assert gripper_command_to_kinematic_q(0.0) == 0.0
     assert gripper_command_to_drive_target(1.0) == pytest.approx(0.045)
     assert gripper_command_to_kinematic_q(1.0) == pytest.approx(0.045)
+
+
+def test_renderer_reexports_canonical_finger_fit_primitives_by_identity() -> None:
+    for name in (
+        "DepthAgreement",
+        "FingerCandidateScore",
+        "FingerFitDiagnostics",
+        "FingerFitResult",
+        "FingerPoseFitter",
+        "active_gripper_link_names",
+        "agreement_has_minimum_support",
+        "candidate_has_minimum_support",
+        "compute_visible_gripper_mask",
+        "depth_agreement",
+        "gripper_command_to_drive_target",
+        "gripper_command_to_kinematic_q",
+        "rank_finger_candidates",
+        "_grid",
+        "_normalize_active_side",
+    ):
+        assert getattr(legacy_renderer, name) is getattr(finger_fit, name)
 
 
 def test_depth_visible_mask_requires_positive_scene_depth_within_tolerance() -> None:
@@ -304,6 +328,7 @@ def _fake_renderer(
     renderer.height = 1
     renderer._closed = False
     renderer.render_call_count = 0
+    renderer.render_calls = []
 
     def fake_render(
         joint_absolute: Any,
@@ -316,6 +341,7 @@ def _fake_renderer(
         del joint_absolute, intrinsic_cv, cam2world_gl
         assert finger_q_by_joint is not None
         renderer.render_call_count += 1
+        renderer.render_calls.append(dict(finger_q_by_joint))
         return _fake_render_result(
             finger_q_by_joint,
             mismatch_link8=mismatch_link8,
@@ -470,6 +496,105 @@ def test_q_fit_uses_metric_temporal_window_when_it_contains_supported_q() -> Non
         assert all(abs(candidate.q_m - prior) <= 0.004 + 1e-12 for candidate in candidates)
 
 
+def test_q_fit_sweeps_joint7_before_joint8_and_preserves_diagnostic_order() -> None:
+    renderer = _fake_renderer(mismatch_link8=False)
+
+    result = renderer.fit_finger_q(
+        np.zeros(14),
+        np.eye(3),
+        np.eye(4),
+        np.full((1, 3), 100.0),
+        active_side="right",
+        tolerance_mm=0.1,
+        q_max_m=0.04,
+        coarse_step_m=0.01,
+        fine_step_m=0.005,
+        minimum_support_pixels=2,
+        minimum_per_link_support_pixels=1,
+        minimum_consistent_fraction=1.0,
+        minimum_fixed_support_pixels=1,
+        minimum_searchable_pixels=0,
+    )
+
+    render_calls = renderer.render_calls  # type: ignore[attr-defined]
+    first_joint8_change = next(
+        index for index, values in enumerate(render_calls) if values["fr_joint8"] != 0.0
+    )
+    assert all(values["fr_joint8"] == 0.0 for values in render_calls[:first_joint8_change])
+    assert all(
+        values["fr_joint7"] == pytest.approx(0.015)
+        for values in render_calls[first_joint8_change:]
+    )
+    assert tuple(result.diagnostics.selected_score_by_joint) == (
+        "fr_joint7",
+        "fr_joint8",
+    )
+    assert tuple(result.diagnostics.ranked_candidates_by_joint) == (
+        "fr_joint7",
+        "fr_joint8",
+    )
+
+
+def test_finger_pose_fitter_matches_legacy_renderer_delegate_exactly() -> None:
+    direct_renderer = _fake_renderer(mismatch_link8=False)
+    legacy_delegate_renderer = _fake_renderer(mismatch_link8=False)
+    inputs = (
+        np.zeros(14),
+        np.eye(3),
+        np.eye(4),
+        np.full((1, 3), 100.0),
+    )
+    options = {
+        "active_side": "right",
+        "tolerance_mm": 0.1,
+        "q_max_m": 0.04,
+        "coarse_step_m": 0.01,
+        "fine_step_m": 0.005,
+        "minimum_support_pixels": 2,
+        "minimum_per_link_support_pixels": 1,
+        "minimum_consistent_fraction": 1.0,
+        "minimum_fixed_support_pixels": 1,
+        "minimum_searchable_pixels": 0,
+    }
+
+    direct = finger_fit.FingerPoseFitter(direct_renderer).fit_finger_q(*inputs, **options)
+    delegated = legacy_delegate_renderer.fit_finger_q(*inputs, **options)
+
+    assert direct.accepted == delegated.accepted
+    assert direct.selected_q_m == delegated.selected_q_m
+    assert dict(direct.selected_q_by_joint) == dict(delegated.selected_q_by_joint)
+    assert dict(direct.component_acceptance) == dict(delegated.component_acceptance)
+    assert direct.diagnostics.as_dict() == delegated.diagnostics.as_dict()
+    np.testing.assert_array_equal(direct.visible_mask, delegated.visible_mask)
+    assert tuple(direct.component_visible_masks) == tuple(delegated.component_visible_masks)
+    for name in direct.component_visible_masks:
+        np.testing.assert_array_equal(
+            direct.component_visible_masks[name],
+            delegated.component_visible_masks[name],
+        )
+    direct_render: Any = direct.selected_render
+    delegated_render: Any = delegated.selected_render
+    assert direct_render.active_side == delegated_render.active_side
+    assert dict(direct_render.joint_positions) == dict(delegated_render.joint_positions)
+    for name in (
+        "robot_mask",
+        "robot_depth_mm",
+        "active_gripper_mask",
+        "active_gripper_depth_mm",
+        "fixed_link6_mask",
+        "finger_link7_mask",
+        "finger_link8_mask",
+        "segmentation_ids",
+    ):
+        np.testing.assert_array_equal(
+            getattr(direct_render, name),
+            getattr(delegated_render, name),
+        )
+    assert (  # type: ignore[attr-defined]
+        direct_renderer.render_calls == legacy_delegate_renderer.render_calls
+    )
+
+
 def test_q_fit_globally_reacquires_when_temporal_window_has_no_support() -> None:
     renderer = _fake_renderer(mismatch_link8=False)
 
@@ -523,7 +648,7 @@ def test_real_aloha_render_preserves_link6_7_8_union_when_backend_is_available()
                 np.asarray(report["cam2world_gl"]),
                 active_side="right",
             )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - optional EGL failures skip this smoke test
         pytest.skip(f"EGL rendering backend is unavailable: {exc}")
 
     expected = rendered.fixed_link6_mask | rendered.finger_link7_mask | rendered.finger_link8_mask

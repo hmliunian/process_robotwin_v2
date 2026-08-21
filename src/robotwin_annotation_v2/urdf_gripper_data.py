@@ -1,30 +1,38 @@
 """Lightweight dataset contracts for deterministic URDF gripper rendering.
 
-This module deliberately avoids the regular dataset and pipeline packages: those
-packages import video/SAM dependencies that are not available in the rendering
-environment.  Loop detection mirrors ``pipeline.state_loop`` using only NumPy.
+This module avoids heavyweight dataset and model-service dependencies that are
+not available in the rendering environment. Loop detection reuses the pure
+NumPy timeline detector shared with the main pipeline.
 """
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Mapping
+from typing import Any, Literal
 
 import numpy as np
 
-from .domain import AnnotationMode, annotation_spec
+from .adapters import loop_context_codec as _loop_context_codec
 from .models.timeline import (
-    EpisodeWindows,
-    FrameWindow,
+    PickPlaceEvents,
     TargetOnlyEvents,
+    TimelineEvents,
 )
+from .pipeline import timeline_detector as _timeline_detector
 
 ArmName = Literal["left", "right"]
+NDArray = np.ndarray[Any, Any]
 
-OPEN_THRESHOLD = 0.9
-CLOSED_THRESHOLD = 0.15
+CLOSED_THRESHOLD = _timeline_detector.CLOSED_THRESHOLD
+OPEN_THRESHOLD = _timeline_detector.OPEN_THRESHOLD
+_StateLoopError = _timeline_detector.StateLoopError
+_first_run = _timeline_detector._first_run
+_median_filter = _timeline_detector._median_filter
+_detect_arm_loops = _timeline_detector.detect_arm_loops
+_canonical_detect_episode_loop = _timeline_detector.detect_episode_loop
+_canonical_detect_loop_events = _timeline_detector.detect_loop_events
+
 PARQUET_COLUMNS = (
     "frame_index",
     "episode_index",
@@ -65,108 +73,18 @@ class EpisodeArrays:
     """State columns whose row count defines the usable episode length."""
 
     episode_index: int
-    observation_state: np.ndarray
-    joint_absolute: np.ndarray
+    observation_state: NDArray
+    joint_absolute: NDArray
 
     @property
     def frame_count(self) -> int:
         return int(self.joint_absolute.shape[0])
 
 
-@dataclass(frozen=True)
-class ActiveGripperLoop:
-    """One active arm and its ordered, inclusive Stage-1 event boundaries."""
-
-    active_arm: ArmName
-    t_move_start: int
-    t_close_start: int
-    t_close_done: int
-    t_open_start: int
-    t_open_done: int
-
-    def __post_init__(self) -> None:
-        values = (
-            self.t_move_start,
-            self.t_close_start,
-            self.t_close_done,
-            self.t_open_start,
-            self.t_open_done,
-        )
-        if self.active_arm not in {"left", "right"}:
-            raise ValueError(f"invalid active arm: {self.active_arm}")
-        if min(values) < 0:
-            raise ValueError("loop event frames must be non-negative")
-        if not (
-            self.t_move_start <= self.t_close_start
-            < self.t_close_done
-            < self.t_open_start
-            < self.t_open_done
-        ):
-            raise ValueError(f"loop events are not ordered: {values}")
-
-    @property
-    def start(self) -> int:
-        """First frame in the inclusive active-gripper window."""
-
-        return self.t_move_start
-
-    @property
-    def end(self) -> int:
-        """Last frame in the inclusive active-gripper window."""
-
-        return self.t_open_done
-
-    @property
-    def inclusive_window(self) -> tuple[int, int]:
-        return (self.start, self.end)
-
-    def to_json(self) -> dict[str, Any]:
-        return {
-            "active_arm": self.active_arm,
-            "t_move_start": self.t_move_start,
-            "t_close_start": self.t_close_start,
-            "t_close_done": self.t_close_done,
-            "t_open_start": self.t_open_start,
-            "t_open_done": self.t_open_done,
-        }
-
-
-ActiveGripperEvents = ActiveGripperLoop | TargetOnlyEvents
-
-
-@dataclass(frozen=True)
-class AuthoritativeLoopContext:
-    """Validated Stage-1 source artifact used by a derived URDF run."""
-
-    path: Path
-    task: str
-    episode_index: int
-    camera: str
-    frame_count: int
-    events: ActiveGripperEvents
-    annotation_mode: AnnotationMode
-    timeline_kind: str
-    windows: EpisodeWindows
-
-    @property
-    def active_arm(self) -> ArmName:
-        return self.events.active_arm
-
-    @property
-    def gripper_window(self) -> tuple[int, int]:
-        return (self.windows.gripper.start, self.windows.gripper.end)
-
-    @property
-    def target_hold_window(self) -> tuple[int, int] | None:
-        """Inclusive frames carrying the held-target encoding."""
-
-        if isinstance(self.events, TargetOnlyEvents):
-            start = self.events.t_close_end + 1
-            end = self.frame_count - 1
-        else:
-            start = self.events.t_close_done + 1
-            end = self.events.t_open_start - 1
-        return None if end < start else (start, end)
+# Compatibility names retained while URDF callers migrate to the domain types.
+ActiveGripperLoop = PickPlaceEvents
+ActiveGripperEvents = TimelineEvents
+AuthoritativeLoopContext = _loop_context_codec.AuthoritativeLoopContext
 
 
 @dataclass(frozen=True)
@@ -174,9 +92,9 @@ class CameraCalibrationSeries:
     """Per-frame OpenCV calibration and OpenGL pose, cropped to Parquet rows."""
 
     camera: str
-    intrinsic_cv: np.ndarray
-    extrinsic_cv: np.ndarray
-    cam2world_gl: np.ndarray
+    intrinsic_cv: NDArray
+    extrinsic_cv: NDArray
+    cam2world_gl: NDArray
 
     @property
     def frame_count(self) -> int:
@@ -189,7 +107,7 @@ class UrdfGripperEpisodeData:
 
     paths: UrdfGripperEpisodePaths
     arrays: EpisodeArrays
-    events: ActiveGripperEvents
+    events: TimelineEvents
     gripper_window: tuple[int, int]
 
     @property
@@ -197,7 +115,7 @@ class UrdfGripperEpisodeData:
         return self.arrays.frame_count
 
     @property
-    def joint_absolute(self) -> np.ndarray:
+    def joint_absolute(self) -> NDArray:
         return self.arrays.joint_absolute
 
     @property
@@ -209,7 +127,7 @@ class UrdfGripperEpisodeData:
         return self.gripper_window
 
     @property
-    def loop(self) -> ActiveGripperEvents:
+    def loop(self) -> TimelineEvents:
         """Compatibility alias for callers that still use the historic name."""
 
         return self.events
@@ -235,125 +153,6 @@ def format_episode_id(episode_index: int) -> str:
     return f"{_validate_episode_index(episode_index):06d}"
 
 
-def _required_mapping(
-    payload: Mapping[str, Any],
-    key: str,
-    *,
-    description: str,
-) -> Mapping[str, Any]:
-    value = payload.get(key)
-    if not isinstance(value, Mapping):
-        raise UrdfGripperDataError(f"{description} {key} must be an object")
-    return value
-
-
-def _required_integer(
-    payload: Mapping[str, Any],
-    key: str,
-    *,
-    description: str,
-) -> int:
-    value = payload.get(key)
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise UrdfGripperDataError(f"{description} {key} must be an integer")
-    return value
-
-
-def _validate_recorded_window(
-    windows: Mapping[str, Any],
-    key: str,
-    expected: tuple[int, int],
-) -> None:
-    raw = windows.get(key)
-    if (
-        not isinstance(raw, list)
-        or len(raw) != 2
-        or any(isinstance(value, bool) or not isinstance(value, int) for value in raw)
-        or tuple(raw) != expected
-    ):
-        raise UrdfGripperDataError(
-            f"source loop window {key} does not match events: {raw!r} != {list(expected)!r}"
-        )
-
-
-def _frame_window(value: tuple[int, int]) -> FrameWindow:
-    return FrameWindow(start=value[0], end=value[1])
-
-
-def _pick_place_windows(
-    events: ActiveGripperLoop,
-    *,
-    include_held_target: bool,
-) -> EpisodeWindows:
-    operation = _frame_window(events.inclusive_window)
-    target_end = events.t_open_start - 1 if include_held_target else events.t_close_done
-    return EpisodeWindows(
-        operation=operation,
-        target=_frame_window((events.t_move_start, target_end)),
-        receiver=_frame_window((events.t_close_done, events.t_open_done)),
-        gripper=operation,
-    )
-
-
-def _target_only_windows(
-    events: TargetOnlyEvents,
-    *,
-    frame_count: int,
-    include_held_target: bool,
-) -> EpisodeWindows:
-    operation = _frame_window((events.t_remove_start, frame_count - 1))
-    return EpisodeWindows(
-        operation=operation,
-        target=(
-            operation
-            if include_held_target
-            else _frame_window((events.t_remove_start, events.t_close_end))
-        ),
-        receiver=None,
-        gripper=operation,
-    )
-
-
-def _validate_versioned_windows(
-    windows: Mapping[str, Any],
-    expected: EpisodeWindows,
-    *,
-    format_version: str,
-) -> None:
-    expected_keys = {"operation", "target_0", "receiver_0", "gripper"}
-    if set(windows) != expected_keys:
-        raise UrdfGripperDataError(
-            f"source loop {format_version} windows must contain exactly "
-            f"{sorted(expected_keys)}, got {sorted(str(key) for key in windows)}"
-        )
-    _validate_recorded_window(
-        windows,
-        "operation",
-        (expected.operation.start, expected.operation.end),
-    )
-    _validate_recorded_window(
-        windows,
-        "target_0",
-        (expected.target.start, expected.target.end),
-    )
-    if expected.receiver is None:
-        if windows.get("receiver_0") is not None:
-            raise UrdfGripperDataError(
-                "target_only source loop receiver_0 window must be null"
-            )
-    else:
-        _validate_recorded_window(
-            windows,
-            "receiver_0",
-            (expected.receiver.start, expected.receiver.end),
-        )
-    _validate_recorded_window(
-        windows,
-        "gripper",
-        (expected.gripper.start, expected.gripper.end),
-    )
-
-
 def load_authoritative_loop_context(
     path: Path,
     *,
@@ -361,235 +160,17 @@ def load_authoritative_loop_context(
     expected_episode_index: int,
     expected_camera: str,
 ) -> AuthoritativeLoopContext:
-    """Load one frozen timeline and normalize its downstream windows.
+    """Load a source timeline through the canonical codec."""
 
-    Legacy v1/v2 artifacts retain their historic short target window.  V3
-    extends target publication through the post-close hold interval while
-    preserving the same concrete event state machines.
-    """
-
-    source = path.expanduser().resolve()
-    if not source.is_file():
-        raise UrdfGripperDataError(f"source loop artifact is missing: {source}")
     try:
-        payload = json.loads(source.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
-        raise UrdfGripperDataError(
-            f"failed to read source loop artifact {source}: {exc}"
-        ) from exc
-    if not isinstance(payload, Mapping):
-        raise UrdfGripperDataError("source loop artifact must contain a JSON object")
-    format_version = payload.get("format_version")
-    if format_version not in {
-        "robotwin_loop_context_v1",
-        "robotwin_loop_context_v2",
-        "robotwin_loop_context_v3",
-    }:
-        raise UrdfGripperDataError(
-            f"unsupported source loop format: {format_version!r}"
+        return _loop_context_codec.load_authoritative_loop_context(
+            path,
+            expected_task=expected_task,
+            expected_episode_index=expected_episode_index,
+            expected_camera=expected_camera,
         )
-
-    episode = _required_mapping(payload, "episode", description="source loop")
-    expected_index = _validate_episode_index(expected_episode_index)
-    expected_identity = {
-        "task": expected_task,
-        "episode_index": expected_index,
-        "episode_id": format_episode_id(expected_index),
-        "camera": _validate_camera(expected_camera),
-    }
-    for key, expected in expected_identity.items():
-        if episode.get(key) != expected:
-            raise UrdfGripperDataError(
-                f"source loop episode {key} mismatch: {episode.get(key)!r} != {expected!r}"
-            )
-
-    frame_count = _required_integer(
-        payload,
-        "frame_count",
-        description="source loop",
-    )
-    if frame_count < 1:
-        raise UrdfGripperDataError("source loop frame_count must be positive")
-    raw_mode = payload.get("annotation_mode", AnnotationMode.PICK_PLACE.value)
-    try:
-        annotation_mode = AnnotationMode(raw_mode)
-    except (TypeError, ValueError) as exc:
-        raise UrdfGripperDataError(
-            f"unsupported source loop annotation_mode: {raw_mode!r}"
-        ) from exc
-    spec = annotation_spec(annotation_mode)
-    raw_roles = payload.get("required_object_roles")
-    if raw_roles is not None and raw_roles != list(spec.required_role_names):
-        raise UrdfGripperDataError(
-            "source loop required_object_roles differ from annotation_mode"
-        )
-    if format_version in {
-        "robotwin_loop_context_v2",
-        "robotwin_loop_context_v3",
-    } and raw_roles is None:
-        raise UrdfGripperDataError(
-            f"source loop {format_version} must declare required_object_roles"
-        )
-
-    event_payload = _required_mapping(payload, "events", description="source loop")
-    active_arm = event_payload.get("active_arm")
-    if active_arm not in {"left", "right"}:
-        raise UrdfGripperDataError(
-            f"source loop active_arm must be left or right, got {active_arm!r}"
-        )
-    windows = _required_mapping(payload, "windows", description="source loop")
-    if format_version == "robotwin_loop_context_v1":
-        if annotation_mode is not AnnotationMode.PICK_PLACE:
-            raise UrdfGripperDataError(
-                "target_only close-and-hold requires robotwin_loop_context_v2"
-            )
-        event_keys = {
-            "active_arm",
-            "t_move_start",
-            "t_close_start",
-            "t_close_done",
-            "t_open_start",
-            "t_open_done",
-        }
-        if set(event_payload) != event_keys:
-            raise UrdfGripperDataError(
-                "pick_place source events must contain exactly "
-                f"{sorted(event_keys)}"
-            )
-        event_values = {
-            key: _required_integer(
-                event_payload,
-                key,
-                description="source loop events",
-            )
-            for key in event_keys - {"active_arm"}
-        }
-        try:
-            events: ActiveGripperEvents = ActiveGripperLoop(
-                active_arm=active_arm,
-                **event_values,
-            )
-        except ValueError as exc:
-            raise UrdfGripperDataError(f"invalid source loop events: {exc}") from exc
-        normalized_windows = _pick_place_windows(
-            events,
-            include_held_target=False,
-        )
-        if events.end >= frame_count:
-            raise UrdfGripperDataError(
-                f"source loop active window {events.inclusive_window} exceeds frame count "
-                f"{frame_count}"
-            )
-        _validate_recorded_window(windows, "loop", events.inclusive_window)
-        _validate_recorded_window(
-            windows,
-            "target_0",
-            (events.t_move_start, events.t_close_done),
-        )
-        _validate_recorded_window(
-            windows,
-            "receiver_0",
-            (events.t_close_done, events.t_open_done),
-        )
-        raw_gripper = windows.get("gripper")
-        if raw_gripper is not None:
-            _validate_recorded_window(
-                windows,
-                "gripper",
-                events.inclusive_window,
-            )
-        timeline_kind = "pick_place"
-    else:
-        timeline_kind = payload.get("timeline_kind")
-        expected_kind = (
-            "pick_place"
-            if annotation_mode is AnnotationMode.PICK_PLACE
-            else "close_hold"
-        )
-        if timeline_kind != expected_kind:
-            raise UrdfGripperDataError(
-                "source loop timeline_kind differs from annotation_mode: "
-                f"{timeline_kind!r} != {expected_kind!r}"
-            )
-        if annotation_mode is AnnotationMode.PICK_PLACE:
-            event_keys = {
-                "active_arm",
-                "t_move_start",
-                "t_close_start",
-                "t_close_done",
-                "t_open_start",
-                "t_open_done",
-            }
-            event_values = {
-                key: _required_integer(
-                    event_payload,
-                    key,
-                    description="source loop events",
-                )
-                for key in event_keys - {"active_arm"}
-            }
-            try:
-                events = ActiveGripperLoop(active_arm=active_arm, **event_values)
-            except ValueError as exc:
-                raise UrdfGripperDataError(
-                    f"invalid source loop events: {exc}"
-                ) from exc
-            normalized_windows = _pick_place_windows(
-                events,
-                include_held_target=format_version == "robotwin_loop_context_v3",
-            )
-        else:
-            event_keys = {
-                "active_arm",
-                "t_remove_start",
-                "t_close_start",
-                "t_close_end",
-            }
-            event_values = {
-                key: _required_integer(
-                    event_payload,
-                    key,
-                    description="source loop events",
-                )
-                for key in event_keys - {"active_arm"}
-            }
-            try:
-                events = TargetOnlyEvents(active_arm=active_arm, **event_values)
-            except ValueError as exc:
-                raise UrdfGripperDataError(
-                    f"invalid source loop events: {exc}"
-                ) from exc
-            if events.t_close_end >= frame_count:
-                raise UrdfGripperDataError(
-                    "target_only close_end exceeds the episode frame range"
-                )
-            normalized_windows = _target_only_windows(
-                events,
-                frame_count=frame_count,
-                include_held_target=format_version == "robotwin_loop_context_v3",
-            )
-        if set(event_payload) != event_keys:
-            raise UrdfGripperDataError(
-                f"{annotation_mode.value} source events must contain exactly "
-                f"{sorted(event_keys)}"
-            )
-        _validate_versioned_windows(
-            windows,
-            normalized_windows,
-            format_version=str(format_version),
-        )
-
-    return AuthoritativeLoopContext(
-        path=source,
-        task=expected_task,
-        episode_index=expected_index,
-        camera=expected_camera,
-        frame_count=frame_count,
-        events=events,
-        annotation_mode=annotation_mode,
-        timeline_kind=str(timeline_kind),
-        windows=normalized_windows,
-    )
+    except _loop_context_codec.LoopContextCodecError as exc:
+        raise UrdfGripperDataError(str(exc)) from exc
 
 
 def resolve_episode_paths(
@@ -648,7 +229,7 @@ def _read_parquet_columns(path: Path) -> dict[str, Any]:
     return {column: table[column].to_pylist() for column in PARQUET_COLUMNS}
 
 
-def _stack_state_column(values: Any, *, name: str, frame_count: int) -> np.ndarray:
+def _stack_state_column(values: Any, *, name: str, frame_count: int) -> NDArray:
     try:
         rows = [np.asarray(row, dtype=np.float64) for row in values]
         result = np.stack(rows, axis=0)
@@ -718,24 +299,9 @@ def load_episode_arrays(
     )
 
 
-def _median_filter(values: np.ndarray) -> np.ndarray:
-    padded = np.pad(values, (1, 1), mode="edge")
-    return np.median(
-        np.stack((padded[:-2], padded[1:-1], padded[2:])),
-        axis=0,
-    )
-
-
-def _first_run(condition: np.ndarray, *, start: int, length: int) -> int | None:
-    for frame_id in range(max(0, start), len(condition) - length + 1):
-        if bool(condition[frame_id : frame_id + length].all()):
-            return frame_id
-    return None
-
-
 def _detect_loop_events(
-    gripper_values: np.ndarray,
-    eef_values: np.ndarray,
+    gripper_values: NDArray,
+    eef_values: NDArray,
     *,
     arm: ArmName,
     stable_frames: int = 3,
@@ -752,94 +318,29 @@ def _detect_loop_events(
         raise UrdfGripperDataError(f"eef values must have shape {(gripper.size, 6)}")
     if stable_frames < 1:
         raise ValueError("stable_frames must be positive")
-
-    filtered = _median_filter(gripper)
-    close_candidates = np.flatnonzero(
-        (filtered[1:] < OPEN_THRESHOLD) & (filtered[1:] < filtered[:-1])
-    ) + 1
-    if close_candidates.size == 0:
-        raise UrdfGripperDataError("no close transition detected")
-    close_start = int(close_candidates[0])
-    close_run = _first_run(
-        filtered <= CLOSED_THRESHOLD,
-        start=close_start,
-        length=stable_frames,
-    )
-    if close_run is None:
-        raise UrdfGripperDataError("no stable closed transition detected")
-    close_done = close_run + stable_frames - 1
-
-    open_candidates = np.flatnonzero(
-        (filtered[1:] > filtered[:-1])
-        & (np.arange(1, len(filtered)) > close_done)
-    ) + 1
-    if open_candidates.size == 0:
-        raise UrdfGripperDataError("no open transition detected")
-    open_start = int(open_candidates[0])
-    open_run = _first_run(
-        filtered >= OPEN_THRESHOLD,
-        start=open_start,
-        length=stable_frames,
-    )
-    if open_run is None:
-        raise UrdfGripperDataError("no stable reopen transition detected")
-    open_done = open_run + stable_frames - 1
-
-    delta = np.diff(eef, axis=0)
-    delta[:, 3:] = (delta[:, 3:] + np.pi) % (2 * np.pi) - np.pi
-    score = np.linalg.norm(delta[:, :3], axis=1)
-    score += rotation_scale * np.linalg.norm(delta[:, 3:], axis=1)
-    baseline = score[: max(1, min(close_start, 3))]
-    median = float(np.median(baseline))
-    deviation = float(np.median(np.abs(baseline - median)))
-    threshold = max(median + 4.0 * deviation, motion_floor)
-    motion = np.concatenate(([False], score > threshold))
-    move_start = _first_run(motion, start=1, length=stable_frames)
-    if move_start is None or move_start >= close_start:
-        move_start = close_start
-
     try:
-        return ActiveGripperLoop(
-            active_arm=arm,
-            t_move_start=move_start,
-            t_close_start=close_start,
-            t_close_done=close_done,
-            t_open_start=open_start,
-            t_open_done=open_done,
+        events = _canonical_detect_loop_events(
+            gripper,
+            eef,
+            arm=arm,
+            stable_frames=stable_frames,
+            motion_floor=motion_floor,
+            rotation_scale=rotation_scale,
         )
-    except ValueError as exc:
+    except _StateLoopError as exc:
         raise UrdfGripperDataError(str(exc)) from exc
+    return events
 
 
-def _detect_arm_loops(
-    gripper_values: np.ndarray,
-    eef_values: np.ndarray,
-    *,
-    arm: ArmName,
-) -> tuple[ActiveGripperLoop, ...]:
-    gripper = np.asarray(gripper_values)
-    eef = np.asarray(eef_values)
-    events: list[ActiveGripperLoop] = []
-    offset = 0
-    while offset < len(gripper) - 5:
-        try:
-            event = _detect_loop_events(gripper[offset:], eef[offset:], arm=arm)
-        except UrdfGripperDataError:
-            break
-        absolute = ActiveGripperLoop(
-            active_arm=event.active_arm,
-            t_move_start=event.t_move_start + offset,
-            t_close_start=event.t_close_start + offset,
-            t_close_done=event.t_close_done + offset,
-            t_open_start=event.t_open_start + offset,
-            t_open_done=event.t_open_done + offset,
-        )
-        events.append(absolute)
-        offset = absolute.t_open_done + 1
-    return tuple(events)
+@dataclass(frozen=True)
+class _TimelineState:
+    """Minimal state view consumed by the canonical episode detector."""
+
+    gripper_states: NDArray
+    eef_states: NDArray
 
 
-def infer_active_loop(observation_state: np.ndarray) -> ActiveGripperLoop:
+def infer_active_loop(observation_state: NDArray) -> ActiveGripperLoop:
     """Require exactly one complete arm loop using Stage-1's state semantics."""
 
     state = np.asarray(observation_state, dtype=np.float64)
@@ -850,21 +351,16 @@ def infer_active_loop(observation_state: np.ndarray) -> ActiveGripperLoop:
 
     grippers = state[:, (6, 13)]
     eef = np.stack((state[:, 0:6], state[:, 7:13]), axis=1)
-    candidates: list[ActiveGripperLoop] = []
-    counts: dict[str, int] = {}
-    for arm_index, arm in enumerate(("left", "right")):
-        arm_events = _detect_arm_loops(
-            grippers[:, arm_index],
-            eef[:, arm_index],
-            arm=arm,
+    try:
+        events = _canonical_detect_episode_loop(
+            _TimelineState(
+                gripper_states=grippers,
+                eef_states=eef,
+            )
         )
-        candidates.extend(arm_events)
-        counts[arm] = len(arm_events)
-    if len(candidates) != 1:
-        raise UrdfGripperDataError(
-            f"expected exactly one active-arm loop, got {len(candidates)}; per_arm={counts}"
-        )
-    return candidates[0]
+    except _StateLoopError as exc:
+        raise UrdfGripperDataError(str(exc)) from exc
+    return events
 
 
 def load_camera_calibration(
@@ -939,7 +435,7 @@ def load_urdf_gripper_episode(
     camera: str = "cam_high",
     require_media: bool = True,
     authoritative_loop: ActiveGripperLoop | None = None,
-    authoritative_events: ActiveGripperEvents | None = None,
+    authoritative_events: TimelineEvents | None = None,
     authoritative_gripper_window: tuple[int, int] | None = None,
 ) -> UrdfGripperEpisodeData:
     """Resolve one episode using normalized authoritative gripper activity.
@@ -972,9 +468,11 @@ def load_urdf_gripper_episode(
         raise ValueError(
             "authoritative_events and authoritative_gripper_window must be provided together"
         )
+    events: TimelineEvents
     if authoritative_events is None:
-        events: ActiveGripperEvents = infer_active_loop(arrays.observation_state)
-        gripper_window = events.inclusive_window
+        inferred_events = infer_active_loop(arrays.observation_state)
+        events = inferred_events
+        gripper_window = inferred_events.inclusive_window
     else:
         if not isinstance(authoritative_events, (ActiveGripperLoop, TargetOnlyEvents)):
             raise TypeError(

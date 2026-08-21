@@ -1152,6 +1152,43 @@ def test_target_only_qc_prompt_contains_only_target_rules() -> None:
     assert "open_done" not in prompt_text
 
 
+def test_target_only_open_set_qc_prompt_uses_target_only_timeline() -> None:
+    context = _target_only_context()
+    images = _images()
+    client = FakeQCClient([_response("B")])
+
+    result = run_mask_qc_stage(
+        context,
+        _target_only_plan(),
+        FakeCandidateBackend(),
+        Path("/tmp/resource"),
+        seed_images={0: images[0]},
+        context_images={0: images[0], 7: images[7], 15: images[15]},
+        frame_shape=FRAME_SHAPE,
+        mask_config=_config(
+            PROJECT_ROOT
+            / "configs/prompts/target_only_mask_candidate_qc_open_set.txt"
+        ),
+        client=client,
+    )
+
+    assert result.for_role("target").status is MaskQCStatus.PASSED
+    content = client.messages[0][0]["content"]
+    prompt_text = "\n".join(
+        part["text"] for part in content if part["type"] == "text"
+    )
+    assert "开放集 mask 质量检查器" in prompt_text
+    assert "white bar" in prompt_text
+    assert "receiver" not in prompt_text
+    assert "active_arm: right" in prompt_text
+    assert "remove_start: 2" in prompt_text
+    assert "close_start: 6" in prompt_text
+    assert "close_end: 8" in prompt_text
+    assert "episode_end: 19" in prompt_text
+    assert "open_start" not in prompt_text
+    assert "open_done" not in prompt_text
+
+
 def test_receiver_blue_region_prior_recovers_empty_text_candidates(
     tmp_path: Path,
 ) -> None:

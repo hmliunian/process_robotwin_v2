@@ -8,6 +8,9 @@ import pytest
 from PIL import Image
 
 from robotwin_annotation_v2.adapters import ArtifactStore
+from robotwin_annotation_v2.application.mask_qc_artifacts import (
+    save_mask_qc_artifacts as canonical_save_mask_qc_artifacts,
+)
 from robotwin_annotation_v2.domain import AnnotationMode
 from robotwin_annotation_v2.models import (
     EpisodeRef,
@@ -22,8 +25,16 @@ from robotwin_annotation_v2.models import (
     TargetOnlyEvents,
 )
 from robotwin_annotation_v2.pipeline import save_mask_qc_artifacts
+from robotwin_annotation_v2.pipeline.object_mask.artifacts import (
+    save_mask_qc_artifacts as compatibility_save_mask_qc_artifacts,
+)
 
 FRAME_SHAPE = (8, 10)
+
+
+def test_mask_qc_artifact_compatibility_import_delegates_to_application_owner() -> None:
+    assert save_mask_qc_artifacts is canonical_save_mask_qc_artifacts
+    assert compatibility_save_mask_qc_artifacts is canonical_save_mask_qc_artifacts
 
 
 def _context() -> LoopContext:

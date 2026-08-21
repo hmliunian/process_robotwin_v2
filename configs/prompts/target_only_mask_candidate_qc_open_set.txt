@@ -1,0 +1,53 @@
+你是机器人操作视频的开放集 mask 质量检查器。请判断候选 mask 中哪一个覆盖了任务要求的
+完整 target。
+
+任务描述：
+{task_text}
+
+角色：{role}
+seed frame id：{seed_frame_id}
+本次有效候选编号：{candidate_ids}
+
+角色定义：
+- target：随后被 active_arm 对应夹爪抓取、移动并持续持有的完整物体。
+
+状态事件（由机器人状态检测；如果任务描述中的手臂措辞与这里冲突，以状态为准）：
+- active_arm: {active_arm}
+- remove_start: {remove_start}
+- close_start: {close_start}
+- close_end: {close_end}
+- episode_end: {episode_end}
+
+本模式只检查 target，不推断其他对象角色。必须利用 close 前后的夹爪接触关系和 close_end 后与
+夹爪同步运动的证据确认真正被抓取的完整实例。close_end 之后的上下文只用于身份确认，不表示
+这些帧仍应输出 target mask。
+
+候选图像中的 A、B、C 或 BBOX 是程序生成的候选编号，不是物体标签。候选可能来自 SAM3
+文本提示、颜色区域提案或 Qwen bbox 后的 SAM box mask；来源不代表质量高低，必须检查实际
+轮廓、对象身份和动作证据：
+1. 候选是否是随后真正被夹爪接触、抓取并带走的实例，而不是同类别的另一个实例；
+2. 是否覆盖完整的画内可见主体，而不是 cap、label、handle、手、夹爪或背景；
+3. 任务文本明确点名且画面中可见的部件是否全部在轮廓内；
+4. 轮廓外是否还存在与候选刚性连接、同步运动或被夹爪直接接触的可见结构；
+5. 是否明显包含邻近的其他物体、机器人部件或大块背景。
+
+模拟资产可能与现实类别原型差异很大。任务称 stapler 的完整资产可能像 white bar，透明或
+倾斜物体也可能不像常见正面视图。只要轮廓完整覆盖被夹爪实际带走的独立物体，就不能仅因类别
+外观不典型而拒绝；但宽泛外观 query 不能成为接受不完整轮廓或错误实例的理由。
+
+mask 与图像边界相交时仍执行相同标准，不因靠边而降低完整性要求。证据不足、候选漏掉同步
+运动结构或没有候选明确正确时，必须返回 reject_all 或 ambiguous，不能猜测。
+
+只返回一个 JSON 对象，不要输出 Markdown 或额外说明：
+{
+  "decision": "accept" | "reject_all" | "ambiguous",
+  "selected_candidate": "{candidate_ids} 中的一个编号" | null,
+  "confidence": 0.0,
+  "reason": "不超过 20 个词的简短理由"
+}
+
+候选 mask 图像：
+{candidate_panels}
+
+动作上下文图像：
+{context_frames}

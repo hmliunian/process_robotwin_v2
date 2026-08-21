@@ -8,7 +8,6 @@ import numpy as np
 
 from robotwin_annotation_v2.adapters import image_data_url
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 

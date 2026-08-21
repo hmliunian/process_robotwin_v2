@@ -6,28 +6,22 @@ import json
 import math
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
-from dataclasses import field as dataclass_field
 from pathlib import Path
 from typing import Any, Protocol, cast
 
 import numpy as np
 from PIL import Image, ImageDraw
 
-from ..adapters.artifact_store import ArtifactStore
 from ..adapters.qwen_client import QwenCompletion, image_data_url
 from ..config import MaskConfig
 from ..models import (
     LoopContext,
-    MaskCandidateInfo,
-    MaskQCAttempt,
     MaskQCAttemptMethod,
     MaskQCResult,
     MaskQCStatus,
     RoleMaskQC,
     RoleSemanticPlan,
     SemanticPlan,
-    SemanticStatus,
 )
 from ..models.loop_context import RoleName
 from .bbox_localization import (
@@ -36,8 +30,24 @@ from .bbox_localization import (
     parse_bbox_localization,
     render_bbox_prompt,
 )
-from .open_set_queries import curated_query_aliases
+from .object_mask.planner import QueryCandidate, plan_role_queries
+from .object_mask.proposals import blue_planar_region
+from .object_mask.qc import (
+    MaskQCError,
+    candidate_info,
+    error_report,
+    mask_iou,
+    normalize_text,
+)
+from .object_mask.resolver import (
+    ObjectMaskCandidate,
+    ObjectMaskResolver,
+    RoleAttemptExecution,
+    RoleResolution,
+)
 from .prompt_context import timeline_prompt_fields
+
+NDArray = np.ndarray[Any, Any]
 
 _CANDIDATE_MARKER = "{candidate_panels}"
 _CONTEXT_MARKER = "{context_frames}"
@@ -53,21 +63,6 @@ _PANEL_COLORS = (
 )
 
 
-class MaskQCError(RuntimeError):
-    """The candidate-mask QC request or response violated its contract."""
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        rendered_prompt: str | None = None,
-        raw_response: str | None = None,
-    ) -> None:
-        super().__init__(message)
-        self.rendered_prompt = rendered_prompt
-        self.raw_response = raw_response
-
-
 class MaskQCBackend(Protocol):
     def text_query_masks(
         self,
@@ -77,7 +72,7 @@ class MaskQCBackend(Protocol):
         frame_id: int,
         frame_count: int,
         frame_shape: tuple[int, int],
-    ) -> dict[str, np.ndarray]: ...
+    ) -> dict[str, NDArray]: ...
 
 
 class BboxMaskBackend(Protocol):
@@ -89,7 +84,7 @@ class BboxMaskBackend(Protocol):
         frame_id: int,
         frame_count: int,
         frame_shape: tuple[int, int],
-    ) -> np.ndarray: ...
+    ) -> NDArray: ...
 
 
 class MaskQCClient(Protocol):
@@ -105,124 +100,7 @@ class MaskQCClient(Protocol):
     ) -> QwenCompletion: ...
 
 
-@dataclass(frozen=True)
-class _Candidate:
-    candidate_id: str
-    query_field: str
-    query: str
-    seed_frame_id: int
-    mask: np.ndarray
-    info: MaskCandidateInfo
-
-
-@dataclass(frozen=True)
-class _QueryCandidate:
-    field: str
-    query: str
-
-
-@dataclass(frozen=True)
-class _RoleAttemptExecution:
-    seed_frame_id: int
-    report: RoleMaskQC
-    candidates: tuple[_Candidate, ...]
-    panels: tuple[Image.Image, ...] = ()
-    method: MaskQCAttemptMethod = MaskQCAttemptMethod.TEXT_QUERY
-    provenance: dict[str, Any] = dataclass_field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class _RoleExecution:
-    report: RoleMaskQC
-    candidates: tuple[_Candidate, ...]
-    panels: tuple[Image.Image, ...] = ()
-    attempts: tuple[_RoleAttemptExecution, ...] = ()
-
-
-def _normalize_text(value: str) -> str:
-    return " ".join(value.split())
-
-
-def _component_count(mask: np.ndarray) -> int:
-    """Count 4-connected components without requiring OpenCV/scipy."""
-
-    remaining = np.asarray(mask, dtype=bool).copy()
-    if remaining.ndim != 2:
-        raise ValueError("mask must be 2-D")
-    count = 0
-    height, width = remaining.shape
-    while remaining.any():
-        row, column = np.argwhere(remaining)[0]
-        count += 1
-        stack = [(int(row), int(column))]
-        remaining[row, column] = False
-        while stack:
-            current_row, current_column = stack.pop()
-            for next_row, next_column in (
-                (current_row - 1, current_column),
-                (current_row + 1, current_column),
-                (current_row, current_column - 1),
-                (current_row, current_column + 1),
-            ):
-                if (
-                    0 <= next_row < height
-                    and 0 <= next_column < width
-                    and remaining[next_row, next_column]
-                ):
-                    remaining[next_row, next_column] = False
-                    stack.append((next_row, next_column))
-    return count
-
-
-def _largest_component(mask: np.ndarray) -> np.ndarray:
-    """Keep the largest 4-connected component of a binary proposal."""
-
-    remaining = np.asarray(mask, dtype=bool).copy()
-    if remaining.ndim != 2:
-        raise ValueError("mask must be 2-D")
-    largest: list[tuple[int, int]] = []
-    height, width = remaining.shape
-    while remaining.any():
-        row, column = np.argwhere(remaining)[0]
-        component: list[tuple[int, int]] = []
-        stack = [(int(row), int(column))]
-        remaining[row, column] = False
-        while stack:
-            current_row, current_column = stack.pop()
-            component.append((current_row, current_column))
-            for next_row, next_column in (
-                (current_row - 1, current_column),
-                (current_row + 1, current_column),
-                (current_row, current_column - 1),
-                (current_row, current_column + 1),
-            ):
-                if (
-                    0 <= next_row < height
-                    and 0 <= next_column < width
-                    and remaining[next_row, next_column]
-                ):
-                    remaining[next_row, next_column] = False
-                    stack.append((next_row, next_column))
-        if len(component) > len(largest):
-            largest = component
-    output = np.zeros_like(remaining)
-    for row, column in largest:
-        output[row, column] = True
-    return output
-
-
-def _blue_planar_region(seed_image: Image.Image, frame_shape: tuple[int, int]) -> np.ndarray:
-    """Build a coordinate-free proposal for a saturated blue receiver region."""
-
-    rgb = np.asarray(seed_image.convert("RGB"), dtype=np.int16)
-    if rgb.shape[:2] != frame_shape:
-        raise MaskQCError(f"seed RGB shape {rgb.shape[:2]} does not match expected {frame_shape}")
-    red, green, blue = (rgb[..., index] for index in range(3))
-    saturated_blue = (blue >= 80) & ((blue - red) >= 30) & ((blue - green) >= 20)
-    return _largest_component(saturated_blue)
-
-
-def _dilate(mask: np.ndarray, radius: int = 2) -> np.ndarray:
+def _dilate(mask: NDArray, radius: int = 2) -> NDArray:
     value = np.asarray(mask, dtype=bool)
     if radius <= 0:
         return value.copy()
@@ -240,7 +118,7 @@ def _dilate(mask: np.ndarray, radius: int = 2) -> np.ndarray:
 
 def _panel_image(
     seed_image: Image.Image,
-    candidate: _Candidate,
+    candidate: ObjectMaskCandidate,
     *,
     scale: int = 2,
 ) -> Image.Image:
@@ -278,55 +156,6 @@ def _panel_image(
         fill=(255, 255, 255),
     )
     return panel
-
-
-def _candidate_info(
-    candidate_id: str,
-    query_field: str,
-    query: str,
-    mask: np.ndarray,
-    *,
-    min_area_fraction: float,
-    max_area_fraction: float,
-    duplicate_of: str | None = None,
-    seed_frame_id: int | None = None,
-) -> MaskCandidateInfo:
-    value = np.asarray(mask, dtype=bool)
-    if value.ndim != 2:
-        raise MaskQCError(f"candidate {candidate_id} mask must be 2-D")
-    area_fraction = float(value.mean())
-    nonempty = bool(value.any())
-    components = _component_count(value) if nonempty else 0
-    if not nonempty:
-        reason = "empty_seed_mask"
-    elif area_fraction < min_area_fraction:
-        reason = "seed_mask_too_small"
-    elif area_fraction > max_area_fraction:
-        reason = "seed_mask_too_large"
-    elif duplicate_of is not None:
-        reason = "duplicate_candidate_mask"
-    else:
-        reason = None
-    return MaskCandidateInfo(
-        candidate_id=candidate_id,
-        query_field=query_field,
-        query=query,
-        nonempty=nonempty,
-        area_fraction=area_fraction,
-        component_count=components,
-        basic_valid=reason is None,
-        basic_reason=reason,
-        duplicate_of=duplicate_of,
-        seed_frame_id=seed_frame_id,
-    )
-
-
-def _mask_iou(first: np.ndarray, second: np.ndarray) -> float:
-    union = np.asarray(first, dtype=bool) | np.asarray(second, dtype=bool)
-    if not union.any():
-        return 1.0
-    intersection = np.asarray(first, dtype=bool) & np.asarray(second, dtype=bool)
-    return float(intersection.sum() / union.sum())
 
 
 def _context_items(
@@ -422,7 +251,7 @@ def parse_mask_qc_response(
     reason = payload["reason"]
     if not isinstance(reason, str) or not reason.strip():
         raise MaskQCError("reason must be a non-empty string")
-    return decision, selected, confidence, _normalize_text(reason)
+    return decision, selected, confidence, normalize_text(reason)
 
 
 def _render_request(
@@ -431,7 +260,7 @@ def _render_request(
     role: RoleName,
     seed_frame_id: int,
     seed_image: Image.Image,
-    candidates: Sequence[_Candidate],
+    candidates: Sequence[ObjectMaskCandidate],
     context_images: Mapping[int, Image.Image],
     template: str,
 ) -> tuple[str, list[dict[str, Any]], tuple[Image.Image, ...]]:
@@ -507,68 +336,28 @@ def _render_request(
     return rendered, [{"role": "user", "content": content}], panels
 
 
-def _error_report(
-    role: RoleName,
-    status: MaskQCStatus,
-    reason: str,
-    *,
-    model: str | None = None,
-    raw_response: str | None = None,
-    rendered_prompt: str | None = None,
-    candidates: tuple[MaskCandidateInfo, ...] = (),
-) -> RoleMaskQC:
-    return RoleMaskQC(
-        role=role,
-        status=status,
-        selected_candidate=None,
-        selected_query_field=None,
-        selected_query=None,
-        confidence=None,
-        reason=_normalize_text(reason),
-        candidates=candidates,
-        model=model,
-        raw_response=raw_response,
-        rendered_prompt=rendered_prompt,
-    )
-
-
 def _role_query_candidates(
     context: LoopContext,
     role: RoleName,
     semantic: RoleSemanticPlan,
     mask_config: MaskConfig,
-) -> tuple[_QueryCandidate, ...]:
+) -> tuple[QueryCandidate, ...]:
+    """Compatibility shim for the canonical object-mask query planner."""
+
     assert semantic.query_bank is not None
-    candidates = [
-        _QueryCandidate(field, query)
-        for field in semantic.query_bank.recommended_order
-        if (query := getattr(semantic.query_bank, field)) is not None
-    ]
-    if mask_config.qc_query_fallback_enabled:
-        candidates.extend(
-            _QueryCandidate(f"curated_alias_{index}", query)
-            for index, query in enumerate(
-                curated_query_aliases(context, role, semantic),
-                start=1,
-            )
-        )
-    output: list[_QueryCandidate] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        query = _normalize_text(candidate.query)
-        key = query.casefold()
-        if not query or key in seen:
-            continue
-        seen.add(key)
-        output.append(_QueryCandidate(candidate.field, query))
-    return tuple(output)
+    return plan_role_queries(
+        context,
+        role,
+        semantic,
+        query_fallback_enabled=mask_config.qc_query_fallback_enabled,
+    )
 
 
 def _visual_report_from_completion(
     role: RoleName,
     *,
-    candidates: tuple[_Candidate, ...],
-    valid: tuple[_Candidate, ...],
+    candidates: tuple[ObjectMaskCandidate, ...],
+    valid: tuple[ObjectMaskCandidate, ...],
     completion: QwenCompletion,
     rendered_prompt: str,
     mask_config: MaskConfig,
@@ -582,7 +371,7 @@ def _visual_report_from_completion(
             candidate_ids=tuple(candidate.candidate_id for candidate in valid),
         )
     except MaskQCError as exc:
-        return _error_report(
+        return error_report(
             role,
             MaskQCStatus.ERROR,
             str(exc),
@@ -650,14 +439,14 @@ def _evaluate_candidate_visual_qc(
     role: RoleName,
     *,
     seed_frame_id: int,
-    candidates: tuple[_Candidate, ...],
+    candidates: tuple[ObjectMaskCandidate, ...],
     seed_image: Image.Image,
     context_images: Mapping[int, Image.Image],
     mask_config: MaskConfig,
     client: MaskQCClient,
     method: MaskQCAttemptMethod,
     provenance: dict[str, Any] | None = None,
-) -> _RoleAttemptExecution:
+) -> RoleAttemptExecution:
     """Apply the same mechanical and visual gate to text- and bbox-seeded masks."""
 
     info_tuple = tuple(candidate.info for candidate in candidates)
@@ -665,9 +454,9 @@ def _evaluate_candidate_visual_qc(
     panels = tuple(_panel_image(seed_image, candidate) for candidate in candidates)
     attempt_provenance = {} if provenance is None else provenance
     if not valid:
-        return _RoleAttemptExecution(
+        return RoleAttemptExecution(
             seed_frame_id,
-            _error_report(
+            error_report(
                 role,
                 MaskQCStatus.REJECTED,
                 "all_candidate_masks_failed_basic_checks",
@@ -680,9 +469,9 @@ def _evaluate_candidate_visual_qc(
         )
     template_path = mask_config.qc_prompt_template
     if template_path is None or not template_path.is_file():
-        return _RoleAttemptExecution(
+        return RoleAttemptExecution(
             seed_frame_id,
-            _error_report(
+            error_report(
                 role,
                 MaskQCStatus.ERROR,
                 f"mask QC prompt template is missing: {template_path}",
@@ -705,9 +494,9 @@ def _evaluate_candidate_visual_qc(
             template=template,
         )
     except (OSError, MaskQCError) as exc:
-        return _RoleAttemptExecution(
+        return RoleAttemptExecution(
             seed_frame_id,
-            _error_report(
+            error_report(
                 role,
                 MaskQCStatus.ERROR,
                 f"mask QC request could not be rendered: {exc}",
@@ -728,9 +517,9 @@ def _evaluate_candidate_visual_qc(
             request_error = exc
     if completion is None:
         assert request_error is not None
-        return _RoleAttemptExecution(
+        return RoleAttemptExecution(
             seed_frame_id,
-            _error_report(
+            error_report(
                 role,
                 MaskQCStatus.ERROR,
                 (
@@ -755,7 +544,7 @@ def _evaluate_candidate_visual_qc(
         mask_config=mask_config,
     )
 
-    return _RoleAttemptExecution(
+    return RoleAttemptExecution(
         seed_frame_id,
         report,
         candidates,
@@ -770,7 +559,7 @@ def _run_role_qc_at_seed(
     role: RoleName,
     *,
     seed_frame_id: int,
-    query_candidates: tuple[_QueryCandidate, ...],
+    query_candidates: tuple[QueryCandidate, ...],
     backend: MaskQCBackend,
     resource_path: Path,
     seed_image: Image.Image,
@@ -778,11 +567,11 @@ def _run_role_qc_at_seed(
     frame_shape: tuple[int, int],
     mask_config: MaskConfig,
     client: MaskQCClient,
-) -> _RoleAttemptExecution:
-    def generation_error(reason: str) -> _RoleAttemptExecution:
-        return _RoleAttemptExecution(
+) -> RoleAttemptExecution:
+    def generation_error(reason: str) -> RoleAttemptExecution:
+        return RoleAttemptExecution(
             seed_frame_id,
-            _error_report(
+            error_report(
                 role,
                 MaskQCStatus.ERROR,
                 f"text candidate generation failed: {reason}",
@@ -795,7 +584,7 @@ def _run_role_qc_at_seed(
         "blue" in query.split() for query in (candidate.query for candidate in query_candidates)
     ):
         try:
-            blue_prior = _blue_planar_region(seed_image, frame_shape)
+            blue_prior = blue_planar_region(seed_image, frame_shape)
         except MaskQCError as exc:
             return generation_error(str(exc))
     reserve_prior = bool(blue_prior.any()) and mask_config.qc_max_candidates >= 2
@@ -820,7 +609,7 @@ def _run_role_qc_at_seed(
         return generation_error(
             "text backend omitted mask(s) for query: " + ", ".join(missing_queries)
         )
-    candidates: list[_Candidate] = []
+    candidates: list[ObjectMaskCandidate] = []
     for index, (field, query_value) in enumerate(zip(fields, queries, strict=True)):
         assert query_value is not None
         query = query_value
@@ -835,7 +624,7 @@ def _run_role_qc_at_seed(
             return generation_error(
                 f"{role} candidate {candidate_id} has shape {mask.shape}, expected {frame_shape}"
             )
-        info = _candidate_info(
+        info = candidate_info(
             candidate_id,
             field,
             query,
@@ -850,12 +639,12 @@ def _run_role_qc_at_seed(
                     previous
                     for previous in candidates
                     if previous.info.basic_valid
-                    and _mask_iou(previous.mask, mask) >= mask_config.qc_duplicate_iou_threshold
+                    and mask_iou(previous.mask, mask) >= mask_config.qc_duplicate_iou_threshold
                 ),
                 None,
             )
             if duplicate is not None:
-                info = _candidate_info(
+                info = candidate_info(
                     candidate_id,
                     field,
                     query,
@@ -865,11 +654,13 @@ def _run_role_qc_at_seed(
                     duplicate_of=duplicate.candidate_id,
                     seed_frame_id=seed_frame_id,
                 )
-        candidates.append(_Candidate(candidate_id, field, query, seed_frame_id, mask, info))
+        candidates.append(
+            ObjectMaskCandidate(candidate_id, field, query, seed_frame_id, mask, info)
+        )
     if reserve_prior:
         candidate_id = chr(ord("A") + len(candidates))
         query = "blue planar region"
-        info = _candidate_info(
+        info = candidate_info(
             candidate_id,
             "blue_region_prior",
             query,
@@ -884,13 +675,13 @@ def _run_role_qc_at_seed(
                     previous
                     for previous in candidates
                     if previous.info.basic_valid
-                    and _mask_iou(previous.mask, blue_prior)
+                    and mask_iou(previous.mask, blue_prior)
                     >= mask_config.qc_duplicate_iou_threshold
                 ),
                 None,
             )
             if duplicate is not None:
-                info = _candidate_info(
+                info = candidate_info(
                     candidate_id,
                     "blue_region_prior",
                     query,
@@ -901,7 +692,7 @@ def _run_role_qc_at_seed(
                     seed_frame_id=seed_frame_id,
                 )
         candidates.append(
-            _Candidate(
+            ObjectMaskCandidate(
                 candidate_id,
                 "blue_region_prior",
                 query,
@@ -935,7 +726,7 @@ def _run_bbox_qc_at_seed(
     frame_shape: tuple[int, int],
     mask_config: MaskConfig,
     client: MaskQCClient,
-) -> _RoleAttemptExecution:
+) -> RoleAttemptExecution:
     """Generate one Qwen-box/SAM candidate and pass it through normal visual QC."""
 
     method = MaskQCAttemptMethod.BBOX_FALLBACK
@@ -945,9 +736,9 @@ def _run_bbox_qc_at_seed(
     }
     template_path = mask_config.qc_bbox_prompt_template
     if template_path is None or not template_path.is_file():
-        return _RoleAttemptExecution(
+        return RoleAttemptExecution(
             seed_frame_id,
-            _error_report(
+            error_report(
                 role,
                 MaskQCStatus.ERROR,
                 f"bbox localization prompt template is missing: {template_path}",
@@ -970,9 +761,9 @@ def _run_bbox_qc_at_seed(
         )
         messages = build_bbox_messages(rendered_prompt, seed_image.convert("RGB"))
     except (OSError, BboxLocalizationError) as exc:
-        return _RoleAttemptExecution(
+        return RoleAttemptExecution(
             seed_frame_id,
-            _error_report(
+            error_report(
                 role,
                 MaskQCStatus.ERROR,
                 f"bbox localization request could not be rendered: {exc}",
@@ -994,9 +785,9 @@ def _run_bbox_qc_at_seed(
     if completion is None:
         assert request_error is not None
         provenance["localization_rendered_prompt"] = rendered_prompt
-        return _RoleAttemptExecution(
+        return RoleAttemptExecution(
             seed_frame_id,
-            _error_report(
+            error_report(
                 role,
                 MaskQCStatus.ERROR,
                 (
@@ -1022,9 +813,9 @@ def _run_bbox_qc_at_seed(
     try:
         localization = parse_bbox_localization(completion.content)
     except BboxLocalizationError as exc:
-        return _RoleAttemptExecution(
+        return RoleAttemptExecution(
             seed_frame_id,
-            _error_report(
+            error_report(
                 role,
                 MaskQCStatus.ERROR,
                 f"invalid bbox localization response: {exc}",
@@ -1042,9 +833,9 @@ def _run_bbox_qc_at_seed(
         status = (
             MaskQCStatus.AMBIGUOUS if localization.status == "ambiguous" else MaskQCStatus.REJECTED
         )
-        return _RoleAttemptExecution(
+        return RoleAttemptExecution(
             seed_frame_id,
-            _error_report(
+            error_report(
                 role,
                 status,
                 f"bbox localization {localization.status}: {localization.reason}",
@@ -1070,9 +861,9 @@ def _run_bbox_qc_at_seed(
             dtype=bool,
         )
     except Exception as exc:  # noqa: BLE001 - external SAM backend boundary
-        return _RoleAttemptExecution(
+        return RoleAttemptExecution(
             seed_frame_id,
-            _error_report(
+            error_report(
                 role,
                 MaskQCStatus.ERROR,
                 f"SAM bbox candidate generation failed: {exc}",
@@ -1083,9 +874,9 @@ def _run_bbox_qc_at_seed(
             provenance,
         )
     if mask.shape != frame_shape:
-        return _RoleAttemptExecution(
+        return RoleAttemptExecution(
             seed_frame_id,
-            _error_report(
+            error_report(
                 role,
                 MaskQCStatus.ERROR,
                 f"{role} bbox candidate has shape {mask.shape}, expected {frame_shape}",
@@ -1109,7 +900,7 @@ def _run_bbox_qc_at_seed(
     candidate_id = "BBOX"
     query_field = "bbox_fallback"
     query = f"Qwen-localized {role} bounding box"
-    info = _candidate_info(
+    info = candidate_info(
         candidate_id,
         query_field,
         query,
@@ -1118,7 +909,7 @@ def _run_bbox_qc_at_seed(
         max_area_fraction=mask_config.qc_max_area_fraction,
         seed_frame_id=seed_frame_id,
     )
-    candidate = _Candidate(
+    candidate = ObjectMaskCandidate(
         candidate_id,
         query_field,
         query,
@@ -1140,47 +931,7 @@ def _run_bbox_qc_at_seed(
     )
 
 
-def _attempt_report(execution: _RoleAttemptExecution) -> MaskQCAttempt:
-    report = execution.report
-    return MaskQCAttempt(
-        seed_frame_id=execution.seed_frame_id,
-        status=report.status,
-        selected_candidate=report.selected_candidate,
-        selected_query_field=report.selected_query_field,
-        selected_query=report.selected_query,
-        confidence=report.confidence,
-        reason=report.reason,
-        method=execution.method,
-        candidates=report.candidates,
-        model=report.model,
-        raw_response=report.raw_response,
-        rendered_prompt=report.rendered_prompt,
-        provenance=execution.provenance,
-    )
-
-
-def _finalize_role_execution(
-    final: _RoleAttemptExecution,
-    attempts: Sequence[_RoleAttemptExecution],
-    *,
-    reason: str | None = None,
-) -> _RoleExecution:
-    report = final.report
-    if reason is not None:
-        report = replace(report, reason=_normalize_text(reason))
-    report = replace(
-        report,
-        attempts=tuple(_attempt_report(attempt) for attempt in attempts),
-    )
-    return _RoleExecution(
-        report=report,
-        candidates=final.candidates,
-        panels=final.panels,
-        attempts=tuple(attempts),
-    )
-
-
-def _run_role_qc(
+def _resolve_role(
     context: LoopContext,
     role: RoleName,
     semantic: RoleSemanticPlan,
@@ -1192,30 +943,16 @@ def _run_role_qc(
     frame_shape: tuple[int, int],
     mask_config: MaskConfig,
     client: MaskQCClient,
-) -> _RoleExecution:
-    if semantic.status is SemanticStatus.NO_CLEAR_SEED:
-        return _RoleExecution(
-            _error_report(role, MaskQCStatus.REJECTED, "semantic_plan_no_clear_seed"),
-            (),
-        )
-    assert semantic.seed_frame_id is not None
-    assert semantic.query_bank is not None
-    query_candidates = _role_query_candidates(context, role, semantic, mask_config)
-    seed_frame_ids = [semantic.seed_frame_id]
-    if mask_config.qc_seed_fallback_enabled:
-        seed_frame_ids.extend(
-            frame_id
-            for frame_id in context.seed_candidates(role)
-            if frame_id != semantic.seed_frame_id
-        )
-
-    executions: list[_RoleAttemptExecution] = []
-    for seed_frame_id in seed_frame_ids:
+) -> RoleResolution:
+    def run_text_attempt(
+        seed_frame_id: int,
+        query_candidates: tuple[QueryCandidate, ...],
+    ) -> RoleAttemptExecution:
         try:
             seed_image = seed_images[seed_frame_id]
         except KeyError as exc:
             raise MaskQCError(f"missing seed RGB image for {role} frame {seed_frame_id}") from exc
-        execution = _run_role_qc_at_seed(
+        return _run_role_qc_at_seed(
             context,
             role,
             seed_frame_id=seed_frame_id,
@@ -1228,49 +965,29 @@ def _run_role_qc(
             mask_config=mask_config,
             client=client,
         )
-        executions.append(execution)
-        if execution.report.status in {MaskQCStatus.PASSED, MaskQCStatus.ERROR}:
-            return _finalize_role_execution(execution, executions)
 
-    bbox_seed_frame_ids: list[int] = []
-    if mask_config.qc_bbox_fallback_enabled:
-        # This block is deliberately after the complete text/seed loop.  A box
-        # proposal must never pre-empt a text candidate that passed visual QC.
-        bbox_seed_frame_ids = list(seed_frame_ids)
-        for seed_frame_id in bbox_seed_frame_ids:
-            seed_image = seed_images[seed_frame_id]
-            execution = _run_bbox_qc_at_seed(
-                context,
-                role,
-                seed_frame_id=seed_frame_id,
-                backend=backend,
-                resource_path=resource_path,
-                seed_image=seed_image,
-                context_images=context_images,
-                frame_shape=frame_shape,
-                mask_config=mask_config,
-                client=client,
-            )
-            executions.append(execution)
-            if execution.report.status in {MaskQCStatus.PASSED, MaskQCStatus.ERROR}:
-                return _finalize_role_execution(execution, executions)
+    def run_bbox_attempt(seed_frame_id: int) -> RoleAttemptExecution:
+        return _run_bbox_qc_at_seed(
+            context,
+            role,
+            seed_frame_id=seed_frame_id,
+            backend=backend,
+            resource_path=resource_path,
+            seed_image=seed_images[seed_frame_id],
+            context_images=context_images,
+            frame_shape=frame_shape,
+            mask_config=mask_config,
+            client=client,
+        )
 
-    meaningful = [
-        execution
-        for execution in executions
-        if any(candidate.info.basic_valid for candidate in execution.candidates)
-    ]
-    final = meaningful[-1] if meaningful else executions[-1]
-    attempted = ",".join(str(frame_id) for frame_id in seed_frame_ids)
-    bbox_attempted = ",".join(str(frame_id) for frame_id in bbox_seed_frame_ids)
-    suffix = f"; text seed frames: {attempted}"
-    if bbox_seed_frame_ids:
-        suffix += f"; bbox fallback seed frames: {bbox_attempted}"
-    return _finalize_role_execution(
-        final,
-        executions,
-        reason=f"{final.report.reason}{suffix}",
+    resolver = ObjectMaskResolver(
+        run_text_attempt=run_text_attempt,
+        run_bbox_attempt=run_bbox_attempt,
+        query_fallback_enabled=mask_config.qc_query_fallback_enabled,
+        seed_fallback_enabled=mask_config.qc_seed_fallback_enabled,
+        bbox_fallback_enabled=mask_config.qc_bbox_fallback_enabled,
     )
+    return resolver.resolve(context, role, semantic)
 
 
 def run_mask_qc_stage(
@@ -1299,7 +1016,7 @@ def run_mask_qc_stage(
         except Exception as exc:  # noqa: BLE001 - health failures must fail closed
             error = str(exc)
             reports = tuple(
-                _error_report(
+                error_report(
                     semantic.role,
                     MaskQCStatus.ERROR,
                     f"mask QC health failed: {error}",
@@ -1311,11 +1028,11 @@ def run_mask_qc_stage(
                 selected_masks={},
                 health={"status": "error", "error": error},
             )
-    executions: list[_RoleExecution] = []
+    executions: list[RoleResolution] = []
     for semantic in semantic_plan.role_plans:
         role = semantic.role
         executions.append(
-            _run_role_qc(
+            _resolve_role(
                 context,
                 role,
                 semantic,
@@ -1328,10 +1045,10 @@ def run_mask_qc_stage(
                 client=client,
             )
         )
-    selected_masks: dict[RoleName, np.ndarray] = {}
-    candidate_masks: dict[RoleName, dict[str, np.ndarray]] = {}
+    selected_masks: dict[RoleName, NDArray] = {}
+    candidate_masks: dict[RoleName, dict[str, NDArray]] = {}
     candidate_panels: dict[RoleName, dict[str, Image.Image]] = {}
-    attempt_candidate_masks: dict[RoleName, dict[int, dict[str, np.ndarray]]] = {}
+    attempt_candidate_masks: dict[RoleName, dict[int, dict[str, NDArray]]] = {}
     attempt_candidate_panels: dict[RoleName, dict[int, dict[str, Image.Image]]] = {}
     for semantic, execution in zip(semantic_plan.role_plans, executions, strict=True):
         role = semantic.role
@@ -1346,7 +1063,7 @@ def run_mask_qc_stage(
                 strict=True,
             )
         }
-        role_attempt_masks: dict[int, dict[str, np.ndarray]] = {}
+        role_attempt_masks: dict[int, dict[str, NDArray]] = {}
         role_attempt_panels: dict[int, dict[str, Image.Image]] = {}
         for attempt in execution.attempts:
             masks_at_seed = role_attempt_masks.setdefault(attempt.seed_frame_id, {})
@@ -1383,78 +1100,3 @@ def run_mask_qc_stage(
         attempt_candidate_masks=attempt_candidate_masks,
         attempt_candidate_panels=attempt_candidate_panels,
     )
-
-
-def save_mask_qc_artifacts(
-    store: ArtifactStore,
-    run_id: str,
-    context: LoopContext,
-    result: MaskQCResult,
-    *,
-    candidate_masks: Mapping[str, Mapping[str, np.ndarray]] | None = None,
-) -> Path:
-    """Persist QC decisions and optional candidate masks for later review."""
-
-    episode_dir = store.episode_dir(run_id, context.episode)
-    reports = result.to_json()
-    reports["episode"] = context.episode.to_json()
-    masks_to_save = result.candidate_masks if candidate_masks is None else candidate_masks
-    mask_paths: dict[str, dict[str, str]] = {}
-    if masks_to_save:
-        for role, masks in masks_to_save.items():
-            mask_paths[role] = {}
-            for candidate_id, mask in masks.items():
-                path = store.write_png(
-                    episode_dir / role / "qc_candidates" / f"candidate_{candidate_id}.mask.png",
-                    np.asarray(mask, dtype=bool),
-                )
-                mask_paths[role][candidate_id] = str(path.relative_to(episode_dir))
-    panel_paths: dict[str, dict[str, str]] = {}
-    for role, panels in result.candidate_panels.items():
-        panel_paths[role] = {}
-        for candidate_id, panel in panels.items():
-            path = store.write_png(
-                episode_dir / role / "qc_candidates" / f"candidate_{candidate_id}.overlay.png",
-                np.asarray(panel.convert("RGB")),
-                rgb=True,
-            )
-            panel_paths[role][candidate_id] = str(path.relative_to(episode_dir))
-    attempt_paths: dict[str, dict[str, dict[str, Any]]] = {}
-    for report in result.role_reports:
-        role = report.role
-        mask_attempts = result.attempt_candidate_masks.get(role, {})
-        panel_attempts = result.attempt_candidate_panels.get(role, {})
-        frame_ids = sorted(set(mask_attempts) | set(panel_attempts))
-        if not frame_ids:
-            continue
-        attempt_paths[role] = {}
-        for seed_frame_id in frame_ids:
-            frame_key = f"frame_{seed_frame_id:06d}"
-            frame_dir = episode_dir / role / "qc_candidates" / frame_key
-            frame_mask_paths: dict[str, str] = {}
-            for candidate_id, mask in mask_attempts.get(seed_frame_id, {}).items():
-                path = store.write_png(
-                    frame_dir / f"candidate_{candidate_id}.mask.png",
-                    np.asarray(mask, dtype=bool),
-                )
-                frame_mask_paths[candidate_id] = str(path.relative_to(episode_dir))
-            frame_panel_paths: dict[str, str] = {}
-            for candidate_id, panel in panel_attempts.get(seed_frame_id, {}).items():
-                path = store.write_png(
-                    frame_dir / f"candidate_{candidate_id}.overlay.png",
-                    np.asarray(panel.convert("RGB")),
-                    rgb=True,
-                )
-                frame_panel_paths[candidate_id] = str(path.relative_to(episode_dir))
-            attempt_paths[role][frame_key] = {
-                "seed_frame_id": seed_frame_id,
-                "candidate_masks": frame_mask_paths,
-                "candidate_panels": frame_panel_paths,
-            }
-    reports["artifacts"] = {
-        "candidate_masks": mask_paths,
-        "candidate_panels": panel_paths,
-        "attempts": attempt_paths,
-    }
-    report_path = store.write_json(episode_dir / "mask_qc.json", reports)
-    return report_path

@@ -10,14 +10,22 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import scripts.process_dataset as process_module
-import scripts.render_urdf_gripper_masks as urdf_module
-from scripts.process_dataset import (
+import scripts.process_dataset as legacy_process_cli
+from robotwin_annotation_v2.application import dataset_runtime as process_module
+from robotwin_annotation_v2.application import urdf_batch as urdf_module
+from robotwin_annotation_v2.application.dataset_runtime import (
+    select_urdf_source_episodes,
+)
+from robotwin_annotation_v2.application.discovery import (
     DiscoveredEpisode,
     build_dynamic_manifest,
     discover_episodes,
-    select_urdf_source_episodes,
 )
+
+
+def test_process_dataset_launcher_delegates_to_canonical_runtime() -> None:
+    assert legacy_process_cli.main is process_module.main
+    assert legacy_process_cli._run_from_args is process_module._run_from_args
 
 
 class _EpisodeRecordingUI(process_module.ProcessUI):
@@ -333,7 +341,6 @@ def test_discover_episodes_rejects_invalid_chunk_name(tmp_path: Path) -> None:
 
 def test_dynamic_manifest_contains_measured_contract(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     first = DiscoveredEpisode(
         episode_id=7,
@@ -347,17 +354,12 @@ def test_dynamic_manifest_contains_measured_contract(
         video=tmp_path / "episode_000008.mp4",
         sidecar=tmp_path / "episode_000008.hdf5",
     )
-    monkeypatch.setattr(
-        process_module,
-        "_measure_episode",
-        lambda _episode: (24, (240, 320), 1),
-    )
-
     manifest = build_dynamic_manifest(
         tmp_path,
         task="task",
         camera="cam_high",
         episodes=(first, second),
+        measure_episode_fn=lambda _episode: (24, (240, 320), 1),
     )
 
     assert manifest["format_version"] == "robotwin_dataset_manifest_dynamic_v1"
@@ -517,6 +519,33 @@ def test_process_dataset_target_receiver_only_skips_gripper_and_uses_sam_resume(
     assert summary["stage_mode"] == "object_source_only"
 
 
+def test_process_dataset_rejects_deprecated_alias_conflict_before_runtime_load(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_runtime_load() -> Any:
+        pytest.fail("deprecated alias validation must precede model loading")
+
+    monkeypatch.setattr(process_module, "_load_sam_runtime", unexpected_runtime_load)
+    config = process_module.load_config(
+        Path("configs/pilot_move_pillbottle_pad.yaml")
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="object_source_only and deprecated target_receiver_only",
+    ):
+        process_module.process_dataset(
+            config,
+            dataset_root=tmp_path / "unused",
+            task="task",
+            camera="cam_high",
+            output_root=tmp_path / "output",
+            object_source_only=False,
+            target_receiver_only=True,
+        )
+
+
 def test_target_only_rejects_sam_gripper_before_loading_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -604,13 +633,17 @@ def test_target_only_review_manifest_lists_only_applicable_roles(
         select_best_masks=lambda *_args, **_kwargs: {
             0: SimpleNamespace(path=masks_path, run_id="target-only")
         },
-        _load_masks=lambda _path: artifact,
-        _output_video_name=lambda **_kwargs: "episode_000000.mp4",
+        load_masks=lambda _path: artifact,
+        output_video_name=lambda **_kwargs: "episode_000000.mp4",
         render_video=render_video,
-        _sha256=lambda _path: "sha256",
+        file_sha256=lambda _path: "sha256",
         build_sheets=lambda *_args, **_kwargs: [],
     )
-    monkeypatch.setitem(sys.modules, "render_coverage20_videos", fake_render)
+    monkeypatch.setitem(
+        sys.modules,
+        "robotwin_annotation_v2.adapters.rendering",
+        fake_render,
+    )
     monkeypatch.setattr(process_module, "RoboTwinDataset", FakeDataset)
 
     report = process_module._render_processed(
@@ -693,6 +726,42 @@ def test_parse_args_accepts_path_only_modes(
 
     assert args.data_path == Path("dataset")
     assert args.path_mode == expected
+
+
+@pytest.mark.parametrize(
+    ("mode", "semantic_prompt", "qc_prompt"),
+    (
+        (
+            process_module.AnnotationMode.PICK_PLACE,
+            "target_receiver_semantic_open_set.txt",
+            "mask_candidate_qc_open_set.txt",
+        ),
+        (
+            process_module.AnnotationMode.TARGET_ONLY,
+            "target_only_semantic_open_set.txt",
+            "target_only_mask_candidate_qc_open_set.txt",
+        ),
+    ),
+)
+def test_path_only_default_profiles_enable_s1_through_s3(
+    mode: Any,
+    semantic_prompt: str,
+    qc_prompt: str,
+) -> None:
+    config = process_module.load_config(process_module.PATH_MODE_CONFIGS[mode])
+
+    assert config.annotation.mode is mode
+    assert config.qwen.prompt_template.name == semantic_prompt
+    assert config.mask.qc_prompt_template is not None
+    assert config.mask.qc_prompt_template.name == qc_prompt
+    assert config.mask.qc_max_candidates == 8
+    assert config.mask.qc_query_fallback_enabled
+    assert config.mask.qc_seed_fallback_enabled
+    assert config.mask.qc_bbox_fallback_enabled
+    assert config.mask.qc_bbox_prompt_template is not None
+    assert config.mask.qc_bbox_prompt_template.name == (
+        "open_set_bbox_localization.txt"
+    )
 
 
 def test_path_only_single_task_dispatches_from_manifest(

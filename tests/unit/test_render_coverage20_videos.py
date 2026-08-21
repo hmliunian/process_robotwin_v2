@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -7,8 +8,9 @@ import numpy as np
 import pytest
 from PIL import Image
 
-import scripts.render_coverage20_videos as render_module
-from scripts.render_coverage20_videos import (
+import robotwin_annotation_v2.adapters.rendering as render_module
+import scripts.render_coverage20_videos as legacy_render_cli
+from robotwin_annotation_v2.adapters.rendering import (
     HALO_COLOR,
     ROLE_COLORS,
     TARGET_HOLD_COLOR,
@@ -19,9 +21,43 @@ from scripts.render_coverage20_videos import (
     _output_video_name,
     _text_prompt_slug,
     build_sheets,
+    file_sha256,
+    load_masks,
     overlay_frame,
     select_best_masks,
 )
+
+
+def test_launcher_delegates_to_adapter_main() -> None:
+    assert legacy_render_cli.main is render_module.main
+
+
+def test_public_file_sha256_returns_standard_digest(tmp_path: Path) -> None:
+    path = tmp_path / "artifact.bin"
+    payload = b"canonical-render-artifact\x00" * 65_537
+    path.write_bytes(payload)
+
+    assert file_sha256(path) == hashlib.sha256(payload).hexdigest()
+
+
+def test_private_load_masks_wrapper_matches_public_reader(tmp_path: Path) -> None:
+    path = tmp_path / "masks.npz"
+    masks = np.zeros((1, 1, 2, 3), dtype=bool)
+    np.savez_compressed(
+        path,
+        format_version=np.asarray("robotwin_visible_masks_v2"),
+        frame_count=np.asarray(1, dtype=np.int64),
+        masks=masks,
+        instance_names=np.asarray(["target_0"]),
+        roles=np.asarray(["target"]),
+        annotation_status=np.asarray(["valid"]),
+    )
+
+    public = load_masks(path)
+    compatibility = _load_masks(path)
+
+    assert public.instance_names == compatibility.instance_names
+    np.testing.assert_array_equal(public.masks, compatibility.masks)
 
 
 def test_text_prompt_filename_is_readable_portable_and_unique() -> None:

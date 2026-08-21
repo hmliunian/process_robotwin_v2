@@ -14,6 +14,8 @@ from urllib.parse import urlsplit, urlunsplit
 import numpy as np
 from PIL import Image
 
+NDArray = np.ndarray[Any, Any]
+
 
 class QwenServiceError(RuntimeError):
     """The Qwen service is unavailable or returned an invalid API response."""
@@ -25,7 +27,7 @@ class QwenCompletion:
     model: str
 
 
-def image_data_url(image: Image.Image | np.ndarray) -> str:
+def image_data_url(image: Image.Image | NDArray) -> str:
     """Encode one RGB image as an inline PNG data URL."""
 
     if isinstance(image, Image.Image):

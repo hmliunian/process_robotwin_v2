@@ -11,12 +11,19 @@ import tempfile
 import uuid
 import zipfile
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 
+from .adapters.canonical_masks import (
+    CanonicalMaskBundle,
+    CanonicalMaskError,
+    build_canonical_mask_bundle,
+    read_canonical_masks,
+)
+from .adapters.canonical_publication import CanonicalMaskPublisher
 from .domain import AnnotationMode, ObjectRole, annotation_spec
 from .mask_schema import (
     FRAME_ENCODING_LEGEND,
@@ -29,11 +36,12 @@ from .mask_schema import (
     validate_frame_encoding,
 )
 
+NDArray = np.ndarray[Any, Any]
+
 MASK_RUN_FORMAT_VERSION = "robotwin_mask_run_v2"
 PROVENANCE_FORMAT_VERSION = "robotwin_frame_provenance_v2"
 URDF_PRODUCT_FORMAT_VERSION = "robotwin_urdf_gripper_masks_v2"
 PROCESS_SUMMARY_FORMAT_VERSION = "robotwin_process_dataset_summary_v1"
-LOOP_FORMAT_VERSION = "robotwin_loop_context_v1"
 DERIVATION_SOURCE_LINEAGE_FORMAT_VERSION = "robotwin_derivation_source_lineage_v1"
 DERIVATION_SOURCE_LINEAGE_V2_FORMAT_VERSION = (
     "robotwin_derivation_source_lineage_v2"
@@ -272,6 +280,8 @@ def publisher_implementation_identity() -> dict[str, Any]:
     project_root = Path(__file__).resolve().parents[2]
     paths = (
         Path(__file__).resolve(),
+        project_root / "src/robotwin_annotation_v2/adapters/canonical_masks.py",
+        project_root / "src/robotwin_annotation_v2/adapters/canonical_publication.py",
         project_root / "src/robotwin_annotation_v2/mask_schema.py",
     )
     return {
@@ -310,18 +320,18 @@ def _safe_child(root: Path, relative: Any, *, label: str) -> Path:
     return candidate
 
 
-def _small_strings(array: np.ndarray) -> tuple[str, ...]:
+def _small_strings(array: NDArray) -> tuple[str, ...]:
     return tuple(str(item) for item in array.tolist())
 
 
-def _scalar_int(value: np.ndarray, *, label: str) -> int:
+def _scalar_int(value: NDArray, *, label: str) -> int:
     array = np.asarray(value)
     if array.ndim != 0 or array.dtype.kind not in {"i", "u"}:
         raise UrdfGripperPublishError(f"{label} must be one integer scalar")
     return int(array.item())
 
 
-def _load_source_masks(
+def _load_source_masks_compat(
     path: Path,
     *,
     required_roles: tuple[ObjectRole, ...],
@@ -410,6 +420,45 @@ def _load_source_masks(
         "frame_encoding": frame_encoding,
         "annotation_status": statuses,
         "qc_status": qc_statuses,
+    }
+
+
+def _load_source_masks(
+    path: Path,
+    *,
+    required_roles: tuple[ObjectRole, ...],
+) -> dict[str, Any]:
+    """Read canonical source masks through the shared codec with a shim."""
+
+    try:
+        bundle = read_canonical_masks(path)
+    except (CanonicalMaskError, FileNotFoundError):
+        return _load_source_masks_compat(path, required_roles=required_roles)
+    required_names = {role.value for role in required_roles}
+    for index, role in enumerate((ObjectRole.TARGET, ObjectRole.RECEIVER)):
+        if role.value in required_names:
+            if (
+                bundle.annotation_status[index] != "valid"
+                or bundle.qc_status[index] != "passed"
+            ):
+                raise UrdfGripperPublishError(
+                    f"source {role.value} must be valid and QC-passed"
+                )
+        elif (
+            bundle.annotation_status[index] != "not_applicable"
+            or bundle.qc_status[index] != "not_applicable"
+            or bundle.masks[index].any()
+        ):
+            raise UrdfGripperPublishError(
+                f"source {role.value} must be zero and not_applicable"
+            )
+    return {
+        "format_version": bundle.format_version,
+        "frame_count": bundle.frame_count,
+        "masks": np.asarray(bundle.masks).copy(),
+        "frame_encoding": np.asarray(bundle.frame_encoding).copy(),
+        "annotation_status": bundle.annotation_status,
+        "qc_status": bundle.qc_status,
     }
 
 
@@ -524,10 +573,10 @@ def _load_product(
 def _validate_backend_combined_masks(
     path: Path,
     *,
-    source_masks: np.ndarray,
-    source_frame_encoding: np.ndarray,
+    source_masks: NDArray,
+    source_frame_encoding: NDArray,
     source_mask_format: str,
-    gripper_track: np.ndarray,
+    gripper_track: NDArray,
     active_arm: str,
 ) -> None:
     try:
@@ -788,7 +837,7 @@ def _validate_source_run_contract(
     else:
         raw_mode = contract.get("annotation_mode")
         try:
-            source_mode = AnnotationMode(raw_mode)
+            source_mode = AnnotationMode(cast(str, raw_mode))
         except (TypeError, ValueError) as exc:
             raise UrdfGripperPublishError(
                 f"source run contract has unsupported annotation_mode: {raw_mode!r}"
@@ -939,10 +988,10 @@ def write_source_run_contract(
     )
     path = run_dir / SOURCE_RUN_CONTRACT_FILENAME
     _write_immutable_json(path, contract, description="source run contract")
-    return _json_clone(contract)
+    return cast(dict[str, Any], _json_clone(contract))
 
 
-def validate_source_run_contract(
+def _validate_persisted_source_run_contract(
     source_run_dir: Path,
     *,
     run_id: str,
@@ -986,7 +1035,30 @@ def validate_source_run_contract(
         raise UrdfGripperPublishError(
             "source run contract requested episode ids differ from the expected run"
         )
-    return _json_clone(contract)
+    return cast(dict[str, Any], _json_clone(contract))
+
+
+# Compatibility shim: remove after repository callers use SourceLineageValidator
+# and the function seam has remained available for one release.
+def validate_source_run_contract(
+    source_run_dir: Path,
+    *,
+    run_id: str,
+    dataset_root: Path,
+    task: str,
+    camera: str,
+    requested_episode_ids: Sequence[int],
+) -> dict[str, Any]:
+    """Compatibility entry point for :class:`SourceLineageValidator`."""
+
+    return _SOURCE_LINEAGE_VALIDATOR.validate_run_contract(
+        source_run_dir,
+        run_id=run_id,
+        dataset_root=dataset_root,
+        task=task,
+        camera=camera,
+        requested_episode_ids=requested_episode_ids,
+    )
 
 
 def _validate_source_summary(
@@ -1035,7 +1107,7 @@ def _validate_source_summary(
                 "source process summary contains an invalid episode record"
             )
         try:
-            record_id = int(raw_id)
+            record_id = int(cast(str, raw_id))
         except (TypeError, ValueError) as exc:
             raise UrdfGripperPublishError(
                 "source process summary contains an invalid episode record"
@@ -1471,7 +1543,10 @@ def _validate_derivation_source_episode(
 
     dynamic = source_metadata["dynamic_manifest"]
     raw_shape = dynamic.get("frame_shape_hw")
-    frame_shape = tuple(int(item) for item in np.asarray(source["masks"]).shape[2:])
+    frame_shape = cast(
+        tuple[int, int],
+        tuple(int(item) for item in np.asarray(source["masks"]).shape[2:]),
+    )
     if (
         not isinstance(raw_shape, list)
         or len(raw_shape) != 2
@@ -1596,6 +1671,116 @@ def _validate_derivation_source_episode(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class SourceLineageValidator:
+    """Own the source trust boundary for canonical derived publications.
+
+    The public methods preserve the distinct validation timings used by the
+    streaming contract, completion receipt, and derivation workflow.  The
+    shared implementation verifies the same path, identity, and content hashes
+    at each boundary instead of treating an earlier validation as reusable.
+    """
+
+    def _validate_episode(
+        self,
+        source_episode_dir: Path,
+        *,
+        task: str,
+        camera: str,
+        episode_index: int,
+        expected_frame_count: int | None,
+        expected_dataset_root: Path | None,
+        require_completion_receipt: bool,
+    ) -> DerivationSourceEpisode:
+        return _validate_derivation_source_episode(
+            source_episode_dir,
+            task=task,
+            camera=camera,
+            episode_index=episode_index,
+            expected_frame_count=expected_frame_count,
+            expected_dataset_root=expected_dataset_root,
+            require_completion_receipt=require_completion_receipt,
+        )
+
+    def validate_episode(
+        self,
+        source_episode_dir: Path,
+        *,
+        task: str,
+        camera: str,
+        episode_index: int,
+        expected_frame_count: int | None = None,
+        expected_dataset_root: Path | None = None,
+    ) -> DerivationSourceEpisode:
+        """Validate and content-address every inherited source dependency."""
+
+        return self._validate_episode(
+            source_episode_dir,
+            task=task,
+            camera=camera,
+            episode_index=episode_index,
+            expected_frame_count=expected_frame_count,
+            expected_dataset_root=expected_dataset_root,
+            require_completion_receipt=True,
+        )
+
+    def validate_run_contract(
+        self,
+        source_run_dir: Path,
+        *,
+        run_id: str,
+        dataset_root: Path,
+        task: str,
+        camera: str,
+        requested_episode_ids: Sequence[int],
+    ) -> dict[str, Any]:
+        """Validate a persisted streaming-source contract."""
+
+        return _validate_persisted_source_run_contract(
+            source_run_dir,
+            run_id=run_id,
+            dataset_root=dataset_root,
+            task=task,
+            camera=camera,
+            requested_episode_ids=requested_episode_ids,
+        )
+
+    def validate_completion_receipt(
+        self,
+        source_episode_dir: Path,
+        *,
+        task: str,
+        camera: str,
+        episode_index: int,
+        expected_frame_count: int | None = None,
+        expected_dataset_root: Path | None = None,
+    ) -> dict[str, Any]:
+        """Validate a receipt and all contract/artifact identities it freezes."""
+
+        validated = self.validate_episode(
+            source_episode_dir,
+            task=task,
+            camera=camera,
+            episode_index=episode_index,
+            expected_frame_count=expected_frame_count,
+            expected_dataset_root=expected_dataset_root,
+        )
+        if (
+            validated.lineage.get("format_version")
+            != DERIVATION_SOURCE_LINEAGE_V2_FORMAT_VERSION
+        ):
+            raise UrdfGripperPublishError(
+                "source completion receipts are only available for v2 lineage"
+            )
+        return _read_json_object(
+            validated.episode_dir / SOURCE_EPISODE_COMPLETION_RECEIPT_FILENAME,
+            description="source completion receipt",
+        )
+
+
+_SOURCE_LINEAGE_VALIDATOR = SourceLineageValidator()
+
+
 def write_source_episode_completion_receipt(
     source_episode_dir: Path,
     *,
@@ -1612,7 +1797,7 @@ def write_source_episode_completion_receipt(
         raise UrdfGripperPublishError(
             "source completion receipt status must be completed or skipped_complete"
         )
-    validated = _validate_derivation_source_episode(
+    validated = _SOURCE_LINEAGE_VALIDATOR._validate_episode(
         source_episode_dir,
         task=task,
         camera=camera,
@@ -1651,18 +1836,19 @@ def write_source_episode_completion_receipt(
         receipt,
         description="source completion receipt",
     )
-    _validate_derivation_source_episode(
+    _SOURCE_LINEAGE_VALIDATOR.validate_episode(
         source_episode_dir,
         task=task,
         camera=camera,
         episode_index=episode_index,
         expected_frame_count=expected_frame_count,
         expected_dataset_root=expected_dataset_root,
-        require_completion_receipt=True,
     )
-    return _json_clone(receipt)
+    return cast(dict[str, Any], _json_clone(receipt))
 
 
+# Compatibility shims: remove after repository callers use SourceLineageValidator
+# and the function seams have remained available for one release.
 def validate_derivation_source_episode(
     source_episode_dir: Path,
     *,
@@ -1672,16 +1858,15 @@ def validate_derivation_source_episode(
     expected_frame_count: int | None = None,
     expected_dataset_root: Path | None = None,
 ) -> DerivationSourceEpisode:
-    """Validate and content-address every inherited source dependency."""
+    """Compatibility entry point for :class:`SourceLineageValidator`."""
 
-    return _validate_derivation_source_episode(
+    return _SOURCE_LINEAGE_VALIDATOR.validate_episode(
         source_episode_dir,
         task=task,
         camera=camera,
         episode_index=episode_index,
         expected_frame_count=expected_frame_count,
         expected_dataset_root=expected_dataset_root,
-        require_completion_receipt=True,
     )
 
 
@@ -1694,26 +1879,15 @@ def validate_source_episode_completion_receipt(
     expected_frame_count: int | None = None,
     expected_dataset_root: Path | None = None,
 ) -> dict[str, Any]:
-    """Validate a receipt and all contract/artifact identities it freezes."""
+    """Compatibility entry point for :class:`SourceLineageValidator`."""
 
-    validated = validate_derivation_source_episode(
+    return _SOURCE_LINEAGE_VALIDATOR.validate_completion_receipt(
         source_episode_dir,
         task=task,
         camera=camera,
         episode_index=episode_index,
         expected_frame_count=expected_frame_count,
         expected_dataset_root=expected_dataset_root,
-    )
-    if (
-        validated.lineage.get("format_version")
-        != DERIVATION_SOURCE_LINEAGE_V2_FORMAT_VERSION
-    ):
-        raise UrdfGripperPublishError(
-            "source completion receipts are only available for v2 lineage"
-        )
-    return _read_json_object(
-        validated.episode_dir / SOURCE_EPISODE_COMPLETION_RECEIPT_FILENAME,
-        description="source completion receipt",
     )
 
 
@@ -1855,7 +2029,7 @@ def _build_public_payloads(
     validated_source: DerivationSourceEpisode,
     product: Mapping[str, Any],
     artifact_identities: Mapping[str, Mapping[str, Any]],
-) -> tuple[dict[str, np.ndarray], dict[str, Any], dict[str, Any]]:
+) -> tuple[CanonicalMaskBundle, dict[str, Any], dict[str, Any]]:
     source = validated_source.source_masks
     source_manifest = validated_source.manifest
     source_provenance = validated_source.provenance
@@ -1893,16 +2067,14 @@ def _build_public_payloads(
         [*source["qc_status"][:2], "not_run", "not_run"]
     )
     qc_status[active_index] = "passed"
-    masks_payload = {
-        "format_version": np.asarray(MASK_FORMAT_VERSION),
-        "frame_count": np.asarray(frame_count, dtype=np.int64),
-        "masks": masks,
-        "instance_names": np.asarray(INSTANCE_NAMES),
-        "roles": np.asarray(ROLES),
-        "annotation_status": annotation_status,
-        "qc_status": qc_status,
-        "frame_encoding": frame_encoding,
-    }
+    masks_bundle = build_canonical_mask_bundle(
+        destination_dir / "masks.npz",
+        frame_count=frame_count,
+        masks=masks,
+        annotation_status=annotation_status,
+        qc_status=qc_status,
+        frame_encoding=frame_encoding,
+    )
 
     source_roles = [_json_clone(record) for record in validated_source.source_roles]
     source_algorithm = _json_clone(validated_source.source_algorithm)
@@ -2084,7 +2256,7 @@ def _build_public_payloads(
         "frame_encoding": public_encoding_metadata,
         "channels": provenance_channels,
     }
-    return masks_payload, run_manifest, frame_provenance
+    return masks_bundle, run_manifest, frame_provenance
 
 
 def _validate_canonical_path(
@@ -2120,6 +2292,7 @@ def _prepare_contract(
     task: str,
     camera: str,
     backend_episode_record: Mapping[str, Any],
+    source_lineage_validator: SourceLineageValidator,
 ) -> dict[str, Any]:
     source_episode_dir = source_episode_dir.expanduser().resolve()
     backend_episode_dir = backend_episode_dir.expanduser().resolve()
@@ -2146,7 +2319,7 @@ def _prepare_contract(
     raw_frame_count = backend_episode_record.get("frame_count")
     if isinstance(raw_frame_count, bool) or not isinstance(raw_frame_count, int):
         raise UrdfGripperPublishError("backend frame_count must be an integer")
-    validated_source = validate_derivation_source_episode(
+    validated_source = source_lineage_validator.validate_episode(
         source_episode_dir,
         task=task,
         camera=camera,
@@ -2164,7 +2337,10 @@ def _prepare_contract(
         raise UrdfGripperPublishError(
             "backend source lineage differs from the current source episode"
         )
-    frame_shape = tuple(int(item) for item in np.asarray(source["masks"]).shape[2:])
+    frame_shape = cast(
+        tuple[int, int],
+        tuple(int(item) for item in np.asarray(source["masks"]).shape[2:]),
+    )
     raw_shape = backend_episode_record.get("frame_shape_hw")
     if raw_shape is not None and tuple(raw_shape) != frame_shape:
         raise UrdfGripperPublishError("backend and source frame shapes differ")
@@ -2281,13 +2457,18 @@ def _prepare_contract(
         "product": product,
         "product_path": product_path,
         "diagnostics_path": diagnostics_path,
-        "masks_payload": payloads[0],
+        "masks_bundle": payloads[0],
+        "masks_payload": payloads[0].to_payload(),
         "run_manifest": payloads[1],
         "frame_provenance": payloads[2],
     }
 
 
-def _write_stage(stage_dir: Path, contract: Mapping[str, Any]) -> None:
+def _write_stage(
+    stage_dir: Path,
+    contract: Mapping[str, Any],
+    mask_publisher: CanonicalMaskPublisher,
+) -> None:
     _materialize_source_files(contract["source_material"], stage_dir)
     active_role = f"gripper_{contract['active_arm']}"
     gripper_dir = stage_dir / active_role
@@ -2298,7 +2479,7 @@ def _write_stage(stage_dir: Path, contract: Mapping[str, Any]) -> None:
     )
     shutil.copy2(contract["product_path"], gripper_dir / "urdf_product.npz")
     shutil.copy2(contract["diagnostics_path"], gripper_dir / "urdf_diagnostics.json")
-    np.savez_compressed(stage_dir / "masks.npz", **contract["masks_payload"])
+    mask_publisher.publish(stage_dir / "masks.npz", contract["masks_bundle"])
     _write_json(stage_dir / "run_manifest.json", contract["run_manifest"])
     _write_json(stage_dir / "frame_provenance.json", contract["frame_provenance"])
 
@@ -2407,6 +2588,129 @@ def _process_record(contract: Mapping[str, Any], *, status: str) -> dict[str, An
     }
 
 
+@dataclass(frozen=True, slots=True)
+class UrdfCanonicalEpisodePublisher:
+    """Own canonical URDF tree construction, validation, and atomic publication."""
+
+    source_lineage_validator: SourceLineageValidator = field(
+        default_factory=SourceLineageValidator
+    )
+    mask_publisher: CanonicalMaskPublisher = field(
+        default_factory=CanonicalMaskPublisher
+    )
+
+    def _prepare_episode_contract(
+        self,
+        source_episode_dir: Path,
+        backend_episode_dir: Path,
+        destination_dir: Path,
+        *,
+        run_id: str,
+        task: str,
+        camera: str,
+        backend_episode_record: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        return _prepare_contract(
+            source_episode_dir=source_episode_dir,
+            backend_episode_dir=backend_episode_dir,
+            destination_dir=destination_dir,
+            run_id=run_id,
+            task=task,
+            camera=camera,
+            backend_episode_record=backend_episode_record,
+            source_lineage_validator=self.source_lineage_validator,
+        )
+
+    def validate_episode(
+        self,
+        source_episode_dir: Path,
+        backend_episode_dir: Path,
+        destination_dir: Path,
+        *,
+        run_id: str,
+        task: str,
+        camera: str,
+        backend_episode_record: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Fully validate one canonical episode and return its process record."""
+
+        contract = self._prepare_episode_contract(
+            source_episode_dir,
+            backend_episode_dir,
+            destination_dir,
+            run_id=run_id,
+            task=task,
+            camera=camera,
+            backend_episode_record=backend_episode_record,
+        )
+        _validate_tree(Path(contract["destination_dir"]), contract)
+        return _process_record(contract, status="completed")
+
+    def publish_episode(
+        self,
+        source_episode_dir: Path,
+        backend_episode_dir: Path,
+        destination_dir: Path,
+        *,
+        run_id: str,
+        task: str,
+        camera: str,
+        backend_episode_record: Mapping[str, Any],
+        resume: bool = False,
+    ) -> dict[str, Any]:
+        """Atomically publish or validated-skip one canonical episode."""
+
+        contract = self._prepare_episode_contract(
+            source_episode_dir,
+            backend_episode_dir,
+            destination_dir,
+            run_id=run_id,
+            task=task,
+            camera=camera,
+            backend_episode_record=backend_episode_record,
+        )
+        destination = Path(contract["destination_dir"])
+        if destination.exists():
+            if not resume:
+                raise FileExistsError(
+                    f"destination episode already exists: {destination}"
+                )
+            _validate_tree(destination, contract)
+            return _process_record(contract, status="skipped_complete")
+
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        stage = Path(
+            tempfile.mkdtemp(
+                prefix=f".{destination.name}.{uuid.uuid4().hex}.",
+                suffix=".tmp",
+                dir=destination.parent,
+            )
+        )
+        try:
+            _write_stage(stage, contract, self.mask_publisher)
+            _validate_tree(stage, contract)
+            if destination.exists():
+                raise FileExistsError(
+                    f"destination appeared while the episode was staged: {destination}"
+                )
+            stage.rename(destination)
+        except BaseException:
+            if stage.exists():
+                shutil.rmtree(stage)
+            raise
+        _validate_tree(destination, contract)
+        return _process_record(contract, status="completed")
+
+
+_URDF_CANONICAL_EPISODE_PUBLISHER = UrdfCanonicalEpisodePublisher(
+    source_lineage_validator=_SOURCE_LINEAGE_VALIDATOR,
+    mask_publisher=CanonicalMaskPublisher(),
+)
+
+
+# Compatibility shims: remove after repository callers use the
+# UrdfCanonicalEpisodePublisher
+# and the function seams have remained available for one release.
 def validate_published_urdf_episode(
     source_episode_dir: Path,
     backend_episode_dir: Path,
@@ -2417,19 +2721,17 @@ def validate_published_urdf_episode(
     camera: str,
     backend_episode_record: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Fully validate one canonical URDF-backed episode and return its process record."""
+    """Compatibility entry point for :class:`UrdfCanonicalEpisodePublisher`."""
 
-    contract = _prepare_contract(
-        source_episode_dir=source_episode_dir,
-        backend_episode_dir=backend_episode_dir,
-        destination_dir=destination_dir,
+    return _URDF_CANONICAL_EPISODE_PUBLISHER.validate_episode(
+        source_episode_dir,
+        backend_episode_dir,
+        destination_dir,
         run_id=run_id,
         task=task,
         camera=camera,
         backend_episode_record=backend_episode_record,
     )
-    _validate_tree(contract["destination_dir"], contract)
-    return _process_record(contract, status="completed")
 
 
 def publish_urdf_episode(
@@ -2443,50 +2745,24 @@ def publish_urdf_episode(
     backend_episode_record: Mapping[str, Any],
     resume: bool = False,
 ) -> dict[str, Any]:
-    """Atomically publish or validated-skip one canonical URDF-backed episode."""
+    """Compatibility entry point for :class:`UrdfCanonicalEpisodePublisher`."""
 
-    contract = _prepare_contract(
-        source_episode_dir=source_episode_dir,
-        backend_episode_dir=backend_episode_dir,
-        destination_dir=destination_dir,
+    return _URDF_CANONICAL_EPISODE_PUBLISHER.publish_episode(
+        source_episode_dir,
+        backend_episode_dir,
+        destination_dir,
         run_id=run_id,
         task=task,
         camera=camera,
         backend_episode_record=backend_episode_record,
+        resume=resume,
     )
-    destination = Path(contract["destination_dir"])
-    if destination.exists():
-        if not resume:
-            raise FileExistsError(f"destination episode already exists: {destination}")
-        _validate_tree(destination, contract)
-        return _process_record(contract, status="skipped_complete")
-
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    stage = Path(
-        tempfile.mkdtemp(
-            prefix=f".{destination.name}.{uuid.uuid4().hex}.",
-            suffix=".tmp",
-            dir=destination.parent,
-        )
-    )
-    try:
-        _write_stage(stage, contract)
-        _validate_tree(stage, contract)
-        if destination.exists():
-            raise FileExistsError(
-                f"destination appeared while the episode was staged: {destination}"
-            )
-        stage.rename(destination)
-    except BaseException:
-        if stage.exists():
-            shutil.rmtree(stage)
-        raise
-    _validate_tree(destination, contract)
-    return _process_record(contract, status="completed")
 
 
 __all__ = [
     "DerivationSourceEpisode",
+    "SourceLineageValidator",
+    "UrdfCanonicalEpisodePublisher",
     "UrdfGripperPublishError",
     "publish_urdf_episode",
     "publisher_implementation_identity",

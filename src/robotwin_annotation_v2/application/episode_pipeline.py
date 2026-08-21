@@ -9,21 +9,24 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 from PIL import Image
 
-from robotwin_annotation_v2.adapters import (
-    ArtifactStore,
-    OpenAICompatibleQwenClient,
-    RoboTwinDataset,
+from robotwin_annotation_v2.adapters.artifact_store import ArtifactStore
+from robotwin_annotation_v2.adapters.qwen_client import OpenAICompatibleQwenClient
+from robotwin_annotation_v2.adapters.robotwin_dataset import RoboTwinDataset
+from robotwin_annotation_v2.adapters.sam3_adapter import (
     Sam3Adapter,
     Sam3Error,
     sam3_video_resource,
 )
+from robotwin_annotation_v2.application.mask_qc_artifacts import save_mask_qc_artifacts
+from robotwin_annotation_v2.application.sam_artifacts import save_sam_artifacts
 from robotwin_annotation_v2.config import PipelineConfig, load_config
 from robotwin_annotation_v2.domain import AnnotationMode, ObjectRole, annotation_spec
 from robotwin_annotation_v2.models import (
@@ -35,25 +38,33 @@ from robotwin_annotation_v2.models import (
     MaskStatus,
     SemanticPlan,
 )
-from robotwin_annotation_v2.pipeline import (
-    GripperSeedQualityGateConfig,
+from robotwin_annotation_v2.pipeline.gripper.sam.annotator import (
     GripperStageError,
-    MaskQCError,
+    run_gripper_stage,
+)
+from robotwin_annotation_v2.pipeline.gripper.sam.candidates import (
+    GripperSeedQualityGateConfig,
+)
+from robotwin_annotation_v2.pipeline.mask_qc import run_mask_qc_stage
+from robotwin_annotation_v2.pipeline.object_mask.qc import MaskQCError
+from robotwin_annotation_v2.pipeline.object_mask.temporal_qc import (
+    compose_visible_mask,
+    evaluate_temporal_mask,
+)
+from robotwin_annotation_v2.pipeline.qwen_stage import (
     QwenStageError,
+    parse_semantic_plan,
+    run_qwen_stage,
+)
+from robotwin_annotation_v2.pipeline.sam_stage import (
     RoleMaskData,
     SamStageError,
     SamStageResult,
-    build_loop_context,
-    compose_visible_mask,
-    evaluate_temporal_mask,
-    parse_semantic_plan,
-    run_gripper_stage,
-    run_mask_qc_stage,
-    run_qwen_stage,
     run_sam_stage,
-    save_mask_qc_artifacts,
-    save_sam_artifacts,
 )
+from robotwin_annotation_v2.pipeline.state_loop import build_loop_context
+
+NDArray = np.ndarray[Any, Any]
 
 SAM_EXECUTION_ERRORS = (
     GripperStageError,
@@ -67,8 +78,9 @@ SAM_EXECUTION_ERRORS = (
 
 __all__ = [
     "SAM_EXECUTION_ERRORS",
-    "SamEpisodeExecution",
+    "EpisodePipeline",
     "GripperEpisodeExecution",
+    "SamEpisodeExecution",
     "_emit_gripper_result",
     "_emit_sam_result",
     "_execute_gripper_episode",
@@ -103,6 +115,38 @@ class GripperEpisodeExecution:
     gripper_status: str
     selected_candidate: str | None
     seed_qc_path: Path | None
+
+
+@dataclass(frozen=True)
+class EpisodePipeline:
+    """Coordinate the configured stages for one episode.
+
+    The stage functions remain module-level compatibility seams for the CLI;
+    this class is the single owner of their execution order.
+    """
+
+    config: PipelineConfig
+
+    def preflight(self) -> None:
+        run_preflight(self.config)
+
+    def build_loop(self, episode_index: int, run_id: str | None = None) -> None:
+        run_loop(self.config, episode_index, run_id)
+
+    def plan_semantics(self, episode_index: int, run_id: str | None = None) -> None:
+        run_qwen(self.config, episode_index, run_id)
+
+    def annotate_objects(self, episode_index: int, run_id: str) -> None:
+        run_sam(self.config, episode_index, run_id)
+
+    def annotate_gripper(self, episode_index: int, run_id: str) -> None:
+        run_gripper(self.config, episode_index, run_id)
+
+    def run(self, episode_index: int, run_id: str | None = None) -> None:
+        selected_run_id = run_id or ArtifactStore.new_run_id()
+        run_qwen(self.config, episode_index, selected_run_id)
+        run_sam(self.config, episode_index, selected_run_id)
+        run_gripper(self.config, episode_index, selected_run_id)
 
 
 def _dataset(config: PipelineConfig) -> RoboTwinDataset:
@@ -271,12 +315,13 @@ def _default_gripper_qc_prompt(config: PipelineConfig) -> Path:
     return config.config_path.parent / "prompts" / "gripper_seed_candidate_qc.txt"
 
 
-def _load_bool_png(path: Path) -> np.ndarray:
+def _load_bool_png(path: Path) -> NDArray:
     with Image.open(path) as image:
-        return np.asarray(image.convert("L"), dtype=np.uint8) != 0
+        mask: NDArray = np.asarray(image.convert("L"), dtype=np.uint8) != 0
+        return mask
 
 
-def _load_npz_masks(path: Path) -> np.ndarray:
+def _load_npz_masks(path: Path) -> NDArray:
     with np.load(path, allow_pickle=False) as archive:
         if "masks" not in archive.files:
             raise ValueError(f"mask archive has no masks array: {path}")
@@ -777,7 +822,7 @@ def _gripper_episode_complete(
         }
         if set(roles) != {"target", "receiver", role_name}:
             return False
-        for role in {"target", "receiver"}:
+        for role in ("target", "receiver"):
             expected = "ok" if role in required_names else "not_applicable"
             if roles[role].get("status") != expected:
                 return False
@@ -1018,10 +1063,7 @@ def run_gripper_batch(
 
 
 def run_pipeline(config: PipelineConfig, episode_index: int, run_id: str | None) -> None:
-    selected_run_id = run_id or ArtifactStore.new_run_id()
-    run_qwen(config, episode_index, selected_run_id)
-    run_sam(config, episode_index, selected_run_id)
-    run_gripper(config, episode_index, selected_run_id)
+    EpisodePipeline(config).run(episode_index, run_id)
 
 
 def parse_args() -> argparse.Namespace:

@@ -1,19 +1,29 @@
 from __future__ import annotations
 
 import json
-import runpy
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from robotwin_annotation_v2.application import episode_pipeline
+import scripts.run_target_receiver as legacy_cli
 from robotwin_annotation_v2.adapters import ArtifactStore, Sam3Error
+from robotwin_annotation_v2.application import episode_pipeline
+from robotwin_annotation_v2.application.episode_pipeline import (
+    EpisodePipeline as CanonicalEpisodePipeline,
+)
+from robotwin_annotation_v2.application.episode_pipeline_api import (
+    EpisodePipeline as CompatibilityEpisodePipeline,
+)
 from robotwin_annotation_v2.domain import AnnotationMode
 from robotwin_annotation_v2.models import EpisodeRef, MaskStatus
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+def test_episode_pipeline_compatibility_import_has_one_canonical_owner() -> None:
+    assert CompatibilityEpisodePipeline is CanonicalEpisodePipeline
+    assert legacy_cli.main is episode_pipeline.main
+    assert legacy_cli._sam_episode_complete is episode_pipeline._sam_episode_complete
 
 
 class FakeResidentBackend:
@@ -51,7 +61,7 @@ def _target_only_batch_config(tmp_path: Path) -> SimpleNamespace:
 
 
 def test_run_entrypoint_calls_qwen_sam_then_gripper_with_same_run_id() -> None:
-    module = runpy.run_path(str(PROJECT_ROOT / "scripts/run_target_receiver.py"))
+    module = vars(episode_pipeline)
     calls: list[tuple[str, int, str]] = []
 
     def fake_qwen(_config: Any, episode_index: int, run_id: str) -> None:
@@ -112,7 +122,7 @@ def test_episode_context_passes_annotation_mode_as_keyword() -> None:
 
 
 def test_sam_batch_reuses_one_backend_for_multiple_episodes(tmp_path: Path) -> None:
-    module = runpy.run_path(str(PROJECT_ROOT / "scripts/run_target_receiver.py"))
+    module = vars(episode_pipeline)
     execution_type = module["SamEpisodeExecution"]
     backend = FakeResidentBackend()
     factory_calls: list[dict[str, Any]] = []
@@ -164,7 +174,7 @@ def test_sam_batch_reuses_one_backend_for_multiple_episodes(tmp_path: Path) -> N
 
 
 def test_sam_batch_skips_complete_episode(tmp_path: Path) -> None:
-    module = runpy.run_path(str(PROJECT_ROOT / "scripts/run_target_receiver.py"))
+    module = vars(episode_pipeline)
     config = _batch_config(tmp_path)
     store = ArtifactStore(config.output_root)
     episode_dir = store.episode_dir("batch-test", EpisodeRef("task", 1, "cam_high"))
@@ -223,7 +233,7 @@ def test_sam_batch_skips_complete_episode(tmp_path: Path) -> None:
 def test_target_only_sam_completion_accepts_receiver_not_applicable(
     tmp_path: Path,
 ) -> None:
-    module = runpy.run_path(str(PROJECT_ROOT / "scripts/run_target_receiver.py"))
+    module = vars(episode_pipeline)
     config = _target_only_batch_config(tmp_path)
     store = ArtifactStore(config.output_root)
     ref = EpisodeRef("task", 1, "cam_high")
@@ -256,7 +266,7 @@ def test_target_only_sam_completion_accepts_receiver_not_applicable(
 
 
 def test_sam_batch_stops_after_fatal_cuda_error(tmp_path: Path) -> None:
-    module = runpy.run_path(str(PROJECT_ROOT / "scripts/run_target_receiver.py"))
+    module = vars(episode_pipeline)
     backend = FakeResidentBackend()
     episode_calls: list[int] = []
 
@@ -289,7 +299,7 @@ def test_sam_batch_stops_after_fatal_cuda_error(tmp_path: Path) -> None:
 
 
 def test_gripper_completion_treats_null_stage_as_incomplete(tmp_path: Path) -> None:
-    module = runpy.run_path(str(PROJECT_ROOT / "scripts/run_target_receiver.py"))
+    module = vars(episode_pipeline)
     config = _batch_config(tmp_path)
     store = ArtifactStore(config.output_root)
     ref = EpisodeRef("task", 1, "cam_high")
@@ -315,7 +325,7 @@ def test_gripper_completion_treats_null_stage_as_incomplete(tmp_path: Path) -> N
 def test_gripper_batch_reuses_one_backend_for_multiple_episodes(
     tmp_path: Path,
 ) -> None:
-    module = runpy.run_path(str(PROJECT_ROOT / "scripts/run_target_receiver.py"))
+    module = vars(episode_pipeline)
     execution_type = module["GripperEpisodeExecution"]
     backend = FakeResidentBackend()
     episode_calls: list[int] = []
@@ -365,7 +375,7 @@ def test_gripper_batch_reuses_one_backend_for_multiple_episodes(
 def test_gripper_batch_records_missing_sam_precondition_as_failure(
     tmp_path: Path,
 ) -> None:
-    module = runpy.run_path(str(PROJECT_ROOT / "scripts/run_target_receiver.py"))
+    module = vars(episode_pipeline)
     backend = FakeResidentBackend()
 
     def runner(

@@ -10,6 +10,8 @@ import numpy as np
 import pytest
 
 from robotwin_annotation_v2.urdf_gripper_publisher import (
+    SourceLineageValidator,
+    UrdfCanonicalEpisodePublisher,
     UrdfGripperPublishError,
     publish_urdf_episode,
     publisher_implementation_identity,
@@ -686,6 +688,57 @@ def _incremental_fixture(tmp_path: Path) -> PublishFixture:
     return PublishFixture(source, backend, destination, record, source_masks, track)
 
 
+def test_public_lineage_and_publication_owners_cover_the_full_contract(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    lineage_validator = SourceLineageValidator()
+    publisher = UrdfCanonicalEpisodePublisher(
+        source_lineage_validator=lineage_validator,
+    )
+
+    validated_source = lineage_validator.validate_episode(
+        fixture.source_episode_dir,
+        task=TASK,
+        camera=CAMERA,
+        episode_index=EPISODE_INDEX,
+        expected_frame_count=FRAME_COUNT,
+    )
+    published = publisher.publish_episode(
+        fixture.source_episode_dir,
+        fixture.backend_episode_dir,
+        fixture.destination_dir,
+        run_id=RUN_ID,
+        task=TASK,
+        camera=CAMERA,
+        backend_episode_record=fixture.backend_episode_record,
+    )
+    validated_publication = publisher.validate_episode(
+        fixture.source_episode_dir,
+        fixture.backend_episode_dir,
+        fixture.destination_dir,
+        run_id=RUN_ID,
+        task=TASK,
+        camera=CAMERA,
+        backend_episode_record=fixture.backend_episode_record,
+    )
+    resumed = publisher.publish_episode(
+        fixture.source_episode_dir,
+        fixture.backend_episode_dir,
+        fixture.destination_dir,
+        run_id=RUN_ID,
+        task=TASK,
+        camera=CAMERA,
+        backend_episode_record=fixture.backend_episode_record,
+        resume=True,
+    )
+
+    assert published["source_lineage"] == validated_source.lineage
+    assert validated_publication == published
+    assert resumed["status"] == "skipped_complete"
+    assert resumed["source_lineage"] == validated_source.lineage
+
+
 def test_incremental_source_can_publish_before_process_summary_exists(
     tmp_path: Path,
 ) -> None:
@@ -1217,7 +1270,17 @@ def test_publish_rejects_backend_recorded_lineage_mismatch(tmp_path: Path) -> No
     assert not fixture.destination_dir.exists()
 
 
-def test_resume_rejects_backend_publisher_identity_change(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "publisher_path",
+    (
+        "src/robotwin_annotation_v2/urdf_gripper_publisher.py",
+        "src/robotwin_annotation_v2/adapters/canonical_publication.py",
+    ),
+)
+def test_resume_rejects_backend_publisher_identity_change(
+    tmp_path: Path,
+    publisher_path: str,
+) -> None:
     fixture = _fixture(tmp_path)
     fixture.publish()
     manifest_path = fixture.backend_episode_dir.parent / "manifest.json"
@@ -1225,7 +1288,7 @@ def test_resume_rejects_backend_publisher_identity_change(tmp_path: Path) -> Non
     publisher_file = next(
         item
         for item in manifest["run_contract"]["implementation"]["files"]
-        if item["path"] == "src/robotwin_annotation_v2/urdf_gripper_publisher.py"
+        if item["path"] == publisher_path
     )
     publisher_file["sha256"] = "0" * 64
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")

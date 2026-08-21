@@ -1,16 +1,15 @@
 from __future__ import annotations
 
-import runpy
 import sys
-from pathlib import Path
 
 import pytest
 
+from robotwin_annotation_v2.application import episode_pipeline
 from robotwin_annotation_v2.config import GripperRoiConfig
-from robotwin_annotation_v2.pipeline.gripper_stage import _roi_geometries, _roi_policy
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+from robotwin_annotation_v2.pipeline.gripper.sam.annotator import (
+    _roi_geometries,
+    _roi_policy,
+)
 
 
 def _config(
@@ -48,10 +47,8 @@ def test_cli_help_has_no_roi_geometry_overrides(
         "argv",
         ["run_target_receiver.py", "gripper", "--help"],
     )
-    module = runpy.run_path(str(PROJECT_ROOT / "scripts/run_target_receiver.py"))
-
     with pytest.raises(SystemExit, match="0"):
-        module["parse_args"]()
+        episode_pipeline.parse_args()
 
     help_text = capsys.readouterr().out
     assert "gripper ROI geometry" not in help_text

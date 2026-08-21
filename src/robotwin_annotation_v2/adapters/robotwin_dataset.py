@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, cast
 
 import av
 import numpy as np
@@ -13,6 +14,8 @@ import pandas as pd
 from PIL import Image
 
 from ..models import EpisodeRef
+
+NDArray = np.ndarray[Any, Any]
 
 
 class DatasetError(RuntimeError):
@@ -30,8 +33,8 @@ class EpisodePaths:
 class EpisodeState:
     frame_count: int
     task_text: str
-    gripper_states: np.ndarray
-    eef_states: np.ndarray
+    gripper_states: NDArray
+    eef_states: NDArray
     paths: EpisodePaths
 
 
@@ -101,7 +104,7 @@ class RoboTwinDataset:
         path = self.root / "meta" / "episodes.jsonl"
         if not path.is_file():
             raise DatasetError(f"episode metadata is missing: {path}")
-        wanted = set(int(value) for value in self.manifest["regression_episode_ids"])
+        wanted = {int(value) for value in self.manifest["regression_episode_ids"]}
         index: dict[int, dict[str, Any]] = {}
         with path.open(encoding="utf-8") as handle:
             for line in handle:
@@ -153,7 +156,7 @@ class RoboTwinDataset:
         )
 
     def read_frames(self, ref: EpisodeRef, frame_ids: Iterable[int]) -> dict[int, Image.Image]:
-        requested = tuple(sorted(set(int(value) for value in frame_ids)))
+        requested = tuple(sorted({int(value) for value in frame_ids}))
         if not requested or requested[0] < 0:
             raise ValueError("frame_ids must contain non-negative values")
         path = self.paths(ref).video
@@ -164,7 +167,7 @@ class RoboTwinDataset:
         with av.open(str(path)) as container:
             for frame_id, video_frame in enumerate(container.decode(video=0)):
                 if frame_id in wanted:
-                    result[frame_id] = video_frame.to_image().convert("RGB")
+                    result[frame_id] = cast(Any, video_frame).to_image().convert("RGB")
                     if len(result) == len(wanted):
                         break
         missing = sorted(wanted - set(result))
@@ -225,7 +228,7 @@ class RoboTwinDataset:
                             f"episode {episode_index}: frame shape {video_shape} "
                             f"!= {expected_shape}"
                         )
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - preflight accumulates input issues
                     issues.append(f"episode {episode_index}: content check failed: {exc}")
         report = {
             "format_version": "robotwin_dataset_preflight_v1",

@@ -1,31 +1,62 @@
-"""Concrete adapters for external data and model services."""
+"""Concrete adapters with lazy compatibility exports.
 
-from .robotwin_dataset import (
-    DatasetError,
-    EpisodePaths,
-    EpisodeState,
-    RoboTwinDataset,
-)
-from .artifact_store import ArtifactStore
-from .qwen_client import (
-    OpenAICompatibleQwenClient,
-    QwenCompletion,
-    QwenServiceError,
-    image_data_url,
-)
-from .sam3_adapter import Sam3Adapter, Sam3Error, sam3_video_resource
+Importing the package itself must stay lightweight: dataset/video and model
+adapters carry optional dependencies that are only needed by the workflows
+using them.  Internal code imports concrete modules directly; these exports
+preserve the historical ``from ...adapters import Name`` API.
+"""
 
-__all__ = [
-    "ArtifactStore",
-    "DatasetError",
-    "EpisodePaths",
-    "EpisodeState",
-    "OpenAICompatibleQwenClient",
-    "QwenCompletion",
-    "QwenServiceError",
-    "RoboTwinDataset",
-    "Sam3Adapter",
-    "Sam3Error",
-    "image_data_url",
-    "sam3_video_resource",
-]
+from __future__ import annotations
+
+from importlib import import_module
+from typing import Any
+
+_EXPORT_GROUPS = {
+    ".artifact_store": ("ArtifactStore",),
+    ".canonical_masks": (
+        "CANONICAL_INSTANCE_NAMES",
+        "CANONICAL_ROLES",
+        "CanonicalMaskBundle",
+        "CanonicalMaskError",
+        "build_canonical_mask_bundle",
+        "read_canonical_masks",
+        "write_canonical_masks",
+    ),
+    ".canonical_publication": ("CanonicalMaskPublisher",),
+    ".qwen_client": (
+        "OpenAICompatibleQwenClient",
+        "QwenCompletion",
+        "QwenServiceError",
+        "image_data_url",
+    ),
+    ".robotwin_dataset": (
+        "DatasetError",
+        "EpisodePaths",
+        "EpisodeState",
+        "RoboTwinDataset",
+    ),
+    ".sam3_adapter": ("Sam3Adapter", "Sam3Error", "sam3_video_resource"),
+}
+_EXPORTS = {
+    name: module_name
+    for module_name, names in _EXPORT_GROUPS.items()
+    for name in names
+}
+
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name: str) -> Any:
+    """Load the adapter module that owns a requested compatibility export."""
+
+    try:
+        module_name = _EXPORTS[name]
+    except KeyError as exc:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
+    value = getattr(import_module(module_name, __name__), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted({*globals(), *__all__})

@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +16,6 @@ from PIL import Image
 from robotwin_annotation_v2.config import MaskConfig, load_config
 from robotwin_annotation_v2.models import FrameWindow
 from robotwin_annotation_v2.pipeline import compose_visible_mask, evaluate_temporal_mask
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -150,7 +149,7 @@ def build_report(
             )
     return {
         "format_version": "robotwin_temporal_tracking_benchmark_v1",
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
         "selection_manifest": str(selection_manifest.resolve()),
         "methods": {
             "published": "saved masks.npz composition",

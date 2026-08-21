@@ -4,7 +4,7 @@ import json
 import sys
 import types
 from pathlib import Path
-from typing import Any
+from typing import Self
 
 import numpy as np
 import pandas as pd
@@ -399,10 +399,10 @@ def test_camera_calibration_is_lazy_and_crops_trailing_raw_frame(
         def __init__(self, _path: Path, _mode: str) -> None:
             pass
 
-        def __enter__(self) -> FakeFile:
+        def __enter__(self) -> Self:
             return self
 
-        def __exit__(self, *_args: Any) -> None:
+        def __exit__(self, *_args: object) -> None:
             return None
 
         def __getitem__(self, key: str) -> np.ndarray:

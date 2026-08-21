@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 import numpy as np
 import pandas as pd
 from PIL import Image
 
+import robotwin_annotation_v2.pipeline as public_pipeline
 from robotwin_annotation_v2.adapters import QwenCompletion
 from robotwin_annotation_v2.config import GripperRoiConfig
 from robotwin_annotation_v2.domain import AnnotationMode, ObjectRole
@@ -24,6 +26,8 @@ from robotwin_annotation_v2.pipeline import (
     GripperStageError,
     run_gripper_stage,
 )
+from robotwin_annotation_v2.pipeline import gripper_stage as legacy_stage
+from robotwin_annotation_v2.pipeline.gripper.sam import annotator
 
 FRAME_SHAPE = (240, 320)
 FRAME_COUNT = 24
@@ -41,10 +45,12 @@ POSE = np.asarray(
 
 
 class FakeGripperBackend:
-    def __init__(self) -> None:
+    def __init__(self, *, valid_text_masks: bool = True) -> None:
+        self.valid_text_masks = valid_text_masks
         self.text_box_calls: list[int] = []
         self.box_calls: list[int] = []
         self.propagate_calls: list[int] = []
+        self.call_order: list[tuple[str, int]] = []
 
     @staticmethod
     def _box_mask(
@@ -73,6 +79,9 @@ class FakeGripperBackend:
     ) -> np.ndarray:
         assert text == "black robot gripper"
         self.text_box_calls.append(frame_id)
+        self.call_order.append(("text_box", frame_id))
+        if not self.valid_text_masks:
+            return np.zeros(frame_shape, dtype=bool)
         return self._box_mask(box_xyxy, frame_shape)
 
     def box_mask(
@@ -85,6 +94,7 @@ class FakeGripperBackend:
         **_kwargs: Any,
     ) -> np.ndarray:
         self.box_calls.append(frame_id)
+        self.call_order.append(("box_only", frame_id))
         return self._box_mask(box_xyxy, frame_shape)
 
     def propagate_mask(
@@ -106,6 +116,9 @@ class FakeGripperBackend:
 class FakeQwenClient:
     model_id = "fake-qwen"
 
+    def __init__(self, selected_candidate: str = "A") -> None:
+        self.selected_candidate = selected_candidate
+
     def health(self) -> dict[str, Any]:
         return {"status": "ok", "model": self.model_id}
 
@@ -120,7 +133,7 @@ class FakeQwenClient:
             content=json.dumps(
                 {
                     "decision": "accept",
-                    "selected_candidate": "A",
+                    "selected_candidate": self.selected_candidate,
                     "confidence": 0.95,
                     "reason": "Candidate A cleanly covers the visible gripper.",
                 }
@@ -243,6 +256,59 @@ def test_run_gripper_stage_reuses_object_tracks_and_propagates_only_gripper(
     assert result.provenance["known_object_tracks"] == "saved_sam_native_track"
 
 
+def test_run_gripper_stage_finishes_all_text_attempts_before_box_fallback(
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "state.parquet"
+    resource_path = tmp_path / "frames"
+    prompt_path = tmp_path / "prompt.txt"
+    _write_state(state_path)
+    _write_resource(resource_path)
+    prompt_path.write_text(
+        "task={task_text}; arm={active_arm}; ids={candidate_ids}\n"
+        "{candidate_records}\n{candidate_panels}\n{context_frames}\n"
+        "events={move_start},{close_start},{close_done},{open_start},{open_done}",
+        encoding="utf-8",
+    )
+    backend = FakeGripperBackend(valid_text_masks=False)
+    target = np.zeros((FRAME_COUNT, *FRAME_SHAPE), dtype=bool)
+    receiver = np.zeros_like(target)
+
+    result = run_gripper_stage(
+        _context(state_path),
+        backend=backend,
+        resource_path=resource_path,
+        frame_shape=FRAME_SHAPE,
+        gripper_roi_config=GripperRoiConfig(
+            prompt_axial_back_m=0.120,
+            prompt_axial_front_m=0.060,
+            hard_axial_back_m=0.120,
+            hard_axial_front_m=0.045,
+            fixed_half_width_m=0.085,
+        ),
+        object_tracks={
+            ObjectRole.TARGET: target,
+            ObjectRole.RECEIVER: receiver,
+        },
+        qc_client=FakeQwenClient(selected_candidate="H"),
+        qc_prompt_template=prompt_path,
+        qc_max_tokens=100,
+        seed_quality_gate=GripperSeedQualityGateConfig(minimum_pixels=4),
+    )
+
+    keyframes = [1, 9, 12, 16, 19, 20, 22]
+    assert backend.call_order == [
+        *(("text_box", frame_id) for frame_id in keyframes),
+        *(("box_only", frame_id) for frame_id in keyframes),
+    ]
+    assert tuple(candidate.candidate_id for candidate in result.qc_result.candidates) == tuple(
+        "ABCDEFGHIJKLMN"
+    )
+    assert all(not candidate.basic_valid for candidate in result.qc_result.candidates[:7])
+    assert all(candidate.basic_valid for candidate in result.qc_result.candidates[7:])
+    assert result.selected_candidate == "H"
+
+
 def test_target_only_gripper_rejects_sam_backend_before_inference(tmp_path: Path) -> None:
     state_path = tmp_path / "state.parquet"
     resource_path = tmp_path / "frames"
@@ -283,3 +349,29 @@ def test_target_only_gripper_rejects_sam_backend_before_inference(tmp_path: Path
 
     assert backend.text_box_calls == []
     assert backend.propagate_calls == []
+
+
+def test_legacy_annotator_exports_preserve_canonical_identity() -> None:
+    public_names = (
+        "GripperStageError",
+        "GripperStageResult",
+        "gripper_keyframes",
+        "run_gripper_stage",
+    )
+    for name in public_names:
+        canonical = getattr(annotator, name)
+        assert getattr(legacy_stage, name) is canonical
+        assert getattr(public_pipeline, name) is canonical
+    assert legacy_stage.GripperSamBackend is annotator.GripperSamBackend
+    for name in (
+        "_build_gripper_candidates",
+        "_build_roi_track",
+        "_context_frame_ids",
+        "_load_resource_image",
+        "_load_state_arrays",
+        "_polygon_mask",
+        "_roi_geometries",
+        "_roi_policy",
+        "_track_summary",
+    ):
+        assert getattr(legacy_stage, name) is getattr(annotator, name)

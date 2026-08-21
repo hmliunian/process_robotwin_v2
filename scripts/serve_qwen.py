@@ -18,7 +18,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-
 MAX_REQUEST_BYTES = 32 * 1024 * 1024
 
 
@@ -46,7 +45,9 @@ def _normalize_content(content: Any) -> str | list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     for index, part in enumerate(content):
         if not isinstance(part, dict):
-            raise ValueError(f"content[{index}] must be an object")
+            raise ValueError(  # noqa: TRY004 - preserve the request validation contract
+                f"content[{index}] must be an object"
+            )
         part_type = part.get("type")
         if part_type == "text":
             text = part.get("text")
@@ -185,7 +186,9 @@ class QwenService:
         normalized: list[dict[str, Any]] = []
         for index, message in enumerate(messages):
             if not isinstance(message, dict):
-                raise ValueError(f"messages[{index}] must be an object")
+                raise ValueError(  # noqa: TRY004 - preserve the request validation contract
+                    f"messages[{index}] must be an object"
+                )
             role = message.get("role")
             if role not in {"system", "user", "assistant"}:
                 raise ValueError(f"messages[{index}].role is unsupported")
@@ -197,7 +200,9 @@ class QwenService:
 
         max_tokens = payload.get("max_tokens", self.default_max_tokens)
         if isinstance(max_tokens, bool) or not isinstance(max_tokens, int):
-            raise ValueError("max_tokens must be an integer")
+            raise ValueError(  # noqa: TRY004 - preserve the request validation contract
+                "max_tokens must be an integer"
+            )
         if not 1 <= max_tokens <= self.max_tokens_limit:
             raise ValueError(f"max_tokens must be between 1 and {self.max_tokens_limit}")
         if payload.get("stream", False):
@@ -235,7 +240,7 @@ def build_handler(service: QwenService) -> type[BaseHTTPRequestHandler]:
         def _send_error(self, status: HTTPStatus, message: str) -> None:
             self._send_json(status, {"error": {"message": message}})
 
-        def do_GET(self) -> None:  # noqa: N802
+        def do_GET(self) -> None:
             if self.path.split("?", 1)[0] != "/health":
                 self._send_error(HTTPStatus.NOT_FOUND, "route not found")
                 return
@@ -250,7 +255,7 @@ def build_handler(service: QwenService) -> type[BaseHTTPRequestHandler]:
                 },
             )
 
-        def do_POST(self) -> None:  # noqa: N802
+        def do_POST(self) -> None:
             if self.path.split("?", 1)[0] != "/v1/chat/completions":
                 self._send_error(HTTPStatus.NOT_FOUND, "route not found")
                 return

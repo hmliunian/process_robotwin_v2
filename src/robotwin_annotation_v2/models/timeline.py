@@ -70,6 +70,24 @@ class PickPlaceEvents:
         return FrameWindow(self.t_move_start, self.t_open_done)
 
     @property
+    def start(self) -> int:
+        """Compatibility start of the inclusive active-gripper window."""
+
+        return self.t_move_start
+
+    @property
+    def end(self) -> int:
+        """Compatibility end of the inclusive active-gripper window."""
+
+        return self.t_open_done
+
+    @property
+    def inclusive_window(self) -> tuple[int, int]:
+        """Compatibility tuple view of :attr:`loop_window`."""
+
+        return (self.start, self.end)
+
+    @property
     def target_primary_window(self) -> FrameWindow:
         """Ordinary target encoding through the completed close event."""
 
@@ -198,6 +216,22 @@ def derive_episode_windows(events: TimelineEvents, *, frame_count: int) -> Episo
     )
 
 
+def derive_target_hold_window(
+    events: TimelineEvents,
+    *,
+    frame_count: int,
+) -> FrameWindow | None:
+    """Derive the inclusive held-target interval for either timeline kind."""
+
+    if frame_count < 1:
+        raise ValueError("frame_count must be positive")
+    if isinstance(events, PickPlaceEvents):
+        return events.target_hold_window
+    if isinstance(events, TargetOnlyEvents):
+        return events.target_hold_window(frame_count)
+    raise TypeError(f"unsupported timeline events: {type(events).__name__}")
+
+
 __all__ = [
     "EpisodeWindows",
     "FrameWindow",
@@ -206,4 +240,5 @@ __all__ = [
     "TargetOnlyEvents",
     "TimelineEvents",
     "derive_episode_windows",
+    "derive_target_hold_window",
 ]

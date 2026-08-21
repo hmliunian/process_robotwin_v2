@@ -22,6 +22,7 @@ from robotwin_annotation_v2.models import (
     SemanticStatus,
     TargetOnlyEvents,
     derive_episode_windows,
+    derive_target_hold_window,
     normalize_query,
 )
 
@@ -56,6 +57,7 @@ def test_loop_context_contract() -> None:
     assert context.episode.episode_id == "007152"
     assert context.events.target_window == FrameWindow(4, 68)
     assert context.events.target_hold_window == FrameWindow(69, 122)
+    assert derive_target_hold_window(context.events, frame_count=138) == FrameWindow(69, 122)
     assert context.events.target_output_window == FrameWindow(4, 122)
     assert context.events.receiver_window == FrameWindow(68, 136)
     assert context.windows.operation == FrameWindow(4, 136)
@@ -86,6 +88,7 @@ def test_target_only_events_derive_full_target_and_gripper_hold_windows() -> Non
 
     assert events.target_window == FrameWindow(4, 65)
     assert events.target_hold_window(139) == FrameWindow(66, 138)
+    assert derive_target_hold_window(events, frame_count=139) == FrameWindow(66, 138)
     assert windows.target == FrameWindow(4, 138)
     assert windows.receiver is None
     assert windows.operation == FrameWindow(4, 138)
