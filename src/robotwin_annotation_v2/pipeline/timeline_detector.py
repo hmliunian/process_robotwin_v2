@@ -168,7 +168,7 @@ def detect_target_only_events(
     motion_floor: float = 0.002,
     rotation_scale: float = 0.05,
 ) -> TargetOnlyEvents:
-    """Detect one approach/close/hold operation without release events."""
+    """Detect the first stable close and an optional later reopen boundary."""
 
     gripper = np.asarray(gripper_values, dtype=np.float64)
     eef = np.asarray(eef_values, dtype=np.float64)
@@ -180,15 +180,17 @@ def detect_target_only_events(
     )
     if not bool((filtered[:stable_frames] >= OPEN_THRESHOLD).all()):
         raise StateLoopError("target-only gripper must begin stably open")
+    reopen_start: int | None = None
     reopen_run = _first_run(
         filtered >= OPEN_THRESHOLD,
         start=close_end + 1,
         length=stable_frames,
     )
     if reopen_run is not None:
-        raise StateLoopError("target-only gripper unexpectedly reopens")
-    if not bool((filtered[-stable_frames:] <= CLOSED_THRESHOLD).all()):
-        raise StateLoopError("target-only gripper must remain closed at episode end")
+        last_closed = close_end + int(
+            np.flatnonzero(filtered[close_end:reopen_run] <= CLOSED_THRESHOLD)[-1]
+        )
+        reopen_start = last_closed + 1
 
     remove_start = _motion_start(
         eef,
@@ -203,6 +205,7 @@ def detect_target_only_events(
             t_remove_start=remove_start,
             t_close_start=close_start,
             t_close_end=close_end,
+            t_reopen_start=reopen_start,
         )
     except ValueError as exc:
         raise StateLoopError(str(exc)) from exc
@@ -263,7 +266,7 @@ def detect_episode_loop(state: EpisodeStateSignals) -> PickPlaceEvents:
 
 
 def detect_episode_target_only(state: EpisodeStateSignals) -> TargetOnlyEvents:
-    """Require exactly one arm to close once and remain closed."""
+    """Require exactly one arm to complete a first stable close."""
 
     candidates: list[TargetOnlyEvents] = []
     errors: dict[str, str] = {}
@@ -280,7 +283,7 @@ def detect_episode_target_only(state: EpisodeStateSignals) -> TargetOnlyEvents:
             candidates.append(event)
     if len(candidates) != 1:
         raise StateLoopError(
-            "expected exactly one target-only close-and-hold arm, "
+            "expected exactly one target-only stable-close arm, "
             f"got {len(candidates)}; per_arm={errors}"
         )
     return candidates[0]

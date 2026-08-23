@@ -1,4 +1,4 @@
-"""Stage-1 context shared by pick/place and close-and-hold episodes."""
+"""Stage-1 context shared by pick/place and target-only episodes."""
 
 from __future__ import annotations
 
@@ -164,7 +164,7 @@ class LoopContext:
 
     def to_json(self) -> dict[str, Any]:
         return {
-            "format_version": "robotwin_loop_context_v3",
+            "format_version": "robotwin_loop_context_v4",
             "annotation_mode": self.annotation_mode.value,
             "timeline_kind": self.timeline_kind,
             "required_object_roles": list(self.annotation_spec.required_role_names),

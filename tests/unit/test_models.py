@@ -66,7 +66,7 @@ def test_loop_context_contract() -> None:
     assert context.seed_candidates("target") == (0,)
     assert context.seed_candidates("receiver") == (0,)
     payload = context.to_json()
-    assert payload["format_version"] == "robotwin_loop_context_v3"
+    assert payload["format_version"] == "robotwin_loop_context_v4"
     assert payload["timeline_kind"] == "pick_place"
     assert payload["windows"] == {
         "operation": [4, 136],

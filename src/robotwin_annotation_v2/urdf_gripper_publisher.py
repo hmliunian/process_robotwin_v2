@@ -1228,22 +1228,26 @@ def _validate_source_frame_encoding(
     loop_format_version: Any,
     target_hold: tuple[int, int] | None,
 ) -> None:
-    """Require v3 sources to encode exactly their event-derived hold phase."""
+    """Require hold-aware sources to match their event-derived encoding."""
 
     source_format = source.get("format_version")
+    hold_aware_versions = {
+        "robotwin_loop_context_v3",
+        "robotwin_loop_context_v4",
+    }
     if source_format == LEGACY_MASK_FORMAT_VERSION:
-        if loop_format_version == "robotwin_loop_context_v3":
+        if loop_format_version in hold_aware_versions:
             raise UrdfGripperPublishError(
-                "loop context v3 requires visible masks v3 frame_encoding"
+                "hold-aware loop context requires visible masks v3 frame_encoding"
             )
         return
     if source_format != MASK_FORMAT_VERSION:
         raise UrdfGripperPublishError(
             f"unsupported source masks format: {source_format!r}"
         )
-    if loop_format_version != "robotwin_loop_context_v3":
+    if loop_format_version not in hold_aware_versions:
         raise UrdfGripperPublishError(
-            "visible masks v3 require loop context v3 hold boundaries"
+            "visible masks v3 require hold-aware loop context boundaries"
         )
     masks = np.asarray(source["masks"], dtype=bool)
     expected = default_frame_encoding(masks)

@@ -55,8 +55,8 @@ def sample_semantic_frames(
     """Select mode-specific semantic evidence without inspecting RGB pixels.
 
     Both modes share pre-grasp seed candidates.  Pick/place adds transport and
-    placement context; close-and-hold adds only target identity evidence after
-    closure.  Context frames never extend an object's output mask window.
+    placement context; target-only adds target identity evidence from the first
+    hold interval.  Context frames never extend an object's output mask window.
     """
 
     mode = AnnotationMode(annotation_mode)
@@ -106,9 +106,9 @@ def sample_semantic_frames(
             ),
         )
     else:
-        last_frame = frame_count - 1
-        first_closed_context = min(events.t_close_end + 1, last_frame)
-        held_context = (first_closed_context + last_frame) // 2
+        hold = events.target_hold_window(frame_count)
+        first_closed_context = events.t_close_end if hold is None else hold.start
+        held_context = first_closed_context if hold is None else (hold.start + hold.end) // 2
         contexts = (
             (
                 first_closed_context,

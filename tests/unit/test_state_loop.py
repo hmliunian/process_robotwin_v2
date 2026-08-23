@@ -42,12 +42,12 @@ def test_detect_target_only_close_and_hold_events() -> None:
     assert events == TargetOnlyEvents("left", 3, 5, 9)
 
 
-def test_target_only_rejects_pick_place_reopen() -> None:
+def test_target_only_records_first_reopen_boundary() -> None:
     gripper = np.array([1.0] * 5 + [0.7, 0.4, 0.1, 0.1, 0.1] + [0.4, 0.95, 0.95, 0.95])
     eef = np.zeros((len(gripper), 6), dtype=np.float64)
 
-    with np.testing.assert_raises_regex(RuntimeError, "unexpectedly reopens"):
-        detect_target_only_events(gripper, eef, arm="right")
+    events = detect_target_only_events(gripper, eef, arm="right")
+    assert events.t_reopen_start == 10
 
 
 def test_episode_target_only_selects_the_only_close_and_hold_arm() -> None:
