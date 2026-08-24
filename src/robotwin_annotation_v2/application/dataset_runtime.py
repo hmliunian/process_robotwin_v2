@@ -32,7 +32,6 @@ from robotwin_annotation_v2.application.sam_workflow import (
 )
 from robotwin_annotation_v2.application.urdf_workflow import (
     DEFAULT_URDF_DEPTH_TOLERANCE_MM,
-    DEFAULT_URDF_MINIMUM_ELIGIBLE_NONEMPTY_FRACTION,
     DEFAULT_URDF_PIPELINE_BUFFER_SIZE,
     UrdfWorkflow,
     UrdfWorkflowHooks,
@@ -229,9 +228,6 @@ def process_urdf_source_run(
     dry_run: bool = False,
     resume: bool = False,
     depth_tolerance_mm: float = DEFAULT_URDF_DEPTH_TOLERANCE_MM,
-    minimum_eligible_nonempty_fraction: float = (
-        DEFAULT_URDF_MINIMUM_ELIGIBLE_NONEMPTY_FRACTION
-    ),
     fit_config_json: Path | None = None,
     allow_partial_source: bool = False,
     source_mode: str = "frozen_run",
@@ -264,7 +260,6 @@ def process_urdf_source_run(
         dry_run=dry_run,
         resume=resume,
         depth_tolerance_mm=depth_tolerance_mm,
-        minimum_eligible_nonempty_fraction=minimum_eligible_nonempty_fraction,
         fit_config_json=fit_config_json,
         allow_partial_source=allow_partial_source,
         source_mode=source_mode,
@@ -378,9 +373,6 @@ def process_live_urdf_pipeline(
     episode_ids: tuple[int, ...] | None = None,
     skip_render: bool = False,
     depth_tolerance_mm: float = DEFAULT_URDF_DEPTH_TOLERANCE_MM,
-    minimum_eligible_nonempty_fraction: float = (
-        DEFAULT_URDF_MINIMUM_ELIGIBLE_NONEMPTY_FRACTION
-    ),
     fit_config_json: Path | None = None,
     allow_partial_source: bool = False,
     urdf_pipeline: bool = True,
@@ -403,7 +395,6 @@ def process_live_urdf_pipeline(
         episode_ids=episode_ids,
         skip_render=skip_render,
         depth_tolerance_mm=depth_tolerance_mm,
-        minimum_eligible_nonempty_fraction=minimum_eligible_nonempty_fraction,
         fit_config_json=fit_config_json,
         allow_partial_source=allow_partial_source,
         urdf_pipeline=urdf_pipeline,
@@ -469,10 +460,6 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--urdf-mesh-root", type=Path)
     parser.add_argument("--urdf-depth-tolerance-mm", type=float)
-    parser.add_argument(
-        "--urdf-minimum-eligible-nonempty-fraction",
-        type=float,
-    )
     parser.add_argument("--urdf-fit-config-json", type=Path)
     parser.add_argument(
         "--urdf-egl-device-id",
@@ -646,7 +633,6 @@ def _run_from_args(
             or urdf_path is not None
             or args.urdf_mesh_root is not None
             or args.urdf_depth_tolerance_mm is not None
-            or args.urdf_minimum_eligible_nonempty_fraction is not None
             or args.urdf_fit_config_json is not None
             or args.urdf_egl_device_id is not None
             or args.urdf_pipeline_buffer_size != DEFAULT_URDF_PIPELINE_BUFFER_SIZE
@@ -715,11 +701,6 @@ def _run_from_args(
             if args.urdf_depth_tolerance_mm is None
             else args.urdf_depth_tolerance_mm
         )
-        minimum_eligible_nonempty_fraction = (
-            DEFAULT_URDF_MINIMUM_ELIGIBLE_NONEMPTY_FRACTION
-            if args.urdf_minimum_eligible_nonempty_fraction is None
-            else args.urdf_minimum_eligible_nonempty_fraction
-        )
         if source_run_dir is None:
             if args.dry_run or args.resume:
                 raise ValueError(
@@ -758,9 +739,6 @@ def _run_from_args(
                     episode_ids=selected.episode_ids,
                     skip_render=selected.skip_render,
                     depth_tolerance_mm=depth_tolerance_mm,
-                    minimum_eligible_nonempty_fraction=(
-                        minimum_eligible_nonempty_fraction
-                    ),
                     fit_config_json=args.urdf_fit_config_json,
                     allow_partial_source=args.allow_partial_source,
                     urdf_pipeline=not args.no_urdf_pipeline,
@@ -831,9 +809,6 @@ def _run_from_args(
                     dry_run=args.dry_run,
                     resume=args.resume,
                     depth_tolerance_mm=depth_tolerance_mm,
-                    minimum_eligible_nonempty_fraction=(
-                        minimum_eligible_nonempty_fraction
-                    ),
                     fit_config_json=args.urdf_fit_config_json,
                     allow_partial_source=args.allow_partial_source,
                     egl_device_id=args.urdf_egl_device_id,

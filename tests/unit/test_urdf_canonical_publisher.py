@@ -533,7 +533,6 @@ def _write_backend_episode(
                 "task": TASK,
                 "camera": CAMERA,
                 "depth_tolerance_mm": 8.0,
-                "minimum_eligible_nonempty_fraction": 0.9,
                 "egl_device_id": 3,
                 "fit_config": {},
                 "episode_plans": [
@@ -1098,6 +1097,9 @@ def test_publish_preserves_source_material_and_removes_old_sam_gripper_metadata(
     assert manifest["gripper_qc"]["backend"] == "urdf"
     assert manifest["gripper_qc"]["status"] == "ok"
     assert manifest["gripper_qc"]["qc_status"] == "passed"
+    assert manifest["gripper_qc"]["reason"] == (
+        "URDF visual QC is not applicable; artifact contract validated"
+    )
     assert set(manifest["gripper_qc"]) == {
         "backend",
         "status",

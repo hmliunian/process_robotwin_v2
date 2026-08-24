@@ -109,12 +109,14 @@ Target-only 使用 `remove_start < close_start < close_end` 三事件 close-and-
 | 活动 gripper 末帧非空 | 20/20 |
 | per-episode run manifest | 20/20 |
 | frame provenance | 20/20 |
-| URDF 0.90 quality gate | 20/20 |
+| URDF 0.90 quality gate (historical; later removed) | 20/20 |
 | MP4 文件大小与 SHA-256 | 20/20 |
 
 最低 active-window coverage 为 ep42 的 `125/138 = 0.905797`；最低 eligible coverage 也在
-ep42，为 `125/126 = 0.992063`，均通过固定 `0.90` gate。summary records、backend selected
-IDs、video manifest 与实际 20 个 MP4 的 ID 集完全一致，excluded 为 0，`passed=true`。
+ep42，为 `125/126 = 0.992063`，当时均通过固定 `0.90` gate。后续全量实验与人工视频复核确认，
+URDF 夹爪可能完全出画，因此该非空率 gate 已移除；coverage 仅保留为诊断。summary records、
+backend selected IDs、video manifest 与实际 20 个 MP4 的 ID 集完全一致，excluded 为 0，
+`passed=true`。
 
 产物保存在：
 

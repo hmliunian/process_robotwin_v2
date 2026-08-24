@@ -372,8 +372,10 @@ normalized opening 是 drive target，不是接触后的真实 finger qpos，因
 步骤。Z-buffer 处理 self-occlusion，scene depth 去除被 target、receiver、桌面、其他 link
 或 clutter 遮挡的几何。不会使用 RGB 分割、颜色阈值、对象 mask subtraction 或时序填充。
 
-自动质量门只统计 rendered/scene depth 都有效的 eligible active frame；默认要求至少 90%
-eligible frames 发布非空 mask。完全出画帧不会错误降低该比例。
+URDF 不运行基于可见非空率的 gripper QC：夹爪可能在 active window 内完全出画，此时全空
+visible mask 是合法结果。renderer 仍严格校验 shape/dtype、active-window clipping、四层 mask
+包含关系、depth/component filtering 和产物 lineage；`quality` 中的 coverage 仅供诊断，不影响
+episode 是否成功。SAM gripper 的视觉与时序 QC 保持不变。
 
 仓库默认资产：
 
@@ -492,7 +494,6 @@ URDF-only 参数：
 --urdf-path
 --urdf-mesh-root
 --urdf-depth-tolerance-mm
---urdf-minimum-eligible-nonempty-fraction
 --urdf-fit-config-json
 --urdf-egl-device-id GPU       # physical EGL GPU；streaming 时必须与 SAM GPU 不同
 --urdf-pipeline-buffer-size N  # live streaming source-ready queue，默认 2
