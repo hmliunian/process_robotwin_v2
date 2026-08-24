@@ -291,3 +291,25 @@ cam_high depth MKV 各 220 个；selection/collection/per-task manifest 计数�
 manifest 文件记录、324.9 MiB，未发现 checksum、metadata、task 或 episode ID 错误。原有 8 类
 的整树 SHA-256 聚合值在增量发布前后保持不变。`datasets.md` 不把 mask 成功率写成数据抽取
 完成率；mask 结果应引用带 run id 的实验报告。
+
+### 8.5 Contact-press 子集
+
+从上述已验收集合按 `task_kind` 单独物化 6 个 action-site task，共 120 条 episode：
+`click_alarmclock`、`click_bell`、`press_stapler`、`open_laptop`、`open_microwave`、
+`turn_switch`。输出目录为：
+
+```text
+/DATA/disk8/xuran/add_mask_robotwin/dataset/target_only_20_v2_contact_press
+```
+
+使用可复现 split 工具生成并校验：
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/split_target_only_extract.py
+PYTHONPATH=src .venv/bin/python scripts/process_dataset.py \
+  --data-path /DATA/disk8/xuran/add_mask_robotwin/dataset/target_only_20_v2_contact_press \
+  --target-only --task press_stapler
+```
+
+split 工具不会修改原始 `target_only_20_v2`；如果目标目录已存在，会拒绝覆盖。每个 task
+保留原始全局 episode id、逐文件 SHA-256 和 `task_kind` provenance。
