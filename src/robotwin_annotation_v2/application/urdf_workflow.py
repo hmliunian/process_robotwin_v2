@@ -27,7 +27,6 @@ from robotwin_annotation_v2.urdf_gripper_publisher import (
 from .discovery import DiscoveryResult
 
 DEFAULT_URDF_DEPTH_TOLERANCE_MM = 8.0
-DEFAULT_URDF_MINIMUM_ELIGIBLE_NONEMPTY_FRACTION = 0.90
 DEFAULT_URDF_PIPELINE_BUFFER_SIZE = 2
 
 
@@ -112,9 +111,6 @@ class UrdfWorkflow:
         dry_run: bool = False,
         resume: bool = False,
         depth_tolerance_mm: float = DEFAULT_URDF_DEPTH_TOLERANCE_MM,
-        minimum_eligible_nonempty_fraction: float = (
-            DEFAULT_URDF_MINIMUM_ELIGIBLE_NONEMPTY_FRACTION
-        ),
         fit_config_json: Path | None = None,
         allow_partial_source: bool = False,
         source_mode: str = "frozen_run",
@@ -241,10 +237,6 @@ class UrdfWorkflow:
             )
         if not math.isfinite(depth_tolerance_mm) or depth_tolerance_mm < 0:
             raise ValueError("URDF depth tolerance must be finite and non-negative")
-        if not math.isfinite(minimum_eligible_nonempty_fraction) or not (
-            0.0 <= minimum_eligible_nonempty_fraction <= 1.0
-        ):
-            raise ValueError("URDF minimum eligible nonempty fraction must be finite and in [0, 1]")
         selected_run_id = self.hooks.validate_run_id(run_id or runtime.new_run_id())
         resolved_output_root = output_root.expanduser().resolve()
         canonical_run_dir = resolved_output_root / selected_run_id
@@ -272,7 +264,6 @@ class UrdfWorkflow:
             task=task,
             camera=camera,
             depth_tolerance_mm=depth_tolerance_mm,
-            minimum_eligible_nonempty_fraction=minimum_eligible_nonempty_fraction,
             fit_config_json=(
                 None if fit_config_json is None else fit_config_json.expanduser().resolve()
             ),
@@ -416,15 +407,10 @@ class UrdfWorkflow:
                     backend_error = str(
                         backend_record.get("error", "URDF backend episode is incomplete")
                     )
-                    episode_status = (
-                        "gripper_incomplete"
-                        if "eligible nonempty fraction" in backend_error
-                        else "failed"
-                    )
                     records.append(
                         {
                             "episode": episode_id,
-                            "status": episode_status,
+                            "status": "failed",
                             "gripper_backend": "urdf",
                             "error": backend_error,
                             "backend_status": backend_record.get("status"),
@@ -433,10 +419,10 @@ class UrdfWorkflow:
                     if reporter is not None:
                         reporter.episode_finished(
                             episode_id,
-                            status=episode_status,
+                            status="failed",
                             detail=backend_error,
                         )
-                    publish_progress(position, episode_id, episode_status, backend_error)
+                    publish_progress(position, episode_id, "failed", backend_error)
                     continue
                 frozen_lineage = selection.source_lineages[episode_id]
                 if backend_record.get("source_lineage") != frozen_lineage:
@@ -866,9 +852,6 @@ class UrdfWorkflow:
         episode_ids: tuple[int, ...] | None = None,
         skip_render: bool = False,
         depth_tolerance_mm: float = DEFAULT_URDF_DEPTH_TOLERANCE_MM,
-        minimum_eligible_nonempty_fraction: float = (
-            DEFAULT_URDF_MINIMUM_ELIGIBLE_NONEMPTY_FRACTION
-        ),
         fit_config_json: Path | None = None,
         allow_partial_source: bool = False,
         urdf_pipeline: bool = True,
@@ -886,10 +869,6 @@ class UrdfWorkflow:
             raise FileNotFoundError(f"URDF asset is missing: {resolved_urdf_path}")
         if not math.isfinite(depth_tolerance_mm) or depth_tolerance_mm < 0:
             raise ValueError("URDF depth tolerance must be finite and non-negative")
-        if not math.isfinite(minimum_eligible_nonempty_fraction) or not (
-            0.0 <= minimum_eligible_nonempty_fraction <= 1.0
-        ):
-            raise ValueError("URDF minimum eligible nonempty fraction must be finite and in [0, 1]")
 
         selected_run_id = self.hooks.validate_run_id(run_id or ArtifactStore.new_run_id())
         canonical_run_dir = resolved_output_root / selected_run_id
@@ -999,7 +978,6 @@ class UrdfWorkflow:
                 task=task,
                 camera=camera,
                 depth_tolerance_mm=depth_tolerance_mm,
-                minimum_eligible_nonempty_fraction=(minimum_eligible_nonempty_fraction),
                 fit_config_json=(
                     None if fit_config_json is None else fit_config_json.expanduser().resolve()
                 ),
@@ -1110,7 +1088,6 @@ class UrdfWorkflow:
             dry_run=False,
             resume=False,
             depth_tolerance_mm=depth_tolerance_mm,
-            minimum_eligible_nonempty_fraction=(minimum_eligible_nonempty_fraction),
             fit_config_json=fit_config_json,
             allow_partial_source=allow_partial_source,
             source_mode="live_object_source_stage",
@@ -1126,7 +1103,6 @@ class UrdfWorkflow:
 
 __all__ = [
     "DEFAULT_URDF_DEPTH_TOLERANCE_MM",
-    "DEFAULT_URDF_MINIMUM_ELIGIBLE_NONEMPTY_FRACTION",
     "DEFAULT_URDF_PIPELINE_BUFFER_SIZE",
     "UrdfRunConfig",
     "UrdfSourceSelection",

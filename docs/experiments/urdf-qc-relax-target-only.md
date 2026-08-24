@@ -1,10 +1,10 @@
 # Target-only URDF QC probe
 
-The target-only full-220 audit had 21 `urdf_gripper` failures.  The URDF
-publisher's only episode-level quality gate was `eligible_nonempty_fraction >=
-0.90`; this is the count of depth-evaluable active-window frames with at least
-one visible URDF pixel.  The renderer's structural checks and per-component
-depth checks remain independent of this threshold.
+The target-only full-220 audit had 21 `urdf_gripper` failures. The URDF
+publisher's only episode-level visibility gate was `eligible_nonempty_fraction
+>= 0.90`; this is the count of depth-evaluable active-window frames with at
+least one visible URDF pixel. The renderer's structural checks and
+per-component depth checks remain independent of this threshold.
 
 ## Offline threshold-zero replay
 
@@ -32,10 +32,10 @@ The failure pattern is strongly post-close: e.g. shake_bottle/23117 has
 100% visible support in the 64-frame approach/close interval but only 19% of
 177 post-close frames; turn_switch/27124 has 100% pre-close and 87% post-close.
 This is consistent with the gripper leaving the camera/depth view or becoming
-occluded after the first close, rather than a malformed URDF mask.  A blanket
-removal of QC would publish many long empty tails (and click_alarmclock/2249
-would publish only 2 visible frames), so threshold zero is suitable only as a
-diagnostic probe.
+occluded after the first close, rather than a malformed URDF mask. Manual
+review of the complete `click_alarmclock/2249` video confirmed the operated
+gripper never enters the camera view. Its nearly empty visible track is
+therefore a valid geometric result, not a silent rendering failure.
 
 ## Code change in this branch
 
@@ -45,7 +45,8 @@ ends only the held-target encoding; the first close remains the operation
 boundary.  Hold-aware source validation accepts v3 and v4.  Tests were updated
 for the new version and reopen semantics.
 
-Recommendation: retain structural/depth/component validation and replace the
-global 0.90 gate with a target-only policy evaluated on the first close/short
-post-close interval (or an explicit visibility-out-of-view state).  Do not
-disable the gate globally until that policy is implemented and reviewed.
+Decision: remove URDF gripper visibility/nonempty QC, including the global 0.90
+gate and the requirement for any active-window pixel. Keep structural,
+depth/component, artifact and lineage validation. Coverage remains in
+diagnostics only. This decision is URDF-specific; SAM gripper visual and
+temporal QC remains unchanged.

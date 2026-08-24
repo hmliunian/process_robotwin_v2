@@ -725,7 +725,6 @@ def test_parse_args_defaults_to_urdf_and_preserves_just_sentinel_paths() -> None
 
     assert args.gripper_backend == "urdf"
     assert args.urdf_depth_tolerance_mm is None
-    assert args.urdf_minimum_eligible_nonempty_fraction is None
     assert args.source_run_dir == "-"
     assert args.urdf_path == "-"
     assert process_module._optional_cli_path(args.source_run_dir) is None
@@ -1339,15 +1338,6 @@ def test_main_json_mode_prints_failed_summary_before_exit(
         (
             (
                 "--gripper-backend",
-                "sam",
-                "--urdf-minimum-eligible-nonempty-fraction",
-                "0.8",
-            ),
-            "URDF-only options",
-        ),
-        (
-            (
-                "--gripper-backend",
                 "urdf",
                 "--source-run-dir",
                 "source",
@@ -1593,8 +1583,6 @@ def test_main_urdf_cli_forwards_parameters_without_legacy_process(
             "--dry-run",
             "--urdf-depth-tolerance-mm",
             "5.5",
-            "--urdf-minimum-eligible-nonempty-fraction",
-            "0.8",
             "--skip-render",
             "--allow-partial-source",
         ],
@@ -1613,7 +1601,6 @@ def test_main_urdf_cli_forwards_parameters_without_legacy_process(
     assert calls["resume"] is False
     assert calls["dry_run"] is True
     assert calls["depth_tolerance_mm"] == 5.5
-    assert calls["minimum_eligible_nonempty_fraction"] == 0.8
     assert calls["skip_render"] is True
     assert calls["allow_partial_source"] is True
 
@@ -2134,10 +2121,7 @@ def test_process_urdf_source_run_renders_successes_after_partial_backend_failure
                 {
                     "episode_index": 8,
                     "status": "failed",
-                    "error": (
-                        "eligible nonempty fraction is below the run threshold: "
-                        "0.898649 < 0.900000"
-                    ),
+                    "error": "synthetic renderer failure",
                 },
             ],
         }
@@ -2199,7 +2183,7 @@ def test_process_urdf_source_run_renders_successes_after_partial_backend_failure
     assert summary["backend"]["error"] == expected_error
     assert [record["status"] for record in summary["records"]] == [
         "completed",
-        "gripper_incomplete",
+        "failed",
     ]
     persisted = json.loads(Path(summary["artifact"]).read_text(encoding="utf-8"))
     assert set(persisted) == {

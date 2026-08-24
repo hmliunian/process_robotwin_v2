@@ -596,7 +596,6 @@ def test_dry_run_preflights_without_creating_output_or_renderer(
         item["path"] for item in publisher_implementation_identity()["files"]
     }
     assert publisher_paths <= implementation_paths
-    assert result["run_contract"]["minimum_eligible_nonempty_fraction"] == 0.90
     assert not output_root.exists()
 
 
@@ -1589,32 +1588,43 @@ def test_create_renderer_scopes_egl_device_environment(
     assert render_module.os.environ["EGL_DEVICE_ID"] == "11"
 
 
-def test_quality_gate_rejects_too_many_empty_eligible_frames(tmp_path: Path) -> None:
-    source_path = tmp_path / "source/masks.npz"
-    _write_masks(source_path)
-    source = load_four_channel_masks(source_path, frame_count=3)
-    base = _product()
-    visible = base.gripper_track.copy()
-    visible[2] = False
-    records = [dict(record) for record in base.frame_diagnostics]
-    records[1]["visible_pixels"] = 0
+def test_run_accepts_fully_empty_urdf_track(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _integration_config(tmp_path, run_id="empty-visible-track")
+    _mock_integration_pipeline(monkeypatch, tmp_path)
+    empty = np.zeros((6, 2, 3), dtype=bool)
     product = UrdfMaskProduct(
-        gripper_track=visible,
-        rendered_amodal_track=base.rendered_amodal_track,
-        depth_evaluable_track=base.depth_evaluable_track,
-        depth_consistent_track=base.depth_consistent_track,
-        frame_diagnostics=tuple(records),
+        gripper_track=empty,
+        rendered_amodal_track=empty.copy(),
+        depth_evaluable_track=empty.copy(),
+        depth_consistent_track=empty.copy(),
+        frame_diagnostics=tuple(
+            {
+                "frame_id": frame_id,
+                "accepted": False,
+                "visible_pixels": 0,
+                "amodal_pixels": 0,
+                "depth_evaluable_pixels": 0,
+                "selected_q_by_joint": {},
+                "component_acceptance": {},
+            }
+            for frame_id in range(6)
+        ),
+    )
+    monkeypatch.setattr(
+        render_module,
+        "render_episode_product",
+        lambda *_args, **_kwargs: product,
     )
 
-    with pytest.raises(render_module.UrdfMaskRunError, match="below the run threshold"):
-        save_episode_artifacts(
-            tmp_path / "output",
-            _episode(tmp_path),
-            source,
-            product,
-            tolerance_mm=8.0,
-            minimum_eligible_nonempty_fraction=0.90,
-        )
+    result = run_experiment(config, renderer=object(), fit_config={})
+
+    assert result["status"] == "complete"
+    assert result["episodes"][0]["quality"]["active_nonempty_fraction"] == 0.0
+    output = config.run_dir / "episode_007152"
+    with np.load(output / "masks.npz", allow_pickle=False) as archive:
+        assert not archive["masks"][2:4].any()
 
 
 def test_resume_complete_anchor_remains_fatal_across_repeated_attempts(

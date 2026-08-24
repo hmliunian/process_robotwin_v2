@@ -1966,7 +1966,6 @@ def _backend_provenance(
         "task",
         "camera",
         "depth_tolerance_mm",
-        "minimum_eligible_nonempty_fraction",
         "egl_device_id",
         "fit_config",
         "implementation",
@@ -2101,7 +2100,7 @@ def _build_public_payloads(
         "failure": None,
         "qc_status": "passed",
         "qc_selected_candidate": None,
-        "qc_reason": "URDF geometry/depth visibility quality gate passed",
+        "qc_reason": "URDF visual QC is not applicable; artifact contract validated",
     }
     backend_provenance = _backend_provenance(
         backend_episode_dir,

@@ -356,6 +356,7 @@ def load_authoritative_loop_context(
                 f"{raw_timeline_kind!r} != {expected_kind!r}"
             )
         timeline_kind = expected_kind
+        valid_event_keys: tuple[set[str], ...]
         if annotation_mode is AnnotationMode.PICK_PLACE:
             event_keys = {
                 "active_arm",
