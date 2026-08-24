@@ -1,0 +1,59 @@
+annotation:
+  mode: target_only
+  profile: contact_press
+
+dataset:
+  root: /DATA/disk8/xuran/add_mask_robotwin/dataset/target_only_20_v2/click_alarmclock
+  manifest: datasets/target_only_20_v2_selection.json
+  task: click_alarmclock
+  camera: cam_high
+  smoke_episode_ids: [2200]
+  regression_episode_ids: [2200, 2201, 2211, 2213, 2224, 2225, 2232, 2238, 2245, 2249,
+                           2250, 2256, 2362, 2386, 2488, 2508, 2620, 2626, 2748, 2749]
+
+qwen:
+  endpoint: http://127.0.0.1:18086/v1/chat/completions
+  model: qwen3.5-27b
+  prompt_template: prompts/target_only_contact_press_semantic_open_set.txt
+  timeout_seconds: 600
+  max_tokens: 400
+  query_selection: first_recommended
+  allow_query_fallback: false
+
+sam3:
+  checkpoint: ../checkpoints/sam3/sam3.pt
+  gpus: [2]
+
+mask:
+  target_envelope_padding_px: 4
+  receiver_envelope_padding_px: 4
+  temporal_qc_min_adjacent_iou_p05: 0.5
+  temporal_qc_max_centroid_jump_p95_px: 5.0
+  temporal_qc_max_area_ratio_jump_p95: 0.4
+  temporal_qc_quarantine_signal_count: 2
+  qc_enabled: true
+  qc_prompt_template: prompts/target_only_contact_press_mask_candidate_qc_open_set.txt
+  qc_max_candidates: 8
+  qc_query_fallback_enabled: true
+  qc_seed_fallback_enabled: true
+  qc_bbox_fallback_enabled: true
+  qc_bbox_prompt_template: prompts/open_set_bbox_localization.txt
+  qc_bbox_max_tokens: 180
+  qc_max_tokens: 160
+  qc_max_attempts: 2
+  qc_min_confidence: 0.70
+  qc_min_area_fraction: 0.0001
+  qc_max_area_fraction: 0.85
+  qc_duplicate_iou_threshold: 0.98
+
+gripper_roi:
+  prompt:
+    axial_back_m: 0.120
+    axial_front_m: 0.060
+  hard:
+    axial_back_m: 0.120
+    axial_front_m: 0.045
+  fixed_half_width_m: 0.085
+
+output:
+  root: ../artifacts/runs

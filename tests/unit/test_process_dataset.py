@@ -21,6 +21,7 @@ from robotwin_annotation_v2.application.discovery import (
     build_dynamic_manifest,
     discover_episodes,
 )
+from robotwin_annotation_v2.domain import TargetOnlyTaskKind, TargetProfile
 
 
 def test_process_dataset_launcher_delegates_to_canonical_runtime() -> None:
@@ -367,6 +368,56 @@ def test_dynamic_manifest_contains_measured_contract(
     assert manifest["raw_video_frame_surplus"] == 1
     assert manifest["regression_episode_ids"] == [7, 8]
     assert manifest["dataset_root"] == str(tmp_path.resolve())
+
+
+def test_dynamic_manifest_preserves_typed_task_kind(tmp_path: Path) -> None:
+    episode = DiscoveredEpisode(
+        episode_id=7,
+        parquet=tmp_path / "episode_000007.parquet",
+        video=tmp_path / "episode_000007.mp4",
+        sidecar=tmp_path / "episode_000007.hdf5",
+    )
+
+    manifest = build_dynamic_manifest(
+        tmp_path,
+        task="task",
+        camera="cam_high",
+        episodes=(episode,),
+        measure_episode_fn=lambda _episode: (24, (240, 320), 1),
+        task_kind=TargetOnlyTaskKind.CONTACT_ACTION_SITE,
+    )
+
+    assert manifest["task_kind"] == "contact_action_site"
+
+
+def test_runtime_dynamic_manifest_copies_extract_task_kind(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "EXTRACT_MANIFEST.json").write_text(
+        json.dumps({"task_kind": "articulated_action_site"}),
+        encoding="utf-8",
+    )
+    episode = DiscoveredEpisode(
+        episode_id=7,
+        parquet=tmp_path / "episode_000007.parquet",
+        video=tmp_path / "episode_000007.mp4",
+        sidecar=tmp_path / "episode_000007.hdf5",
+    )
+    monkeypatch.setattr(
+        process_module,
+        "_measure_episode",
+        lambda _episode: (24, (240, 320), 1),
+    )
+
+    manifest = process_module.build_dynamic_manifest(
+        tmp_path,
+        task="task",
+        camera="cam_high",
+        episodes=(episode,),
+    )
+
+    assert manifest["task_kind"] == "articulated_action_site"
 
 
 def test_process_dataset_reports_sam_stages_without_embedded_json(
@@ -774,6 +825,7 @@ def test_path_only_single_task_dispatches_from_manifest(
         task="adjust_bottle",
         camera="cam_high",
         episode_ids=(0,),
+        profile=TargetProfile.GRASP_MANIPULATION,
     )
     resolved = SimpleNamespace(root=dataset, targets=(target,), is_collection=False)
     calls: dict[str, Any] = {}
@@ -825,23 +877,35 @@ def test_path_only_collection_runs_each_task_and_writes_summary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    targets = tuple(
+    targets = (
         SimpleNamespace(
-            root=tmp_path / task,
-            task=task,
+            root=tmp_path / "alpha",
+            task="alpha",
             camera="cam_high",
-            episode_ids=(episode_id,),
-        )
-        for task, episode_id in (("alpha", 1), ("beta", 2))
+            episode_ids=(1,),
+            profile=TargetProfile.GRASP_MANIPULATION,
+        ),
+        SimpleNamespace(
+            root=tmp_path / "beta",
+            task="beta",
+            camera="cam_high",
+            episode_ids=(2,),
+            profile=TargetProfile.CONTACT_PRESS,
+        ),
     )
     resolved = SimpleNamespace(root=tmp_path, targets=targets, is_collection=True)
     calls: list[dict[str, Any]] = []
+    config_paths: list[Path] = []
     monkeypatch.setattr(
         process_module,
         "resolve_dataset_input",
         lambda *_args, **_kwargs: resolved,
     )
-    monkeypatch.setattr(process_module, "load_config", lambda _path: _cli_config(tmp_path))
+    def fake_load_config(path: Path) -> Any:
+        config_paths.append(path)
+        return _cli_config(tmp_path)
+
+    monkeypatch.setattr(process_module, "load_config", fake_load_config)
 
     def fake_live(**kwargs: Any) -> dict[str, Any]:
         calls.append(kwargs)
@@ -870,6 +934,10 @@ def test_path_only_collection_runs_each_task_and_writes_summary(
     assert [call["run_id"] for call in calls] == [
         "collection-test-alpha",
         "collection-test-beta",
+    ]
+    assert config_paths == [
+        process_module.PATH_MODE_CONFIGS[process_module.AnnotationMode.TARGET_ONLY],
+        process_module.CONTACT_PRESS_CONFIG,
     ]
     assert summary["passed"] is True
     assert Path(summary["artifact"]).is_file()
