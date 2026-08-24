@@ -101,12 +101,29 @@ def test_target_only_events_derive_full_target_and_gripper_hold_windows() -> Non
     }
 
 
+def test_target_only_reopen_only_truncates_hold_window() -> None:
+    events = TargetOnlyEvents("left", 4, 53, 65, 100)
+
+    windows = derive_episode_windows(events, frame_count=139)
+
+    assert events.target_hold_window(139) == FrameWindow(66, 99)
+    assert windows.target == FrameWindow(4, 138)
+    assert windows.operation == FrameWindow(4, 138)
+    assert windows.gripper == FrameWindow(4, 138)
+    assert events.to_json()["t_reopen_start"] == 100
+
+
 def test_target_only_events_reject_close_before_remove_start() -> None:
     with pytest.raises(ValueError, match="not ordered"):
         TargetOnlyEvents("right", 60, 55, 68)
 
 
-def test_target_only_context_has_v3_close_hold_contract_without_fake_open() -> None:
+def test_target_only_events_reject_reopen_before_close_completion() -> None:
+    with pytest.raises(ValueError, match="reopen must follow"):
+        TargetOnlyEvents("right", 4, 55, 68, 68)
+
+
+def test_target_only_context_has_v4_close_hold_contract_without_reopen() -> None:
     context = LoopContext(
         episode=EpisodeRef("adjust_bottle", 0, "cam_high"),
         task_text="Lift the bottle with the left arm.",
@@ -128,6 +145,7 @@ def test_target_only_context_has_v3_close_hold_contract_without_fake_open() -> N
 
     payload = context.to_json()
 
+    assert payload["format_version"] == "robotwin_loop_context_v4"
     assert context.windows.target == FrameWindow(4, 138)
     assert context.windows.receiver is None
     assert context.windows.gripper == FrameWindow(4, 138)

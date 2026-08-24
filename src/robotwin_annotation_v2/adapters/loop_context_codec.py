@@ -366,7 +366,7 @@ def load_authoritative_loop_context(
                 "t_open_start",
                 "t_open_done",
             }
-            valid_event_keys: tuple[set[str], ...] = (event_keys,)
+            valid_event_keys = (event_keys,)
             event_values = {
                 key: _required_integer(
                     event_payload,

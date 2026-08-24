@@ -12,7 +12,8 @@
 
 - 一个 active arm；
 - 一个由 annotation mode 声明的 loop：pick-place 为
-  approach → close → transport → open，target-only 为 remove/approach → close → hold；
+  approach → close → transport → open，target-only 为 remove/approach → 首次稳定 close → hold；
+  target-only 后续是否 reopen 不影响准入；
 - pick-place 需要一个 `target_0` 和一个 `receiver_0`；target-only 只需要 `target_0`，
   `receiver_0` 保留为全零的 canonical `not_applicable` channel；
 - 固定 `cam_high` 视角；
@@ -103,10 +104,11 @@ pick-place 事件顺序必须满足：
 t_move_start <= t_close_start < t_close_done < t_open_start < t_open_done
 ```
 
-target-only 使用独立三边界合同：
+target-only 使用独立首次闭合合同，并可记录后续 reopen：
 
 ```text
 t_remove_start <= t_close_start < t_close_end < frame_count
+t_reopen_start is null or t_close_end < t_reopen_start < frame_count
 ```
 
 下表语义阶段适用于 pick-place：
@@ -128,10 +130,11 @@ gripper   = [move_start, open_done]
 ```
 
 target 内部再分成两种逐帧编码：普通段 `[move_start, close_done]` 使用 `1`，持有段
-`[close_done + 1, open_start - 1]` 使用 `2`；从 `open_start` 起 target 归零。Target-only
-没有 release 事件，普通段为 `[remove_start, close_end]`，持有段为
-`[close_end + 1, T - 1]`。边界均按 inclusive 处理。事件帧由 detector 从 state 计算，不能为
-特定 episode 写死。
+`[close_done + 1, open_start - 1]` 使用 `2`；从 `open_start` 起 target 归零。Target-only 的
+operation、target 和 gripper 窗口均为 `[remove_start, T - 1]`；普通段
+`[remove_start, close_end]` 使用 `1`，持有段从 `close_end + 1` 到首次 `reopen_start - 1`
+使用 `2`，没有 reopen 时延续到 `T - 1`。reopen 后 target 恢复普通可见编码 `1`，不会使
+episode 失败。边界均按 inclusive 处理，事件帧不能为特定 episode 写死。
 
 ### 3.2 语义帧
 
@@ -148,8 +151,8 @@ receiver 可以用动作前帧做 seed，但只在 receiver 输出窗口发布 m
 
 ### 3.3 输出与失败
 
-新写 `loop.json` 使用 `robotwin_loop_context_v3`，至少保存 episode/camera、frame count、active
-arm、事件、窗口、语义帧、annotation mode 和 state/video source。统一 codec 只读兼容 v1/v2/v3；
+新写 `loop.json` 使用 `robotwin_loop_context_v4`，至少保存 episode/camera、frame count、active
+arm、事件、窗口、语义帧、annotation mode 和 state/video source。统一 codec 只读兼容 v1–v4；
 兼容读取不会授权新 writer 降级。state 缺失、多个/零合法 loop、事件顺序错误或窗口越界时保存
 失败原因，后续阶段不得运行。
 
@@ -769,7 +772,7 @@ src/robotwin_annotation_v2/pipeline/
 src/robotwin_annotation_v2/adapters/
   canonical_masks.py                          canonical v2 reader/v3 DTO/validator
   canonical_publication.py                    SAM/URDF 共用的 v3 原子 NPZ publisher
-  loop_context_codec.py                       loop v1/v2/v3 读取与 v3 当前语义
+  loop_context_codec.py                       loop v1–v4 读取与 v4 当前语义
   rendering.py                                package-owned public renderer
 
 src/robotwin_annotation_v2/urdf_gripper_publisher.py
