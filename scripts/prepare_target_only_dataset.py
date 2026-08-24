@@ -190,8 +190,6 @@ def _first_close_arm(state: EpisodeState) -> str:
 def _candidate_from_row(
     source_root: Path,
     row: dict[str, Any],
-    *,
-    require_single_loop: bool,
 ) -> Candidate | None:
     if not bool(row["geometry_valid"]):
         return None
@@ -210,8 +208,6 @@ def _candidate_from_row(
         loop_arm = detect_episode_loop(state).active_arm
     except StateLoopError:
         pass
-    if require_single_loop and loop_arm is None:
-        return None
     try:
         target_only_arm = detect_episode_target_only(state).active_arm
     except StateLoopError:
@@ -399,7 +395,6 @@ def build_selection(
                 candidate = _candidate_from_row(
                     source_root,
                     row,
-                    require_single_loop=False,
                 )
                 if candidate is None:
                     raise ValueError(f"reuse episode is no longer eligible: {task}/{episode_index}")
@@ -415,7 +410,6 @@ def build_selection(
                     candidate := _candidate_from_row(
                         source_root,
                         row,
-                        require_single_loop=False,
                     )
                 )
                 is not None
