@@ -28,6 +28,8 @@ from robotwin_annotation_v2.application.managed_qwen import (
 from robotwin_annotation_v2.config import PipelineConfig, load_config
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_QWEN_API_KEY_FILE = PROJECT_ROOT / "secrets" / "qwen_api_key.txt"
+QWEN_API_KEY_FILE_ENV = "QWEN_API_KEY_FILE"
 
 
 class _TerminationRequested(BaseException):
@@ -96,6 +98,31 @@ def _explicit_egl_gpu(arguments: Sequence[str]) -> int | None:
 def _effective_config_path(args: argparse.Namespace) -> Path:
     process_config = _option_value(args.process_args, "--config")
     return args.config if process_config is None else Path(process_config)
+
+
+def _load_qwen_api_key_file(pipeline_config: PipelineConfig) -> None:
+    """Load one local API key without putting it on the command line or in YAML."""
+
+    if pipeline_config.qwen.runtime != "api":
+        return
+    api_key_env = pipeline_config.qwen.api_key_env
+    if not api_key_env or os.environ.get(api_key_env):
+        return
+    configured_path = os.environ.get(QWEN_API_KEY_FILE_ENV)
+    key_path = Path(configured_path).expanduser() if configured_path else DEFAULT_QWEN_API_KEY_FILE
+    if not key_path.is_absolute():
+        key_path = PROJECT_ROOT / key_path
+    try:
+        value = key_path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise ManagedQwenError(f"cannot read Qwen API key file {key_path}: {exc}") from exc
+    if not value:
+        return
+    if any(character.isspace() for character in value):
+        raise ManagedQwenError("Qwen API key file must contain exactly one non-empty line")
+    os.environ[api_key_env] = value
 
 
 def _settings(args: argparse.Namespace, pipeline_config: PipelineConfig) -> ManagedQwenSettings:
@@ -196,6 +223,7 @@ def _run(args: argparse.Namespace) -> int:
     if pipeline_config.qwen.runtime == "api":
         if args.serve_only:
             raise ManagedQwenError("--serve-only requires qwen.runtime=local")
+        _load_qwen_api_key_file(pipeline_config)
         try:
             OpenAICompatibleQwenClient.from_config(pipeline_config.qwen).health()
         except QwenServiceError as exc:

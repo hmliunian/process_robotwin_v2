@@ -10,8 +10,8 @@ dataset:
   regression_episode_ids: [7152, 7156, 7157, 7163, 7168, 7179, 7181, 7185, 7187, 7188,
                            7274, 7317, 7335, 7367, 7424, 7464, 7571, 7621, 7673, 7674]
 
-# Default ``just process`` Qwen runtime. Set QWEN_API_KEY in the environment;
-# never put its value in this file. Change model here or select another config.
+# Default ``just process`` Qwen runtime. Set QWEN_API_KEY or use the ignored
+# secrets/qwen_api_key.txt fallback; never put the key value in this file.
 qwen:
   runtime: api
   endpoint: https://ws-4cbdki9ovgb4q42g.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions

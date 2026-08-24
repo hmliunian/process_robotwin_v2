@@ -368,3 +368,32 @@ def test_api_runtime_runs_without_local_qwen_or_gpu_options(
     assert "configs/process_qwen38_api.yaml" in stderr
     assert "qwen.runtime=api" in stderr
     assert "qwen.model=qwen3.8-max" in stderr
+
+
+def test_api_key_file_is_loaded_only_when_environment_is_unset(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    key_file = tmp_path / "qwen_api_key.txt"
+    key_file.write_text("test-secret\n", encoding="utf-8")
+    monkeypatch.delenv("QWEN_API_KEY", raising=False)
+    monkeypatch.setenv("QWEN_API_KEY_FILE", str(key_file))
+    config = manager_script.load_config(Path("configs/process_qwen38_api.yaml"))
+
+    manager_script._load_qwen_api_key_file(config)
+
+    assert manager_script.os.environ["QWEN_API_KEY"] == "test-secret"
+
+
+def test_api_key_file_rejects_multiple_values(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    key_file = tmp_path / "qwen_api_key.txt"
+    key_file.write_text("first\nsecond\n", encoding="utf-8")
+    monkeypatch.delenv("QWEN_API_KEY", raising=False)
+    monkeypatch.setenv("QWEN_API_KEY_FILE", str(key_file))
+    config = manager_script.load_config(Path("configs/process_qwen38_api.yaml"))
+
+    with pytest.raises(ManagedQwenError, match="exactly one non-empty line"):
+        manager_script._load_qwen_api_key_file(config)

@@ -10,7 +10,8 @@ dataset:
   regression_episode_ids: [0, 6, 10, 18, 21, 30, 34, 42, 48, 49,
                            50, 51, 171, 176, 287, 313, 415, 431, 547, 549]
 
-# Target-only API profile; select it explicitly with --config.
+# Target-only API profile; select it explicitly with --config. Set QWEN_API_KEY
+# or use the ignored secrets/qwen_api_key.txt fallback; never put the key here.
 qwen:
   runtime: api
   endpoint: https://ws-4cbdki9ovgb4q42g.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions
