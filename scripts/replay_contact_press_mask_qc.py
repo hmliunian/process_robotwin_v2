@@ -16,13 +16,17 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 import av
 import numpy as np
 from av.error import FFmpegError
 from PIL import Image
 
+from robotwin_annotation_v2.adapters.loop_context_codec import (
+    LoopContextCodecError,
+    load_authoritative_loop_context,
+)
 from robotwin_annotation_v2.adapters.qwen_client import OpenAICompatibleQwenClient
 from robotwin_annotation_v2.config import MaskConfig, load_config
 from robotwin_annotation_v2.domain import AnnotationMode
@@ -33,7 +37,6 @@ from robotwin_annotation_v2.models import (
     MaskCandidateInfo,
     MaskQCAttemptMethod,
     SemanticFrame,
-    TargetOnlyEvents,
 )
 from robotwin_annotation_v2.models.loop_context import RoleName
 from robotwin_annotation_v2.pipeline import mask_qc as mask_qc_pipeline
@@ -96,49 +99,8 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _load_loop_context(episode_dir: Path) -> tuple[LoopContext, Path]:
-    path = episode_dir / "loop.json"
-    payload = _read_json(path, label="archived loop")
-    if payload.get("annotation_mode") != AnnotationMode.TARGET_ONLY.value:
-        raise ReplayError(f"archived loop is not target_only: {path}")
-
-    episode = _mapping(payload.get("episode"), label="loop.episode")
-    task = _text(episode.get("task"), label="loop.episode.task")
-    episode_index = _integer(
-        episode.get("episode_index"),
-        label="loop.episode.episode_index",
-    )
-    camera = _text(episode.get("camera"), label="loop.episode.camera")
-
-    raw_events = _mapping(payload.get("events"), label="loop.events")
-    active_arm_value = raw_events.get("active_arm")
-    if active_arm_value not in {"left", "right"}:
-        raise ReplayError("loop.events.active_arm must be left or right")
-    active_arm = cast(Literal["left", "right"], active_arm_value)
-    reopen_value = raw_events.get("t_reopen_start")
-    reopen = (
-        None
-        if reopen_value is None
-        else _integer(reopen_value, label="loop.events.t_reopen_start")
-    )
-    events = TargetOnlyEvents(
-        active_arm=active_arm,
-        t_remove_start=_integer(
-            raw_events.get("t_remove_start"),
-            label="loop.events.t_remove_start",
-        ),
-        t_close_start=_integer(
-            raw_events.get("t_close_start"),
-            label="loop.events.t_close_start",
-        ),
-        t_close_end=_integer(
-            raw_events.get("t_close_end"),
-            label="loop.events.t_close_end",
-        ),
-        t_reopen_start=reopen,
-    )
-
-    semantic_frames: list[SemanticFrame] = []
+def _semantic_frames(payload: Mapping[str, Any]) -> tuple[SemanticFrame, ...]:
+    frames: list[SemanticFrame] = []
     for index, raw_frame in enumerate(
         _list(payload.get("semantic_frames"), label="loop.semantic_frames")
     ):
@@ -155,31 +117,58 @@ def _load_loop_context(episode_dir: Path) -> tuple[LoopContext, Path]:
         try:
             purpose = FramePurpose(frame.get("purpose"))
         except (TypeError, ValueError) as exc:
-            raise ReplayError(
-                f"invalid loop.semantic_frames[{index}].purpose"
-            ) from exc
-        semantic_frames.append(
-            SemanticFrame(
-                frame_id=_integer(
-                    frame.get("frame_id"),
-                    label=f"loop.semantic_frames[{index}].frame_id",
-                ),
-                purpose=purpose,
-                eligible_roles=tuple(roles),
+            raise ReplayError(f"invalid loop.semantic_frames[{index}].purpose") from exc
+        try:
+            frames.append(
+                SemanticFrame(
+                    frame_id=_integer(
+                        frame.get("frame_id"),
+                        label=f"loop.semantic_frames[{index}].frame_id",
+                    ),
+                    purpose=purpose,
+                    eligible_roles=tuple(roles),
+                )
             )
-        )
+        except (TypeError, ValueError) as exc:
+            raise ReplayError(f"invalid loop.semantic_frames[{index}]") from exc
+    return tuple(frames)
 
+
+def _load_loop_context(
+    episode_dir: Path,
+    *,
+    expected_task: str,
+    expected_episode: int,
+) -> tuple[LoopContext, Path]:
+    path = episode_dir / "loop.json"
+    payload = _read_json(path, label="archived loop")
+    episode = _mapping(payload.get("episode"), label="loop.episode")
+    camera = _text(episode.get("camera"), label="loop.episode.camera")
+    try:
+        authoritative = load_authoritative_loop_context(
+            path,
+            expected_task=expected_task,
+            expected_episode_index=expected_episode,
+            expected_camera=camera,
+        )
+    except LoopContextCodecError as exc:
+        raise ReplayError(f"invalid archived loop {path}: {exc}") from exc
+    if authoritative.annotation_mode is not AnnotationMode.TARGET_ONLY:
+        raise ReplayError(f"archived loop is not target_only: {path}")
     sources = _mapping(payload.get("sources"), label="loop.sources")
-    context = LoopContext(
-        episode=EpisodeRef(task, episode_index, camera),
-        task_text=_text(payload.get("task_text"), label="loop.task_text"),
-        frame_count=_integer(payload.get("frame_count"), label="loop.frame_count"),
-        events=events,
-        semantic_frames=tuple(semantic_frames),
-        state_source=_text(sources.get("state"), label="loop.sources.state"),
-        video_source=_text(sources.get("video"), label="loop.sources.video"),
-        annotation_mode=AnnotationMode.TARGET_ONLY,
-    )
+    try:
+        context = LoopContext(
+            episode=EpisodeRef(expected_task, expected_episode, camera),
+            task_text=_text(payload.get("task_text"), label="loop.task_text"),
+            frame_count=authoritative.frame_count,
+            events=authoritative.events,
+            semantic_frames=_semantic_frames(payload),
+            state_source=_text(sources.get("state"), label="loop.sources.state"),
+            video_source=_text(sources.get("video"), label="loop.sources.video"),
+            annotation_mode=AnnotationMode.TARGET_ONLY,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ReplayError(f"invalid archived loop {path}: {exc}") from exc
     return context, path
 
 
@@ -459,16 +448,11 @@ def _replay_episode(
     mask_config: MaskConfig,
     client: mask_qc_pipeline.MaskQCClient,
 ) -> dict[str, Any]:
-    context, loop_path = _load_loop_context(episode_dir)
-    if (context.episode.task, context.episode.episode_index) != (
-        expected_task,
-        expected_episode,
-    ):
-        raise ReplayError(
-            "audit/source loop identity mismatch: "
-            f"{expected_task}/{expected_episode} != "
-            f"{context.episode.task}/{context.episode.episode_index}"
-        )
+    context, loop_path = _load_loop_context(
+        episode_dir,
+        expected_task=expected_task,
+        expected_episode=expected_episode,
+    )
     qc_path = episode_dir / "mask_qc.json"
     qc_payload = _read_json(qc_path, label="archived mask QC")
     roles = _mapping(qc_payload.get("roles"), label="mask_qc.roles")
