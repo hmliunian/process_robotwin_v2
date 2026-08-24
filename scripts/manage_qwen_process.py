@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the dataset processor with an automatically managed local Qwen service."""
+"""Run the dataset processor with configured API or managed local Qwen."""
 
 from __future__ import annotations
 
@@ -14,6 +14,10 @@ from pathlib import Path
 from types import FrameType
 from typing import Any
 
+from robotwin_annotation_v2.adapters.qwen_client import (
+    OpenAICompatibleQwenClient,
+    QwenServiceError,
+)
 from robotwin_annotation_v2.application.managed_qwen import (
     DEFAULT_MIN_FREE_MEMORY_MIB,
     DEFAULT_STARTUP_TIMEOUT_SECONDS,
@@ -21,7 +25,7 @@ from robotwin_annotation_v2.application.managed_qwen import (
     ManagedQwenService,
     ManagedQwenSettings,
 )
-from robotwin_annotation_v2.config import load_config
+from robotwin_annotation_v2.config import PipelineConfig, load_config
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -35,8 +39,8 @@ class _TerminationRequested(BaseException):
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--qwen-python", type=Path, required=True)
-    parser.add_argument("--qwen-model-path", type=Path, required=True)
+    parser.add_argument("--qwen-python", type=Path)
+    parser.add_argument("--qwen-model-path", type=Path)
     parser.add_argument(
         "--qwen-min-free-memory-mib",
         type=int,
@@ -94,8 +98,11 @@ def _effective_config_path(args: argparse.Namespace) -> Path:
     return args.config if process_config is None else Path(process_config)
 
 
-def _settings(args: argparse.Namespace, config_path: Path) -> ManagedQwenSettings:
-    pipeline_config = load_config(config_path)
+def _settings(args: argparse.Namespace, pipeline_config: PipelineConfig) -> ManagedQwenSettings:
+    if pipeline_config.qwen.runtime != "local":
+        raise ManagedQwenError("managed Qwen startup requires qwen.runtime=local")
+    if args.qwen_python is None or args.qwen_model_path is None:
+        raise ManagedQwenError("local Qwen runtime requires --qwen-python and --qwen-model-path")
     excluded = set(pipeline_config.sam3.gpus)
     egl_gpu = _explicit_egl_gpu(args.process_args)
     if egl_gpu is not None:
@@ -175,15 +182,32 @@ def _termination_handlers() -> Iterator[None]:
 
 
 def _run(args: argparse.Namespace) -> int:
+    config_path = _effective_config_path(args)
+    pipeline_config = load_config(config_path)
+    print(
+        f"Process config: {pipeline_config.config_path} "
+        f"(qwen.runtime={pipeline_config.qwen.runtime}, "
+        f"qwen.model={pipeline_config.qwen.model})",
+        file=sys.stderr,
+        flush=True,
+    )
     if not args.serve_only and not _process_requires_qwen(args.process_args):
-        return _run_process(args.process_args, args.config)
-    service = ManagedQwenService(_settings(args, _effective_config_path(args)))
+        return _run_process(args.process_args, config_path)
+    if pipeline_config.qwen.runtime == "api":
+        if args.serve_only:
+            raise ManagedQwenError("--serve-only requires qwen.runtime=local")
+        try:
+            OpenAICompatibleQwenClient.from_config(pipeline_config.qwen).health()
+        except QwenServiceError as exc:
+            raise ManagedQwenError(str(exc)) from exc
+        return _run_process(args.process_args, config_path)
+    service = ManagedQwenService(_settings(args, pipeline_config))
     with service:
         if args.serve_only:
             if not service.owns_process:
                 return 0
             return int(service.wait())
-        return _run_process(args.process_args, args.config)
+        return _run_process(args.process_args, config_path)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

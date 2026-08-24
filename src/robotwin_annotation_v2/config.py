@@ -6,6 +6,7 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -76,12 +77,35 @@ class QwenConfig:
     endpoint: str
     model: str
     prompt_template: Path
+    runtime: str = "local"
+    api_key_env: str | None = None
+    probe: str = "health"
+    temperature: float = 0.0
+    enable_thinking: bool = False
     timeout_seconds: float = 180.0
     max_tokens: int = 800
     query_selection: str = "first_recommended"
     allow_query_fallback: bool = False
 
     def __post_init__(self) -> None:
+        if self.runtime not in {"api", "local"}:
+            raise ConfigError("qwen.runtime must be api or local")
+        if not self.endpoint.strip() or not self.model.strip():
+            raise ConfigError("qwen.endpoint and qwen.model must be non-empty")
+        expected_probe = "models" if self.runtime == "api" else "health"
+        if self.probe != expected_probe:
+            raise ConfigError(f"qwen.runtime={self.runtime} requires qwen.probe={expected_probe}")
+        if self.runtime == "api":
+            if not self.api_key_env:
+                raise ConfigError("qwen.api_key_env is required for API runtime")
+            if urlsplit(self.endpoint).scheme != "https":
+                raise ConfigError("qwen.runtime=api requires an HTTPS endpoint")
+        elif self.api_key_env is not None:
+            raise ConfigError("qwen.api_key_env is only supported for API runtime")
+        if not math.isfinite(self.temperature) or self.temperature < 0:
+            raise ConfigError("qwen.temperature must be a finite non-negative number")
+        if not isinstance(self.enable_thinking, bool):
+            raise ConfigError("qwen.enable_thinking must be a boolean")
         if self.query_selection != "first_recommended":
             raise ConfigError("only query_selection=first_recommended is supported")
         if self.allow_query_fallback:
@@ -283,6 +307,13 @@ def load_config(path: Path) -> PipelineConfig:
         smoke_episode_ids=smoke,
         regression_episode_ids=regression,
     )
+    qwen_runtime = str(qwen_raw.get("runtime", "local"))
+    api_key_env_raw = qwen_raw.get("api_key_env")
+    if api_key_env_raw is not None and not isinstance(api_key_env_raw, str):
+        raise ConfigError("qwen.api_key_env must be a string or null")
+    enable_thinking = qwen_raw.get("enable_thinking", False)
+    if not isinstance(enable_thinking, bool):
+        raise ConfigError("qwen.enable_thinking must be a boolean")
     qwen = QwenConfig(
         endpoint=str(_required(qwen_raw, "endpoint", section="qwen")),
         model=str(_required(qwen_raw, "model", section="qwen")),
@@ -291,6 +322,11 @@ def load_config(path: Path) -> PipelineConfig:
             base_dir=base_dir,
             field="qwen.prompt_template",
         ),
+        runtime=qwen_runtime,
+        api_key_env=api_key_env_raw,
+        probe=str(qwen_raw.get("probe", "models" if qwen_runtime == "api" else "health")),
+        temperature=float(qwen_raw.get("temperature", 0.0)),
+        enable_thinking=enable_thinking,
         timeout_seconds=float(qwen_raw.get("timeout_seconds", 180.0)),
         max_tokens=int(qwen_raw.get("max_tokens", 800)),
         query_selection=str(qwen_raw.get("query_selection", "first_recommended")),

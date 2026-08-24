@@ -58,10 +58,7 @@ DEFAULT_BUNDLED_URDF_PATH = (
     / "aloha-agilex"
     / "arx5_description_isaac_gripper.urdf"
 )
-PATH_MODE_CONFIGS = {
-    AnnotationMode.PICK_PLACE: PROJECT_ROOT / "configs" / "pilot_move_pillbottle_pad.yaml",
-    AnnotationMode.TARGET_ONLY: PROJECT_ROOT / "configs" / "pilot_adjust_bottle_target_only.yaml",
-}
+DEFAULT_PROCESS_CONFIG = PROJECT_ROOT / "configs" / "process_qwen38_api.yaml"
 CHUNK_PATTERN = _discovery.CHUNK_PATTERN
 EPISODE_FILE_PATTERN = _discovery.EPISODE_FILE_PATTERN
 DiscoveredEpisode = _discovery.DiscoveredEpisode
@@ -431,11 +428,16 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--config",
         type=Path,
-        default=Path("configs/pilot_move_pillbottle_pad.yaml"),
+        default=DEFAULT_PROCESS_CONFIG,
+        help=f"Pipeline YAML (default: {DEFAULT_PROCESS_CONFIG})",
     )
     parser.add_argument("--task")
     parser.add_argument("--camera")
-    parser.add_argument("--output-dir", type=Path, default=Path("artifacts/runs"))
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        help="Override output.root from the selected config",
+    )
     parser.add_argument("--run-id")
     parser.add_argument("--episode-ids", type=int, nargs="*")
     parser.add_argument(
@@ -545,7 +547,13 @@ def _run_path_input(args: argparse.Namespace, reporter: ProcessUI) -> dict[str, 
     if resolved.is_collection and args.episode_ids is not None and len(resolved.targets) != 1:
         raise ValueError("collection --episode-ids requires selecting one --task")
 
-    config = PATH_MODE_CONFIGS[mode]
+    profile = load_config(args.config)
+    if profile.annotation.mode is not mode:
+        raise ValueError(
+            f"--{mode.value.replace('_', '-')} requires annotation.mode={mode.value}, "
+            f"but {profile.config_path} declares {profile.annotation.mode.value}"
+        )
+    config = profile.config_path
     if not resolved.is_collection:
         target = resolved.targets[0]
         return _run_from_args(
@@ -607,7 +615,8 @@ def _run_path_input(args: argparse.Namespace, reporter: ProcessUI) -> dict[str, 
         "passed": all(record["status"] == "completed" for record in records),
     }
     artifact = ArtifactStore.write_json(
-        args.output_dir.expanduser().resolve() / f"{collection_run_id}-collection-summary.json",
+        (profile.output_root if args.output_dir is None else args.output_dir).expanduser().resolve()
+        / f"{collection_run_id}-collection-summary.json",
         result,
     )
     result["artifact"] = str(artifact)
@@ -625,6 +634,7 @@ def _run_from_args(
     if args.path_mode is not None:
         raise ValueError("--target-only/--pick-place require --data-path")
     config = load_config(args.config)
+    output_root = config.output_root if args.output_dir is None else args.output_dir
     source_run_dir = _optional_cli_path(args.source_run_dir)
     urdf_path = _optional_cli_path(args.urdf_path)
     if args.gripper_backend == "sam":
@@ -649,7 +659,7 @@ def _run_from_args(
         camera = config.dataset.camera if args.camera is None else args.camera
         request = ProcessRequest(
             dataset_root=dataset_root,
-            output_root=args.output_dir,
+            output_root=output_root,
             task=task,
             camera=camera,
             run_id=args.run_id,
@@ -714,7 +724,7 @@ def _run_from_args(
             camera = config.dataset.camera if args.camera is None else args.camera
             request = ProcessRequest(
                 dataset_root=dataset_root,
-                output_root=args.output_dir,
+                output_root=output_root,
                 task=task,
                 camera=camera,
                 run_id=args.run_id,
@@ -781,7 +791,7 @@ def _run_from_args(
                 raise ValueError("source process summary does not define task/camera")
             request = ProcessRequest(
                 dataset_root=dataset_root,
-                output_root=args.output_dir,
+                output_root=output_root,
                 task=task,
                 camera=camera,
                 run_id=args.run_id,

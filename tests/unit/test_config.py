@@ -37,6 +37,9 @@ def test_pilot_config_loads_new_pipeline_contract() -> None:
     assert config.dataset.smoke_episode_ids == (7152,)
     assert len(config.dataset.regression_episode_ids) == 20
     assert config.qwen.query_selection == "first_recommended"
+    assert config.qwen.runtime == "local"
+    assert config.qwen.probe == "health"
+    assert config.qwen.api_key_env is None
     assert not config.qwen.allow_query_fallback
     assert config.qwen.prompt_template.name == "target_receiver_semantic_open_set.txt"
     assert config.qwen.timeout_seconds == 600
@@ -63,6 +66,37 @@ def test_pilot_config_loads_new_pipeline_contract() -> None:
         hard_axial_front_m=0.045,
         fixed_half_width_m=0.085,
     )
+
+
+def test_default_api_config_explicitly_selects_qwen38_max() -> None:
+    config = load_config(PROJECT_ROOT / "configs/process_qwen38_api.yaml")
+
+    assert config.qwen.runtime == "api"
+    assert config.qwen.model == "qwen3.8-max"
+    assert config.qwen.api_key_env == "QWEN_API_KEY"
+    assert config.qwen.probe == "models"
+    assert config.qwen.temperature == 0
+    assert not config.qwen.enable_thinking
+
+
+def test_legacy_qwen_config_without_runtime_defaults_to_local() -> None:
+    config = load_config(PROJECT_ROOT / "configs/open_set_mask_fallback_bbox.yaml")
+
+    assert config.qwen.runtime == "local"
+    assert config.qwen.probe == "health"
+    assert config.qwen.api_key_env is None
+
+
+def test_api_runtime_requires_environment_credential_name(tmp_path: Path) -> None:
+    source = (PROJECT_ROOT / "configs/process_qwen38_api.yaml").read_text(encoding="utf-8")
+    config_path = tmp_path / "missing-api-key-env.yaml"
+    config_path.write_text(
+        source.replace("  api_key_env: QWEN_API_KEY\n", ""),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="api_key_env"):
+        load_config(config_path)
 
 
 def test_place_container_plate_config_pins_depth_complete_subset() -> None:
