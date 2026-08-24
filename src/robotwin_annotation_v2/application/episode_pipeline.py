@@ -225,11 +225,7 @@ def run_qwen(config: PipelineConfig, episode_index: int, run_id: str | None) -> 
         ref,
         (frame.frame_id for frame in context.semantic_frames),
     )
-    client = OpenAICompatibleQwenClient(
-        endpoint=config.qwen.endpoint,
-        model=config.qwen.model,
-        timeout_seconds=config.qwen.timeout_seconds,
-    )
+    client = OpenAICompatibleQwenClient.from_config(config.qwen)
     store = ArtifactStore(config.output_root)
     selected_run_id = run_id or store.new_run_id()
     loop_path = store.save_loop(selected_run_id, ref, context.to_json())
@@ -486,11 +482,7 @@ def _execute_gripper_episode(
         data.seed_frame_id for data in sam_result.role_masks if data.seed_frame_id is not None
     }
     seed_images = dataset.read_frames(ref, seed_frame_ids)
-    qc_client = OpenAICompatibleQwenClient(
-        endpoint=config.qwen.endpoint,
-        model=config.qwen.model,
-        timeout_seconds=config.qwen.timeout_seconds,
-    )
+    qc_client = OpenAICompatibleQwenClient.from_config(config.qwen)
     prompt_path = _default_gripper_qc_prompt(config)
     with sam3_video_resource(
         Path(context.video_source),
@@ -564,11 +556,7 @@ def _execute_sam_episode(
     ) as resource_path:
         mask_qc = None
         if config.mask.qc_enabled:
-            qc_client = OpenAICompatibleQwenClient(
-                endpoint=config.qwen.endpoint,
-                model=config.qwen.model,
-                timeout_seconds=config.qwen.timeout_seconds,
-            )
+            qc_client = OpenAICompatibleQwenClient.from_config(config.qwen)
             mask_qc = run_mask_qc_stage(
                 context,
                 plan,

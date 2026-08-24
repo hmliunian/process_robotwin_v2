@@ -4,6 +4,7 @@ qwen_model := "checkpoints/Qwen/Qwen3.5-27B"
 qwen_min_free_mib := "60000"
 qwen_startup_timeout := "600"
 config := "configs/pilot_move_pillbottle_pad.yaml"
+process_config := "configs/process_qwen38_api.yaml"
 
 set positional-arguments := true
 
@@ -41,7 +42,7 @@ run episode_id="7152":
     {{python}} scripts/run_target_receiver.py run --config {{config}} --episode {{episode_id}}
 
 process *process_args:
-    @dataset_root=""; output_dir=""; if [ "$#" -gt 0 ] && [ "${1#-}" = "$1" ]; then dataset_root="$1"; shift; fi; if [ "$#" -gt 0 ] && [ "${1#-}" = "$1" ]; then output_dir="$1"; shift; fi; if [ -n "$output_dir" ]; then set -- --output-dir "$output_dir" "$@"; fi; if [ -n "$dataset_root" ]; then set -- --dataset-root "$dataset_root" "$@"; fi; exec env PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" {{quote(python)}} scripts/manage_qwen_process.py --config {{quote(config)}} --qwen-python {{quote(qwen_python)}} --qwen-model-path {{quote(qwen_model)}} --qwen-min-free-memory-mib {{quote(qwen_min_free_mib)}} --qwen-startup-timeout {{quote(qwen_startup_timeout)}} -- "$@"
+    @dataset_root=""; output_dir=""; if [ "$#" -gt 0 ] && [ "${1#-}" = "$1" ]; then dataset_root="$1"; shift; fi; if [ "$#" -gt 0 ] && [ "${1#-}" = "$1" ]; then output_dir="$1"; shift; fi; if [ -n "$output_dir" ]; then set -- --output-dir "$output_dir" "$@"; fi; if [ -n "$dataset_root" ]; then set -- --dataset-root "$dataset_root" "$@"; fi; exec env PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" {{quote(python)}} scripts/manage_qwen_process.py --config {{quote(process_config)}} --qwen-python {{quote(qwen_python)}} --qwen-model-path {{quote(qwen_model)}} --qwen-min-free-memory-mib {{quote(qwen_min_free_mib)}} --qwen-startup-timeout {{quote(qwen_startup_timeout)}} -- "$@"
 
 check-gpu:
     nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv

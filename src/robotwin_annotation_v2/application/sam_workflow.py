@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Protocol, TypeVar
 
 from robotwin_annotation_v2.adapters.artifact_store import ArtifactStore
-from robotwin_annotation_v2.config import PipelineConfig
+from robotwin_annotation_v2.config import PipelineConfig, QwenConfig
 from robotwin_annotation_v2.domain import AnnotationMode
 from robotwin_annotation_v2.models import EpisodeRecord, EpisodeRef, ProcessSummary
 from robotwin_annotation_v2.terminal_ui import ProcessUI
@@ -41,9 +41,7 @@ class QwenClientFactory(Protocol):
     def __call__(
         self,
         *,
-        endpoint: str,
-        model: str,
-        timeout_seconds: float,
+        config: QwenConfig,
     ) -> QwenHealthClient: ...
 
 
@@ -239,11 +237,7 @@ class SamWorkflow[BackendT: SamBackend, SamExecutionT, GripperExecutionT]:
             reporter.run_ready(run_id=selected_run_id, episode_ids=selected_ids)
         if reporter is not None:
             reporter.phase_started("qwen_health")
-        qwen = runtime.qwen_client_factory(
-            endpoint=dynamic.qwen.endpoint,
-            model=dynamic.qwen.model,
-            timeout_seconds=dynamic.qwen.timeout_seconds,
-        )
+        qwen = runtime.qwen_client_factory(config=dynamic.qwen)
         health = qwen.health()
         if reporter is not None:
             reporter.phase_finished("qwen_health")
@@ -595,7 +589,7 @@ def load_sam_runtime() -> SamRuntime[SamBackend, Any, Any]:
         "robotwin_annotation_v2.application.episode_pipeline"
     )
     return SamRuntime(
-        qwen_client_factory=OpenAICompatibleQwenClient,
+        qwen_client_factory=OpenAICompatibleQwenClient.from_config,
         backend_factory=Sam3Adapter,
         execution_errors=tuple(episode_runtime.SAM_EXECUTION_ERRORS),
         emit_gripper_result=episode_runtime._emit_gripper_result,

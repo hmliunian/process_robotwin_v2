@@ -1,27 +1,27 @@
 annotation:
-  mode: pick_place
+  mode: target_only
+  profile: contact_press
 
 dataset:
-  root: /DATA/disk8/xuran/add_mask_robotwin/dataset/move_pillbottle_pad_coverage20_original
-  manifest: datasets/move_pillbottle_pad_coverage20.json
-  task: move_pillbottle_pad
+  root: ../../dataset/target_only_20_v2_contact_press/click_alarmclock
+  manifest: datasets/target_only_20_v2_selection.json
+  task: click_alarmclock
   camera: cam_high
-  smoke_episode_ids: [7152]
-  regression_episode_ids: [7152, 7156, 7157, 7163, 7168, 7179, 7181, 7185, 7187, 7188,
-                           7274, 7317, 7335, 7367, 7424, 7464, 7571, 7621, 7673, 7674]
+  smoke_episode_ids: [2200]
+  regression_episode_ids: [2200, 2201, 2211, 2213, 2224, 2225, 2232, 2238, 2245, 2249,
+                           2250, 2256, 2362, 2386, 2488, 2508, 2620, 2626, 2748, 2749]
 
-# Explicit local-Qwen profile retained for ``just serve-qwen`` and local runs.
 qwen:
-  runtime: local
-  endpoint: http://127.0.0.1:18086/v1/chat/completions
-  model: qwen3.5-27b
-  api_key_env: null
-  probe: health
-  prompt_template: prompts/target_receiver_semantic_open_set.txt
+  runtime: api
+  endpoint: https://ws-4cbdki9ovgb4q42g.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions
+  model: qwen3.8-max
+  api_key_env: QWEN_API_KEY
+  probe: models
+  prompt_template: prompts/target_only_contact_press_semantic_open_set.txt
   temperature: 0
   enable_thinking: false
   timeout_seconds: 600
-  max_tokens: 800
+  max_tokens: 400
   query_selection: first_recommended
   allow_query_fallback: false
 
@@ -37,12 +37,12 @@ mask:
   temporal_qc_max_area_ratio_jump_p95: 0.4
   temporal_qc_quarantine_signal_count: 2
   qc_enabled: true
-  qc_prompt_template: prompts/mask_candidate_qc_open_set.txt
+  qc_prompt_template: prompts/target_only_contact_press_mask_candidate_qc_open_set.txt
   qc_max_candidates: 8
   qc_query_fallback_enabled: true
   qc_seed_fallback_enabled: true
   qc_bbox_fallback_enabled: true
-  qc_bbox_prompt_template: prompts/open_set_bbox_localization.txt
+  qc_bbox_prompt_template: prompts/target_only_contact_press_bbox_localization.txt
   qc_bbox_max_tokens: 180
   qc_max_tokens: 160
   qc_max_attempts: 2

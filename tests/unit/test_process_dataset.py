@@ -21,6 +21,7 @@ from robotwin_annotation_v2.application.discovery import (
     build_dynamic_manifest,
     discover_episodes,
 )
+from robotwin_annotation_v2.config import AnnotationConfig
 from robotwin_annotation_v2.domain import TargetOnlyTaskKind, TargetProfile
 
 
@@ -290,8 +291,17 @@ def _source_lineage(
     return dict(validated.lineage)
 
 
-def _cli_config(tmp_path: Path) -> SimpleNamespace:
+def _cli_config(
+    tmp_path: Path,
+    *,
+    mode: process_module.AnnotationMode = process_module.AnnotationMode.PICK_PLACE,
+    runtime: str = "local",
+) -> SimpleNamespace:
     return SimpleNamespace(
+        config_path=tmp_path / f"{mode.value}.yaml",
+        output_root=tmp_path / "configured-output",
+        annotation=AnnotationConfig(mode),
+        qwen=SimpleNamespace(runtime=runtime),
         dataset=SimpleNamespace(
             root=tmp_path / "configured-dataset",
             task="configured-task",
@@ -724,6 +734,8 @@ def test_parse_args_defaults_to_urdf_and_preserves_just_sentinel_paths() -> None
     )
 
     assert args.gripper_backend == "urdf"
+    assert args.config == process_module.DEFAULT_PROCESS_CONFIG
+    assert args.output_dir is None
     assert args.urdf_depth_tolerance_mm is None
     assert args.source_run_dir == "-"
     assert args.urdf_path == "-"
@@ -779,28 +791,43 @@ def test_parse_args_accepts_path_only_modes(
 
 
 @pytest.mark.parametrize(
-    ("mode", "semantic_prompt", "qc_prompt"),
+    ("profile", "mode", "semantic_prompt", "qc_prompt", "bbox_prompt"),
     (
         (
+            "process_qwen38_api.yaml",
             process_module.AnnotationMode.PICK_PLACE,
             "target_receiver_semantic_open_set.txt",
             "mask_candidate_qc_open_set.txt",
+            "open_set_bbox_localization.txt",
         ),
         (
+            "process_target_only_qwen38_api.yaml",
             process_module.AnnotationMode.TARGET_ONLY,
             "target_only_semantic_open_set.txt",
             "target_only_mask_candidate_qc_open_set.txt",
+            "open_set_bbox_localization.txt",
+        ),
+        (
+            "process_contact_press_qwen38_api.yaml",
+            process_module.AnnotationMode.TARGET_ONLY,
+            "target_only_contact_press_semantic_open_set.txt",
+            "target_only_contact_press_mask_candidate_qc_open_set.txt",
+            "target_only_contact_press_bbox_localization.txt",
         ),
     ),
 )
-def test_path_only_default_profiles_enable_s1_through_s3(
+def test_explicit_api_profiles_enable_s1_through_s3(
+    profile: str,
     mode: Any,
     semantic_prompt: str,
     qc_prompt: str,
+    bbox_prompt: str,
 ) -> None:
-    config = process_module.load_config(process_module.PATH_MODE_CONFIGS[mode])
+    config = process_module.load_config(Path("configs") / profile)
 
     assert config.annotation.mode is mode
+    assert config.qwen.runtime == "api"
+    assert config.qwen.model == "qwen3.8-max"
     assert config.qwen.prompt_template.name == semantic_prompt
     assert config.mask.qc_prompt_template is not None
     assert config.mask.qc_prompt_template.name == qc_prompt
@@ -809,15 +836,14 @@ def test_path_only_default_profiles_enable_s1_through_s3(
     assert config.mask.qc_seed_fallback_enabled
     assert config.mask.qc_bbox_fallback_enabled
     assert config.mask.qc_bbox_prompt_template is not None
-    assert config.mask.qc_bbox_prompt_template.name == (
-        "open_set_bbox_localization.txt"
-    )
+    assert config.mask.qc_bbox_prompt_template.name == bbox_prompt
 
 
 def test_contact_press_profile_uses_action_site_prompts() -> None:
-    config = process_module.load_config(process_module.CONTACT_PRESS_CONFIG)
+    config = process_module.load_config(process_module.CONTACT_PRESS_CONFIGS["api"])
 
     assert config.annotation.profile is TargetProfile.CONTACT_PRESS
+    assert config.qwen.runtime == "api"
     assert config.qwen.prompt_template.name == (
         "target_only_contact_press_semantic_open_set.txt"
     )
@@ -829,6 +855,34 @@ def test_contact_press_profile_uses_action_site_prompts() -> None:
     assert config.mask.qc_bbox_prompt_template.name == (
         "target_only_contact_press_bbox_localization.txt"
     )
+
+
+def test_path_mode_does_not_silently_replace_selected_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = SimpleNamespace(
+        root=tmp_path,
+        task="adjust_bottle",
+        camera="cam_high",
+        episode_ids=(0,),
+    )
+    monkeypatch.setattr(
+        process_module,
+        "resolve_dataset_input",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            root=tmp_path,
+            targets=(target,),
+            is_collection=False,
+        ),
+    )
+    args = process_module._parse_args(["--data-path", str(tmp_path), "--target-only"])
+
+    with pytest.raises(ValueError, match=r"process_qwen38_api.yaml.*pick_place"):
+        process_module._run_from_args(
+            args,
+            process_module.ProcessUI(emit_json_summary=False, verbose=False),
+        )
 
 
 def test_path_only_single_task_dispatches_from_manifest(
@@ -845,7 +899,11 @@ def test_path_only_single_task_dispatches_from_manifest(
     )
     resolved = SimpleNamespace(root=dataset, targets=(target,), is_collection=False)
     calls: dict[str, Any] = {}
-    config = _cli_config(tmp_path)
+    config = _cli_config(
+        tmp_path,
+        mode=process_module.AnnotationMode.TARGET_ONLY,
+        runtime="api",
+    )
 
     monkeypatch.setattr(
         process_module,
@@ -869,6 +927,8 @@ def test_path_only_single_task_dispatches_from_manifest(
             "--data-path",
             str(dataset),
             "--target-only",
+            "--config",
+            str(config.config_path),
             "--episode-ids",
             "0",
             "--skip-render",
@@ -881,9 +941,7 @@ def test_path_only_single_task_dispatches_from_manifest(
     )
 
     assert summary["passed"] is True
-    assert calls["config_path"] == process_module.PATH_MODE_CONFIGS[
-        process_module.AnnotationMode.TARGET_ONLY
-    ]
+    assert calls["config_path"] == config.config_path
     assert calls["dataset_root"] == dataset
     assert calls["task"] == "adjust_bottle"
     assert calls["episode_ids"] == (0,)
@@ -917,9 +975,15 @@ def test_path_only_collection_runs_each_task_and_writes_summary(
         "resolve_dataset_input",
         lambda *_args, **_kwargs: resolved,
     )
+    config = _cli_config(
+        tmp_path,
+        mode=process_module.AnnotationMode.TARGET_ONLY,
+        runtime="api",
+    )
+
     def fake_load_config(path: Path) -> Any:
         config_paths.append(path)
-        return _cli_config(tmp_path)
+        return config
 
     monkeypatch.setattr(process_module, "load_config", fake_load_config)
 
@@ -933,6 +997,8 @@ def test_path_only_collection_runs_each_task_and_writes_summary(
             "--data-path",
             str(tmp_path),
             "--target-only",
+            "--config",
+            str(config.config_path),
             "--run-id",
             "collection-test",
             "--output-dir",
@@ -952,8 +1018,9 @@ def test_path_only_collection_runs_each_task_and_writes_summary(
         "collection-test-beta",
     ]
     assert config_paths == [
-        process_module.PATH_MODE_CONFIGS[process_module.AnnotationMode.TARGET_ONLY],
-        process_module.CONTACT_PRESS_CONFIG,
+        config.config_path,
+        config.config_path,
+        process_module.CONTACT_PRESS_CONFIGS["api"],
     ]
     assert summary["passed"] is True
     assert Path(summary["artifact"]).is_file()
@@ -1011,6 +1078,31 @@ def test_main_legacy_cli_dispatches_sam_without_urdf_path(
     assert calls["force"] is False
     assert calls["skip_render"] is False
     assert isinstance(calls["reporter"], process_module.ProcessUI)
+
+
+def test_cli_uses_config_output_root_without_explicit_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _cli_config(tmp_path)
+    calls: dict[str, Any] = {}
+
+    def fake_process(_config: Any, **kwargs: Any) -> dict[str, Any]:
+        calls.update(kwargs)
+        return {"passed": True}
+
+    monkeypatch.setattr(process_module, "load_config", lambda _path: config)
+    monkeypatch.setattr(process_module, "process_dataset", fake_process)
+    args = process_module._parse_args(
+        ["--gripper-backend", "sam", "--dataset-root", str(tmp_path / "dataset")]
+    )
+
+    process_module._run_from_args(
+        args,
+        process_module.ProcessUI(emit_json_summary=False, verbose=False),
+    )
+
+    assert calls["output_root"] == config.output_root
 
 
 def test_main_live_urdf_cli_uses_bundled_asset_and_not_derived_entrypoint(
