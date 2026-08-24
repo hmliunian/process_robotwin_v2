@@ -292,11 +292,11 @@ manifest 文件记录、324.9 MiB，未发现 checksum、metadata、task 或 epi
 的整树 SHA-256 聚合值在增量发布前后保持不变。`datasets.md` 不把 mask 成功率写成数据抽取
 完成率；mask 结果应引用带 run id 的实验报告。
 
-### 8.5 Contact-press 子集
+### 8.5 Press 子集
 
-从上述已验收集合按 `task_kind` 单独物化 6 个 action-site task，共 120 条 episode：
-`click_alarmclock`、`click_bell`、`press_stapler`、`open_laptop`、`open_microwave`、
-`turn_switch`。输出目录为：
+从上述已验收集合按 `task_kind=contact_action_site` 单独物化 3 个固定接触 task，共 60 条
+episode：`click_alarmclock`、`click_bell`、`press_stapler`。`open_laptop`、`open_microwave`、
+`turn_switch` 属于 articulated action-site，不进入这个 press 子集。输出目录为：
 
 ```text
 /DATA/disk8/xuran/add_mask_robotwin/dataset/target_only_20_v2_contact_press

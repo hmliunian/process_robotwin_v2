@@ -12,13 +12,13 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from robotwin_annotation_v2.domain import CONTACT_PRESS_TASK_KINDS
+from robotwin_annotation_v2.domain import TargetOnlyTaskKind
 
 DEFAULT_SOURCE_ROOT = Path("/DATA/disk8/xuran/add_mask_robotwin/dataset/target_only_20_v2")
 DEFAULT_OUTPUT_ROOT = Path(
     "/DATA/disk8/xuran/add_mask_robotwin/dataset/target_only_20_v2_contact_press"
 )
-CONTACT_PRESS_KINDS = frozenset(kind.value for kind in CONTACT_PRESS_TASK_KINDS)
+PRESS_TASK_KIND = TargetOnlyTaskKind.CONTACT_ACTION_SITE.value
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -48,7 +48,7 @@ def _selected_tasks(
     by_task = {str(record["task"]): record for record in records}
     if tasks is None:
         selected = tuple(
-            dict(record) for record in records if record.get("task_kind") in CONTACT_PRESS_KINDS
+            dict(record) for record in records if record.get("task_kind") == PRESS_TASK_KIND
         )
     else:
         requested = tuple(dict.fromkeys(tasks))
@@ -59,14 +59,14 @@ def _selected_tasks(
             raise ValueError(f"tasks are absent from source selection: {missing}")
         selected = tuple(dict(by_task[task]) for task in requested)
     if not selected:
-        raise ValueError("source selection contains no contact_press tasks")
+        raise ValueError("source selection contains no press tasks")
     invalid = [
         str(record["task"])
         for record in selected
-        if record.get("task_kind") not in CONTACT_PRESS_KINDS
+        if record.get("task_kind") != PRESS_TASK_KIND
     ]
     if invalid:
-        raise ValueError(f"selected tasks are not contact_press tasks: {invalid}")
+        raise ValueError(f"selected tasks are not press tasks: {invalid}")
     return selected
 
 
@@ -77,7 +77,7 @@ def build_subset_manifests(
     source_collection: Mapping[str, Any],
     tasks: Iterable[str] | None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Build root manifests for a contact-press subset without touching files."""
+    """Build root manifests for a fixed contact-action subset without touching files."""
 
     selected = _selected_tasks(source_selection, tasks)
     source_by_task = {str(record["task"]): record for record in source_collection["datasets"]}
@@ -90,7 +90,7 @@ def build_subset_manifests(
     subset_selection = dict(source_selection)
     subset_selection["output_dataset_root"] = str(output_root)
     subset_selection["tasks"] = list(selected)
-    subset_selection["selection_kind"] = "contact_press_subset"
+    subset_selection["selection_kind"] = "press_subset"
     subset_selection["derived_from"] = str(source_root / "SELECTION_MANIFEST.json")
     scope = dict(source_selection.get("scope", {}))
     scope.update(
@@ -139,7 +139,7 @@ def build_subset_manifests(
             "task_count": len(datasets),
             "episode_count": sum(int(record["episode_count"]) for record in datasets),
             "datasets": datasets,
-            "selection_kind": "contact_press_subset",
+            "selection_kind": "press_subset",
             "derived_from": str(source_root / "EXTRACT_MANIFEST.json"),
         }
     )

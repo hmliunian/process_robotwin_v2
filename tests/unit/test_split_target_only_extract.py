@@ -19,6 +19,7 @@ def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
 def _source_fixture(root: Path) -> None:
     tasks = (
         ("click_alarmclock", "contact_action_site"),
+        ("press_stapler", "contact_action_site"),
         ("open_laptop", "articulated_action_site"),
         ("adjust_bottle", "single_movable_target"),
     )
@@ -66,15 +67,15 @@ def _source_fixture(root: Path) -> None:
         )
     _write_json(
         root / "SELECTION_MANIFEST.json",
-        {"scope": {"task_count": 3, "episode_count": 60}, "tasks": selection_tasks},
+        {"scope": {"task_count": 4, "episode_count": 80}, "tasks": selection_tasks},
     )
     _write_json(
         root / "EXTRACT_MANIFEST.json",
         {
             "format": "test_collection",
             "datasets": collection_tasks,
-            "task_count": 3,
-            "episode_count": 60,
+            "task_count": 4,
+            "episode_count": 80,
         },
     )
 
@@ -89,11 +90,11 @@ def test_materialize_contact_press_subset_rewrites_manifests(tmp_path: Path) -> 
     assert summary == {"task_count": 2, "episode_count": 40}
     assert sorted(path.name for path in output.iterdir() if path.is_dir()) == [
         "click_alarmclock",
-        "open_laptop",
+        "press_stapler",
     ]
     selection = json.loads((output / "SELECTION_MANIFEST.json").read_text())
     collection = json.loads((output / "EXTRACT_MANIFEST.json").read_text())
-    assert selection["selection_kind"] == "contact_press_subset"
+    assert selection["selection_kind"] == "press_subset"
     assert selection["scope"]["episode_count"] == 40
     assert collection["selection_manifest"] == str(output / "SELECTION_MANIFEST.json")
     assert all(
@@ -106,5 +107,5 @@ def test_materialize_rejects_non_contact_task(tmp_path: Path) -> None:
     source = tmp_path / "source"
     _source_fixture(source)
 
-    with pytest.raises(ValueError, match="not contact_press"):
+    with pytest.raises(ValueError, match="not press"):
         materialize(source, tmp_path / "output", tasks=("adjust_bottle",))
