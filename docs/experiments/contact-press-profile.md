@@ -97,6 +97,24 @@ contact profile 使用三份专用模板：
 | 成功率对比 | baseline `78/120` vs 新流程实际 completed 数；百分点变化 | TODO：仅依据全流程 summary 计算 |
 | 误判结论 | A/B 翻转中确认的 QC 误判数；其余为真实候选/服务/时序失败 | TODO：逐条复核，不自动推断 |
 
+### 当前可复现统计
+
+在 `press_stapler` 的 20 条 episode 上，合并后的 branch 使用已有冻结 source run 做
+`URDF --dry-run --allow-partial-source`，结果为 `12` 条可规划、`8` 条按 source contract
+排除，dry-run summary 的 `passed=true`。这是输入/规划合同检查，不是渲染完成数。
+
+已有 `target-only20-v2-first-close-v4-20260821-full220` 完整 run 的最终成功率如下；这些是
+旧 prompt 的 baseline，不是本 branch 新 contact prompt 的结果：
+
+| 范围 | 完成 | 总数 | 成功率 |
+| --- | ---: | ---: | ---: |
+| `press_stapler` | 12 | 20 | 60.00% |
+| 三个 contact-action task（click_alarmclock、click_bell、press_stapler） | 42 | 60 | 70.00% |
+| 六个 contact_press task（再加 open_laptop、open_microwave、turn_switch） | 78 | 120 | 65.00% |
+
+新 profile 的 Qwen/SAM 全流程尚未重跑：本机 Qwen endpoint 当前未监听，GPU 均被其他训练
+任务占用，因此不能把上述 baseline 当作新 prompt 的提升结果。
+
 ## 代码验证
 
 合并 first-close 最新改动后，当前验证为 `707 passed, 1 skipped`；Ruff 和严格类型检查
