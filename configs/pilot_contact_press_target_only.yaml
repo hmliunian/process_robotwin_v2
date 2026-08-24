@@ -37,7 +37,7 @@ mask:
   qc_query_fallback_enabled: true
   qc_seed_fallback_enabled: true
   qc_bbox_fallback_enabled: true
-  qc_bbox_prompt_template: prompts/open_set_bbox_localization.txt
+  qc_bbox_prompt_template: prompts/target_only_contact_press_bbox_localization.txt
   qc_bbox_max_tokens: 180
   qc_max_tokens: 160
   qc_max_attempts: 2

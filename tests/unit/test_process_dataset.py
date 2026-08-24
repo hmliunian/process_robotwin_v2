@@ -815,6 +815,23 @@ def test_path_only_default_profiles_enable_s1_through_s3(
     )
 
 
+def test_contact_press_profile_uses_action_site_prompts() -> None:
+    config = process_module.load_config(process_module.CONTACT_PRESS_CONFIG)
+
+    assert config.annotation.profile is TargetProfile.CONTACT_PRESS
+    assert config.qwen.prompt_template.name == (
+        "target_only_contact_press_semantic_open_set.txt"
+    )
+    assert config.mask.qc_prompt_template is not None
+    assert config.mask.qc_prompt_template.name == (
+        "target_only_contact_press_mask_candidate_qc_open_set.txt"
+    )
+    assert config.mask.qc_bbox_prompt_template is not None
+    assert config.mask.qc_bbox_prompt_template.name == (
+        "target_only_contact_press_bbox_localization.txt"
+    )
+
+
 def test_path_only_single_task_dispatches_from_manifest(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

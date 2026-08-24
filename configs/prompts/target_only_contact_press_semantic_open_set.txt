@@ -37,7 +37,7 @@ post_grasp_context 在本 profile 只表示闭爪后的动作上下文，不代�
    target 才是完整可见对象；
 3. 输出有序 query candidate bank，而不是带位置、手臂或动作的 referring expression；
 4. 每条非空 query 必须是 1–4 个小写英文词组成的单数名词短语，并指向完整 target；允许用
-   button、switch、handle、lid 等任务明确的部件类别作为 head noun；
+   button、switch、handle、lid 等任务或接近轨迹明确的部件类别作为 head noun；
 5. category_query 必须是简单、常见、可直接检测的类别名。颜色、形状或材质不能单独充当
    head noun；任务中的用途、商品亚型或尺寸词不得机械拼入类别名；
 6. color_category_query 和 shape_category_query 只能使用多帧中稳定可见的真实属性；
