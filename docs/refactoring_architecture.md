@@ -26,7 +26,7 @@
 | URDF derived tree | `UrdfCanonicalEpisodePublisher` | 在独立 lineage 信任边界组装、验证并原子 rename 整棵 episode tree；内部 NPZ 仍委托中立 publisher |
 | source lineage | `SourceLineageValidator` | 无 source contract 的 lineage v1 与带 contract/receipt 的 lineage v2 共用一个验证 owner；frozen-source 模式可消费任一版本，identity/hash 仍在各信任边界重复校验 |
 | Qwen 边界 | `pipeline/qwen_stage.py` + `adapters/qwen_client.py` + application | pipeline 持有 prompt/request/领域响应校验，adapter 持有 HTTP transport，application 持有 artifact 与 endpoint 生命周期；本地 server/model 仍是 standalone utility |
-| timeline | `pipeline/timeline_detector.py` + `models/timeline.py` | 一个当前 detector/type 体系；`loop_context_codec.py` 隔离 v1/v2/v3 读取兼容 |
+| timeline | `pipeline/timeline_detector.py` + `models/timeline.py` | 一个当前 detector/type 体系；`loop_context_codec.py` 隔离 v1–v4 读取兼容 |
 | renderer/URDF engine | `adapters/rendering.py` public renderer API；`application/urdf_batch.py` 编排 `urdf_gripper_renderer.AlohaUrdfRenderer` | renderer 负责 canonical mask selection/load 与视频资源；URDF geometry/FK owner 仍是 `urdf_gripper_renderer.py`，对应 script 只导入 package `main` 并启动 |
 
 `src/` 已无对 `scripts/` 的反向导入，两个 renderer launcher 的 `sys.modules` proxy 也已删除。
@@ -466,3 +466,5 @@ fallback method 只影响 QC/attempt provenance，不改变 canonical 四通道 
 
 若产品决定改变默认 backend 或 format version，必须另立行为/schema 变更任务和迁移说明，不能
 把它解释为本次结构重构的延续。
+
+后续 target-only 首次闭合判定已按独立 schema 变更将 writer 升至 v4，reader 兼容 v1–v4。

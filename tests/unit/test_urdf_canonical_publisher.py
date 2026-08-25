@@ -102,10 +102,11 @@ def _write_source_episode(
     source: Path,
     *,
     target_only: bool = False,
-    v3: bool = False,
+    loop_version: int = 2,
 ) -> np.ndarray:
-    if v3 and not target_only:
-        raise ValueError("test v3 fixture currently models target_only hold")
+    if loop_version not in {2, 3, 4} or (loop_version > 2 and not target_only):
+        raise ValueError("test hold-aware fixtures require target_only loop v3/v4")
+    hold_aware = loop_version >= 3
     source.mkdir(parents=True)
     masks = np.zeros((4, FRAME_COUNT, 2, 3), dtype=bool)
     masks[0, :, 0, 0] = True
@@ -117,7 +118,7 @@ def _write_source_episode(
     masks[3, :, 1, 1] = True
     mask_payload = {
         "format_version": np.asarray(
-            "robotwin_visible_masks_v3" if v3 else "robotwin_visible_masks_v2"
+            "robotwin_visible_masks_v3" if hold_aware else "robotwin_visible_masks_v2"
         ),
         "frame_count": np.asarray(FRAME_COUNT, dtype=np.int64),
         "masks": masks,
@@ -142,11 +143,12 @@ def _write_source_episode(
             )
         ),
     }
-    if v3:
+    if hold_aware:
         frame_encoding = np.where(
             masks.reshape(4, FRAME_COUNT, -1).any(axis=2), 1, 0
         ).astype(np.uint8)
-        frame_encoding[0, 2:] = 2
+        hold_end = 2 if loop_version == 4 else FRAME_COUNT - 1
+        frame_encoding[0, 2 : hold_end + 1] = 2
         mask_payload["frame_encoding"] = frame_encoding
     np.savez_compressed(source / "masks.npz", **mask_payload)
 
@@ -187,9 +189,7 @@ def _write_source_episode(
         path.touch()
     loop_contract = (
         {
-            "format_version": (
-                "robotwin_loop_context_v3" if v3 else "robotwin_loop_context_v2"
-            ),
+            "format_version": f"robotwin_loop_context_v{loop_version}",
             "annotation_mode": "target_only",
             "timeline_kind": "close_hold",
             "required_object_roles": ["target"],
@@ -198,10 +198,11 @@ def _write_source_episode(
                 "t_remove_start": 0,
                 "t_close_start": 0,
                 "t_close_end": 1,
+                **({"t_reopen_start": 3} if loop_version == 4 else {}),
             },
             "windows": {
                 "operation": [0, 3],
-                "target_0": [0, 3] if v3 else [0, 1],
+                "target_0": [0, 3] if hold_aware else [0, 1],
                 "receiver_0": None,
                 "gripper": [0, 3],
             },
@@ -276,7 +277,7 @@ def _write_source_episode(
             },
             "frame_count": FRAME_COUNT,
             "roles": [
-                _source_role("target", (0, 3) if v3 else (0, 1)),
+                _source_role("target", (0, 3) if hold_aware else (0, 1)),
                 (
                     {
                         "role": "receiver",
@@ -342,17 +343,17 @@ def _write_source_episode(
                             "1": "visible",
                             "2": "target_grasp_hold",
                         },
-                        "target_hold_window": [2, 3],
+                        "target_hold_window": [2, 2 if loop_version == 4 else 3],
                     }
                 }
-                if v3
+                if hold_aware
                 else {}
             ),
             "channels": {
                 "target_0": {
                     "status": "ok",
                     "qc_status": "passed",
-                    "output_window": [0, 3] if v3 else [0, 1],
+                    "output_window": [0, 3] if hold_aware else [0, 1],
                     "source_marker": "keep-target",
                 },
                 "receiver_0": {
@@ -614,7 +615,7 @@ def _target_only_fixture(tmp_path: Path) -> PublishFixture:
     return PublishFixture(source, backend, destination, record, source_masks, track)
 
 
-def _target_only_v3_fixture(tmp_path: Path) -> PublishFixture:
+def _target_only_encoded_fixture(tmp_path: Path, *, loop_version: int) -> PublishFixture:
     source = (
         tmp_path
         / "frozen-source-run"
@@ -622,7 +623,7 @@ def _target_only_v3_fixture(tmp_path: Path) -> PublishFixture:
         / f"episode_{EPISODE_INDEX:06d}"
         / CAMERA
     )
-    source_masks = _write_source_episode(source, target_only=True, v3=True)
+    source_masks = _write_source_episode(source, target_only=True, loop_version=loop_version)
     backend = tmp_path / "backend-run" / f"episode_{EPISODE_INDEX:06d}"
     track, record = _write_backend_episode(
         backend,
@@ -994,7 +995,7 @@ def test_target_only_urdf_publish_preserves_not_applicable_receiver(
 def test_target_only_v3_publish_preserves_held_target_encoding(
     tmp_path: Path,
 ) -> None:
-    fixture = _target_only_v3_fixture(tmp_path)
+    fixture = _target_only_encoded_fixture(tmp_path, loop_version=3)
 
     fixture.publish()
 
@@ -1010,6 +1011,22 @@ def test_target_only_v3_publish_preserves_held_target_encoding(
         )
     )
     assert provenance["frame_encoding"]["target_hold_window"] == [2, 3]
+
+
+def test_target_only_v4_publish_returns_to_visible_after_reopen(tmp_path: Path) -> None:
+    fixture = _target_only_encoded_fixture(tmp_path, loop_version=4)
+
+    fixture.publish()
+
+    with np.load(fixture.destination_dir / "masks.npz", allow_pickle=False) as archive:
+        assert archive["frame_encoding"][0].tolist() == [1, 1, 2, 1]
+        assert archive["frame_encoding"][3].tolist() == [1, 1, 1, 1]
+    provenance = json.loads(
+        (fixture.destination_dir / "frame_provenance.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert provenance["frame_encoding"]["target_hold_window"] == [2, 2]
 
 
 def test_target_only_publish_rejects_backend_window_ending_at_close_end(

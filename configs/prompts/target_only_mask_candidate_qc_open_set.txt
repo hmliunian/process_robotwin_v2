@@ -9,18 +9,18 @@ seed frame id：{seed_frame_id}
 本次有效候选编号：{candidate_ids}
 
 角色定义：
-- target：随后被 active_arm 对应夹爪抓取、移动并持续持有的完整物体。
+- target：首次闭合后被 active_arm 对应夹爪抓取、移动并稳定持有的完整物体。
 
 状态事件（由机器人状态检测；如果任务描述中的手臂措辞与这里冲突，以状态为准）：
 - active_arm: {active_arm}
 - remove_start: {remove_start}
 - close_start: {close_start}
 - close_end: {close_end}
-- episode_end: {episode_end}
+- hold_end: {hold_end}
 
 本模式只检查 target，不推断其他对象角色。必须利用 close 前后的夹爪接触关系和 close_end 后与
-夹爪同步运动的证据确认真正被抓取的完整实例。close_end 之后的上下文只用于身份确认，不表示
-这些帧仍应输出 target mask。
+夹爪同步运动的证据确认真正被抓取的完整实例。hold_end 之后是否重新张开不影响 target 身份，
+也不再作为 held 阶段证据。
 
 候选图像中的 A、B、C 或 BBOX 是程序生成的候选编号，不是物体标签。候选可能来自 SAM3
 文本提示、颜色区域提案或 Qwen bbox 后的 SAM box mask；来源不代表质量高低，必须检查实际

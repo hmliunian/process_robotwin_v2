@@ -77,4 +77,4 @@ def test_all_coverage20_episodes_have_one_ordered_loop() -> None:
         assert events.t_open_done < context.frame_count
         assert context.windows.target.start == events.t_move_start
         assert context.windows.target.end == events.t_open_start - 1
-        assert context.to_json()["format_version"] == "robotwin_loop_context_v3"
+        assert context.to_json()["format_version"] == "robotwin_loop_context_v4"

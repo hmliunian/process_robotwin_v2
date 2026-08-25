@@ -401,7 +401,6 @@ def save_sam_artifacts(
                 "target_hold_encoding": {
                     "code": FrameEncoding.TARGET_GRASP_HOLD.value,
                     "window": encoding_metadata["target_hold_window"],
-                    "ends_before_open_start": True,
                 },
                 "per_frame_text_observation": False,
                 "canonical_envelope_usage": "seed_diagnostic_only",

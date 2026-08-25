@@ -15,11 +15,11 @@ seed frame id：{seed_frame_id}
 - remove_start: {remove_start}
 - close_start: {close_start}
 - close_end: {close_end}
-- episode_end: {episode_end}
+- hold_end: {hold_end}
 
-本次只检查 target。必须跟随 active_arm 对应的夹爪，选择随后被抓取并持续持有的完整实例，
-不能选择夹爪、其他物体，也不能只选择 cap、logo、label、handle 等局部。close_end 之后的
-上下文图像只提供身份确认，不表示这些帧仍应输出 target mask。
+本次只检查 target。必须跟随 active_arm 对应的夹爪，选择首次闭合后被稳定持有的完整实例，
+不能选择夹爪、其他物体，也不能只选择 cap、logo、label、handle 等局部。hold_end 之后是否
+重新张开不影响 target 身份，也不再作为 held 阶段证据。
 
 候选图像中的 A、B、C 等字母是程序生成的候选编号，不是物体标签。候选图像只用轮廓标出
 mask，原始物体外观仍然可见。候选来源不代表质量高低，必须只按轮廓、对象身份和动作证据判断：
