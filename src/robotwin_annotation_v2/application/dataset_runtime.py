@@ -486,8 +486,8 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--allow-partial-source",
         action="store_true",
         help=(
-            "During automatic episode discovery, process only source episodes whose "
-            "target and receiver passed QC; explicit --episode-ids remain fail-closed"
+            "Retained for compatibility; automatic discovery already processes eligible "
+            "episodes independently, while explicit --episode-ids remain strict"
         ),
     )
     parser.add_argument("--dry-run", action="store_true")
