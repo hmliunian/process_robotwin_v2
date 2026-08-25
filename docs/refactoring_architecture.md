@@ -303,8 +303,9 @@ summary/render 分别由 `SamWorkflow` 与 `UrdfWorkflow` 持有。不应为了�
 ## 7. S1–S3 open-set mask resolution
 
 这里的 S1、S2、S3 是失败救回方案的能力标签，不是 State Loop、Qwen、SAM 三个 pipeline
-stage。默认 pick-place 和 target-only profile 当前都显式启用完整链路，`--data-path` 也继承
-对应 mode profile。
+stage。默认 pick-place 和 target-only profile 当前都显式启用完整链路；`--data-path` 先要求
+mode-compatible 配置，再由 target-only manifest 的 `task_kind` 选择普通或 contact-press
+profile。
 
 三部分在架构中的位置不同：
 

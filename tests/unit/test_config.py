@@ -17,6 +17,7 @@ from robotwin_annotation_v2.domain import (
     AnnotationMode,
     GripperBackend,
     ObjectRole,
+    TargetProfile,
     annotation_spec,
 )
 
@@ -28,6 +29,7 @@ def test_pilot_config_loads_new_pipeline_contract() -> None:
 
     assert config.dataset.task == "move_pillbottle_pad"
     assert config.annotation == AnnotationConfig(AnnotationMode.PICK_PLACE)
+    assert config.annotation.profile is TargetProfile.GRASP_MANIPULATION
     assert config.annotation.spec.required_object_roles == (
         ObjectRole.TARGET,
         ObjectRole.RECEIVER,
@@ -119,6 +121,7 @@ def test_target_only_pilot_config_pins_close_and_hold_dataset() -> None:
     manifest = json.loads(config.dataset.manifest.read_text(encoding="utf-8"))
 
     assert config.annotation == AnnotationConfig(AnnotationMode.TARGET_ONLY)
+    assert config.annotation.profile is TargetProfile.GRASP_MANIPULATION
     assert config.annotation.spec.required_object_roles == (ObjectRole.TARGET,)
     assert config.annotation.spec.default_gripper_backend is GripperBackend.URDF
     assert config.dataset.task == "adjust_bottle"
@@ -243,6 +246,49 @@ def test_config_rejects_unknown_annotation_mode(tmp_path: Path) -> None:
     config_path.write_text(source.replace("mode: pick_place", "mode: mystery"), encoding="utf-8")
 
     with pytest.raises(ConfigError, match="annotation.mode"):
+        load_config(config_path)
+
+
+def test_target_only_config_accepts_explicit_contact_press_profile(tmp_path: Path) -> None:
+    source = (PROJECT_ROOT / "configs/pilot_adjust_bottle_target_only.yaml").read_text(
+        encoding="utf-8"
+    )
+    config_path = tmp_path / "contact-press.yaml"
+    config_path.write_text(
+        source.replace("mode: target_only", "mode: target_only\n  profile: contact_press"),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.annotation.profile is TargetProfile.CONTACT_PRESS
+
+
+def test_contact_press_profile_requires_target_only_mode(tmp_path: Path) -> None:
+    source = (PROJECT_ROOT / "configs/pilot_move_pillbottle_pad.yaml").read_text(
+        encoding="utf-8"
+    )
+    config_path = tmp_path / "invalid-contact-press.yaml"
+    config_path.write_text(
+        source.replace("mode: pick_place", "mode: pick_place\n  profile: contact_press"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="contact_press requires target_only"):
+        load_config(config_path)
+
+
+def test_config_rejects_unknown_annotation_profile(tmp_path: Path) -> None:
+    source = (PROJECT_ROOT / "configs/pilot_adjust_bottle_target_only.yaml").read_text(
+        encoding="utf-8"
+    )
+    config_path = tmp_path / "bad-profile.yaml"
+    config_path.write_text(
+        source.replace("mode: target_only", "mode: target_only\n  profile: mystery"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="annotation.profile"):
         load_config(config_path)
 
 

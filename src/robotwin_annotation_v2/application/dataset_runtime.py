@@ -12,7 +12,11 @@ import robotwin_annotation_v2.application.discovery as _discovery
 import robotwin_annotation_v2.application.urdf_runtime as _urdf_runtime
 from robotwin_annotation_v2.adapters.artifact_store import ArtifactStore
 from robotwin_annotation_v2.adapters.robotwin_dataset import RoboTwinDataset
-from robotwin_annotation_v2.application.dataset_input import resolve_dataset_input
+from robotwin_annotation_v2.application.dataset_input import (
+    DatasetTarget,
+    read_dataset_task_kind,
+    resolve_dataset_input,
+)
 from robotwin_annotation_v2.application.dataset_pipeline import (
     DatasetBackendRunner,
     DatasetPipeline,
@@ -40,6 +44,7 @@ from robotwin_annotation_v2.config import PipelineConfig, load_config
 from robotwin_annotation_v2.domain import (
     AnnotationMode,
     GripperBackend,
+    TargetProfile,
 )
 from robotwin_annotation_v2.models import ProcessRequest
 from robotwin_annotation_v2.terminal_ui import UI_MODES, ProcessUI, create_process_ui
@@ -59,6 +64,20 @@ DEFAULT_BUNDLED_URDF_PATH = (
     / "arx5_description_isaac_gripper.urdf"
 )
 DEFAULT_PROCESS_CONFIG = PROJECT_ROOT / "configs" / "process_qwen38_api.yaml"
+PATH_MODE_CONFIGS = {
+    "local": {
+        AnnotationMode.PICK_PLACE: PROJECT_ROOT / "configs" / "pilot_move_pillbottle_pad.yaml",
+        AnnotationMode.TARGET_ONLY: PROJECT_ROOT / "configs" / "pilot_adjust_bottle_target_only.yaml",
+    },
+    "api": {
+        AnnotationMode.PICK_PLACE: DEFAULT_PROCESS_CONFIG,
+        AnnotationMode.TARGET_ONLY: PROJECT_ROOT / "configs" / "process_target_only_qwen38_api.yaml",
+    },
+}
+CONTACT_PRESS_CONFIGS = {
+    "local": PROJECT_ROOT / "configs" / "pilot_contact_press_target_only.yaml",
+    "api": PROJECT_ROOT / "configs" / "process_contact_press_qwen38_api.yaml",
+}
 CHUNK_PATTERN = _discovery.CHUNK_PATTERN
 EPISODE_FILE_PATTERN = _discovery.EPISODE_FILE_PATTERN
 DiscoveredEpisode = _discovery.DiscoveredEpisode
@@ -139,6 +158,7 @@ def build_dynamic_manifest(
         camera=camera,
         episodes=episodes,
         measure_episode_fn=_measure_episode,
+        task_kind=read_dataset_task_kind(root),
     )
 
 
@@ -533,6 +553,22 @@ def _path_target_args(
     return argparse.Namespace(**values)
 
 
+def _path_profile_config(
+    profile: PipelineConfig,
+    target: DatasetTarget,
+) -> Path:
+    """Resolve a task-kind-derived profile without inspecting the task name."""
+
+    mode = profile.annotation.mode
+    if target.profile is profile.annotation.profile:
+        return profile.config_path
+    if target.profile is TargetProfile.CONTACT_PRESS:
+        if mode is not AnnotationMode.TARGET_ONLY:
+            raise ValueError("contact_press profile requires target_only mode")
+        return CONTACT_PRESS_CONFIGS[profile.qwen.runtime]
+    return PATH_MODE_CONFIGS[profile.qwen.runtime][mode]
+
+
 def _run_path_input(args: argparse.Namespace, reporter: ProcessUI) -> dict[str, Any]:
     if args.dataset_root is not None:
         raise ValueError("--data-path and --dataset-root cannot be used together")
@@ -553,13 +589,12 @@ def _run_path_input(args: argparse.Namespace, reporter: ProcessUI) -> dict[str, 
             f"--{mode.value.replace('_', '-')} requires annotation.mode={mode.value}, "
             f"but {profile.config_path} declares {profile.annotation.mode.value}"
         )
-    config = profile.config_path
     if not resolved.is_collection:
         target = resolved.targets[0]
         return _run_from_args(
             _path_target_args(
                 args,
-                config=config,
+                config=_path_profile_config(profile, target),
                 dataset_root=target.root,
                 task=target.task,
                 camera=target.camera,
@@ -576,7 +611,7 @@ def _run_path_input(args: argparse.Namespace, reporter: ProcessUI) -> dict[str, 
             summary = _run_from_args(
                 _path_target_args(
                     args,
-                    config=config,
+                    config=_path_profile_config(profile, target),
                     dataset_root=target.root,
                     task=target.task,
                     camera=target.camera,

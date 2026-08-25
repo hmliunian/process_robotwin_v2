@@ -6,6 +6,8 @@ from typing import Any
 
 import pytest
 
+from robotwin_annotation_v2.domain import TargetProfile, target_profile_for_task_kind
+
 DATASET_ROOT = Path("/DATA/disk8/xuran/add_mask_robotwin/dataset/target_only_20_v2")
 EXPECTED_TASKS = (
     "adjust_bottle",
@@ -20,6 +22,11 @@ EXPECTED_TASKS = (
     "shake_bottle_horizontally",
     "turn_switch",
 )
+EXPECTED_CONTACT_PRESS_TASKS = {
+    "click_alarmclock",
+    "click_bell",
+    "press_stapler",
+}
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -41,6 +48,11 @@ def test_target_only_v2_published_collection_matches_strict_single_arm_scope() -
     assert collection_tasks == EXPECTED_TASKS
     assert selection["scope"]["task_count"] == collection["task_count"] == 11
     assert selection["scope"]["episode_count"] == collection["episode_count"] == 220
+    assert {
+        str(item["task"])
+        for item in selection["tasks"]
+        if target_profile_for_task_kind(item["task_kind"]) is TargetProfile.CONTACT_PRESS
+    } == EXPECTED_CONTACT_PRESS_TASKS
 
     for task_record in selection["tasks"]:
         task = str(task_record["task"])

@@ -10,7 +10,12 @@ from urllib.parse import urlsplit
 
 import yaml
 
-from .domain import AnnotationMode, AnnotationSpec, annotation_spec
+from .domain import (
+    AnnotationMode,
+    AnnotationSpec,
+    TargetProfile,
+    annotation_spec,
+)
 
 _REMOVED_S4_MASK_FIELDS = frozenset(
     {
@@ -216,6 +221,14 @@ class AnnotationConfig:
     """Task-declared semantic mode and its resolved pipeline behavior."""
 
     mode: AnnotationMode
+    profile: TargetProfile = TargetProfile.GRASP_MANIPULATION
+
+    def __post_init__(self) -> None:
+        if (
+            self.profile is TargetProfile.CONTACT_PRESS
+            and self.mode is not AnnotationMode.TARGET_ONLY
+        ):
+            raise ConfigError("annotation.profile=contact_press requires target_only mode")
 
     @property
     def spec(self) -> AnnotationSpec:
@@ -267,13 +280,22 @@ def load_config(path: Path) -> PipelineConfig:
             "dataset, qwen, sam3, mask, gripper_roi, output and annotation must be mappings"
         )
 
+    raw_mode = annotation_raw.get("mode", AnnotationMode.PICK_PLACE.value)
+    raw_profile = annotation_raw.get(
+        "profile",
+        TargetProfile.GRASP_MANIPULATION.value,
+    )
     try:
-        annotation = AnnotationConfig(
-            AnnotationMode(annotation_raw.get("mode", AnnotationMode.PICK_PLACE.value))
-        )
-    except ValueError as exc:
+        annotation_mode = AnnotationMode(raw_mode)
+    except (TypeError, ValueError) as exc:
         choices = ", ".join(mode.value for mode in AnnotationMode)
         raise ConfigError(f"annotation.mode must be one of: {choices}") from exc
+    try:
+        target_profile = TargetProfile(raw_profile)
+    except (TypeError, ValueError) as exc:
+        choices = ", ".join(profile.value for profile in TargetProfile)
+        raise ConfigError(f"annotation.profile must be one of: {choices}") from exc
+    annotation = AnnotationConfig(annotation_mode, target_profile)
 
     prompt_roi_raw = _required(gripper_roi_raw, "prompt", section="gripper_roi")
     hard_roi_raw = _required(gripper_roi_raw, "hard", section="gripper_roi")

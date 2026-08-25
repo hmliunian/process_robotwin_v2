@@ -174,8 +174,9 @@ eligible roles。
 - 当前 `configs/pilot_move_pillbottle_pad.yaml` 和
   `configs/pilot_adjust_bottle_target_only.yaml` 都显式启用完整 S1–S3；
 - 声明了匹配 `profile` 的 `EXTRACT_MANIFEST.json` 可用
-  `--data-path --pick-place/--target-only` 加载对应 profile；缺少 `profile` 的旧 extract 会 fail
-  closed，须改用 positional dataset root 与显式 `--config`；
+  `--data-path --pick-place/--target-only` 加载；调用方仍须传入 mode-compatible `--config`，
+  target-only 再按 manifest `task_kind` 选择 8+3 runtime profile。缺少 `profile` 的旧 extract
+  会 fail closed，须改用 positional dataset root 与显式 `--config`；
 - 其他 baseline/实验 profile 仍可显式关闭某一层；不能把“字段安全默认关闭”写成“所有默认入口
   都关闭”；
 - `qwen.allow_query_fallback` 必须继续为 false；open-set query 扩展由

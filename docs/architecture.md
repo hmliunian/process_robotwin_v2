@@ -92,6 +92,19 @@ Parquet 的连续 `frame_index` 是所有 mask 和 URDF 几何计算的有效帧
 `configs/datasets/*.json`。固定 manifest 仍用于 coverage20 regression、分阶段命令和可重复
 验收。动态发现不会修改原数据集。
 
+Target-only extract 可以在 task manifest 中声明 `task_kind`，运行时据此选择 target prompt
+profile，不按任务名猜测：
+
+| `task_kind` | runtime profile |
+| --- | --- |
+| `contact_action_site` | `contact_press` |
+| `single_movable_target`、`single_movable_target_conditional` | `grasp_manipulation` |
+| `articulated_action_site` 或字段缺失 | `grasp_manipulation` |
+
+当前 `target_only_20_v2` 固定为 8+3：只有 `click_alarmclock`、`click_bell`、
+`press_stapler` 三类使用 `contact_press`；其余 8 类保持普通 target-only。articulated task
+保留独立 provenance，但在完成专门 A/B 前不自动切换 profile。
+
 ## 3. Stage 1：State Loop
 
 Stage 1 只读取 metadata、state 和帧数，不判断视觉实例，也不调用 Qwen/SAM。
@@ -179,7 +192,8 @@ pick-place 的 target 和 receiver 在一次 semantic request 中联合判断，
 
 ### 4.2 角色语义
 
-- target：随后被 gripper 抓取并移动的物体。
+- target：`grasp_manipulation` profile 中是随后被 gripper 抓取并移动的完整物体；
+  `contact_press` profile 中是即将被接触或驱动的最小完整功能部件/action site。
 - receiver：任务完成时与 target 直接接触的完整物体或目标区域；不要求承托 target，也不
   要求位于其下方。
 - receiver 身份先由 `place_context` 确认，再回到合法 seed 帧中选择同一对象的清晰视图。
@@ -452,20 +466,21 @@ depth。该入口自动复用健康 Qwen endpoint；若 endpoint 不可用，会
 若第二个 positional token 以 `-` 开头，它会被当作 process 参数，输出根仍为
 `artifacts/runs`。
 
-也可以只提供带兼容 `EXTRACT_MANIFEST.json` 的单任务目录或 collection，而不显式传 pipeline
-配置：
+也可以提供带兼容 `EXTRACT_MANIFEST.json` 的单任务目录或 collection。`--config` 必须与所选
+mode 匹配；正式 API 示例为：
 
 ```bash
-just process --data-path DATASET_OR_COLLECTION --pick-place
-just process --data-path DATASET_OR_COLLECTION --target-only
+just process --data-path DATASET_OR_COLLECTION --pick-place \
+  --config configs/process_qwen38_api.yaml
+just process --data-path DATASET_OR_COLLECTION --target-only \
+  --config configs/process_target_only_qwen38_api.yaml
 ```
 
-path 模式分别加载 `configs/pilot_move_pillbottle_pad.yaml` 和
-`configs/pilot_adjust_bottle_target_only.yaml` 作为默认推理 profile；数据目录中的 manifest 只
-替换 dataset root、task、camera 和 episode ids。两个默认 profile 都启用完整的 S1–S3
-open-set object-mask 路径：最多 8 个候选、curated query fallback、多合法 seed fallback、
-mode-specific appearance prompt，以及所有文本尝试失败后的 Qwen bbox → SAM box fallback。
-因此 collection 中的每个 task 使用同一套 mode profile，不需要逐 task 配置这些开关。
+path 模式使用显式配置确定 Qwen runtime/model 和基础 mode；manifest 替换 dataset root、task、
+camera 和 episode ids，并按 `task_kind` 选择 target profile。普通 target-only task 保留传入配置，
+`contact_action_site` 改用同一 runtime 类别的 contact-press 配置；articulated task 不切换。
+bundled local profile 使用 18086，API profile 使用 Qwen API。特殊的
+`runtime_target_only_v2_qwen18087.yaml` 是单任务 pilot，不作为 mixed 11-task collection 配置。
 
 `EXTRACT_MANIFEST.json` 必须显式声明与 mode 匹配的 `profile`。缺少该字段的旧 extract 会
 fail closed；此时使用 `just process DATASET_ROOT [OUTPUT_ROOT] --config PROFILE`，不要同时传

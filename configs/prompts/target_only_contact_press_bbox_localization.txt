@@ -1,0 +1,35 @@
+You are localizing one upcoming contact target in one RoboTwin camera image.
+
+Task name: {task}
+Task instruction: {task_text}
+Episode: {episode_id}
+Requested role: {role}
+Image frame_id: {seed_frame_id}
+
+The target is the smallest complete, visually separable functional part that the closed
+gripper will directly contact and drive, such as a button, switch, handle, lid, or stapler
+lever. The seed frame may be before contact. The target does not need to be grasped, held,
+carried, or moving with the gripper.
+
+Grounding rules:
+1. Infer the functional part from the task action even when the instruction names only the
+   parent device. Prefer the alarm button over the whole clock, the stapler lever over the
+   whole stapler, and the microwave handle or driven door over the whole appliance.
+2. Box the complete visible functional part, not an arbitrary contact point or a tiny patch
+   without a visual boundary. If no separate functional part is visible, box the complete
+   visible root object instead.
+3. Do not box a robot arm, gripper, shadow, background, nearby object, or the entire parent
+   device when a smaller complete functional part is visible.
+4. If multiple parts remain equally plausible, return ambiguous. If no plausible target has
+   sufficiently visible pixels, return not_visible. Do not guess hidden extent.
+
+Return exactly one raw JSON object, with no Markdown fence or extra text:
+{"status":"ok","bbox_xyxy":[0.12,0.18,0.43,0.57],"confidence":0.88,"reason":"short visual reason"}
+
+Contract:
+1. bbox_xyxy is [left, top, right, bottom] in normalized image coordinates.
+2. For status="ok", provide four finite numbers satisfying
+   0 <= left < right <= 1 and 0 <= top < bottom <= 1. Keep the box tight around visible
+   target pixels; if clipped by an image boundary, box only the visible portion.
+3. status="ambiguous" and status="not_visible" require bbox_xyxy=null.
+4. confidence must be a finite number in [0,1], and reason must be concise and non-empty.

@@ -7,7 +7,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from robotwin_annotation_v2.domain import AnnotationMode
+from robotwin_annotation_v2.domain import (
+    AnnotationMode,
+    TargetOnlyTaskKind,
+    TargetProfile,
+    target_profile_for_task_kind,
+)
 
 
 @dataclass(frozen=True)
@@ -16,6 +21,13 @@ class DatasetTarget:
     task: str
     camera: str
     episode_ids: tuple[int, ...]
+    task_kind: TargetOnlyTaskKind | None = None
+
+    @property
+    def profile(self) -> TargetProfile:
+        """Semantic profile derived solely from manifest task kind."""
+
+        return target_profile_for_task_kind(self.task_kind)
 
 
 @dataclass(frozen=True)
@@ -36,6 +48,33 @@ def _read_manifest(root: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise TypeError(f"dataset extract manifest must contain one object: {path}")
     return payload
+
+
+def _parse_task_kind(
+    manifest: dict[str, Any],
+    *,
+    root: Path,
+) -> TargetOnlyTaskKind | None:
+    raw_task_kind = manifest.get("task_kind")
+    if raw_task_kind is None:
+        return None
+    try:
+        return TargetOnlyTaskKind(raw_task_kind)
+    except (TypeError, ValueError) as exc:
+        choices = ", ".join(item.value for item in TargetOnlyTaskKind)
+        raise ValueError(
+            f"dataset manifest has unsupported task_kind {raw_task_kind!r}: "
+            f"{root}; choose {choices}"
+        ) from exc
+
+
+def read_dataset_task_kind(root: Path) -> TargetOnlyTaskKind | None:
+    """Read optional task-kind provenance from one task extract manifest."""
+
+    resolved = root.expanduser().resolve()
+    if not (resolved / "EXTRACT_MANIFEST.json").is_file():
+        return None
+    return _parse_task_kind(_read_manifest(resolved), root=resolved)
 
 
 def _task_target(root: Path, mode: AnnotationMode) -> DatasetTarget:
@@ -59,10 +98,23 @@ def _task_target(root: Path, mode: AnnotationMode) -> DatasetTarget:
     unique_ids = tuple(dict.fromkeys(episode_ids))
     if len(unique_ids) != len(episode_ids):
         raise ValueError(f"dataset manifest contains duplicate episode_indices: {root}")
+    task_kind = _parse_task_kind(manifest, root=root)
+    target_profile = target_profile_for_task_kind(task_kind)
+    if (
+        target_profile is TargetProfile.CONTACT_PRESS
+        and mode is not AnnotationMode.TARGET_ONLY
+    ):
+        raise ValueError("contact_press task_kind requires target_only dataset profile")
     for directory in ("data", "videos", "sidecars", "meta"):
         if not (root / directory).is_dir():
             raise ValueError(f"task dataset is missing {directory}/: {root}")
-    return DatasetTarget(root, task, camera, unique_ids)
+    return DatasetTarget(
+        root,
+        task,
+        camera,
+        unique_ids,
+        task_kind=task_kind,
+    )
 
 
 def resolve_dataset_input(
@@ -107,4 +159,9 @@ def resolve_dataset_input(
     return DatasetInput(root, targets, True)
 
 
-__all__ = ["DatasetInput", "DatasetTarget", "resolve_dataset_input"]
+__all__ = [
+    "DatasetInput",
+    "DatasetTarget",
+    "read_dataset_task_kind",
+    "resolve_dataset_input",
+]
