@@ -132,6 +132,7 @@ canonical episode 目录和 `process_summary.json`。
 | [architecture.md](architecture.md) | 当前 pipeline、CLI、数据与 artifact 契约 | 实现、运行或排障 |
 | [experiments.md](experiments.md) | Qwen/SAM、tracking、SAM gripper、URDF 和 active-wrist 实验结论 | 查参数依据和证据边界 |
 | [datasets.md](datasets.md) | RoboTwin pick-and-place 兼容任务、深度完整性和迁移顺序 | 选择新数据集 |
+| [robotwin_50_task_taxonomy.md](robotwin_50_task_taxonomy.md) | 50 个 coarse task 的语义、单/双臂分类和 11-task runtime profile | 查任务归类与 8+3 路由 |
 | [experiments/contact-press-profile.md](experiments/contact-press-profile.md) | Target-only 与 contact-press 的显式 profile A/B、语义决策和失败证据 | 选择 click/press 标注合同 |
 | [open_set_mask_fallback_s1_s3.md](open_set_mask_fallback_s1_s3.md) | 52 个 mask 失败的 S1–S3 改动、复现与人工 QC；明确排除 S4 | 开放集 mask 救回与验收 |
 | [refactoring_architecture.md](refactoring_architecture.md) / [refactoring_ai_guide.md](refactoring_ai_guide.md) | 已完成精简重构的架构结果、实施记录与兼容层清单 | 理解当前模块 owner 或继续清理兼容层 |

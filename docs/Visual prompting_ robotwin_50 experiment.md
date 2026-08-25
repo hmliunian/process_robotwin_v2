@@ -77,66 +77,96 @@ episode 总体比例：单臂 55\.16%，双臂 44\.84%。
 |其他|2|3|1|
 |**合计**|**25**|**15**|**10**|
 
-## 3\. 每个任务的分类
+## 3\. 任务分类与分组实验结果
 
-混合任务括号内为“单臂 episode 数 / 双臂 episode 数”。
+混合任务括号内为“单臂 episode 数 / 双臂 episode 数”。为避免在一张 50 行大表中混排不同
+实验口径，P\&P、Target\-only 和 Contact\-press 分开汇总；未纳入这三组抽样的任务另表保留。
+这里的 11 个 task 在 coarse taxonomy 中都属于 Target-only；运行时 prompt profile 切分为
+8 个普通 target-only 和 3 个 contact-press，完整分类见
+[RoboTwin 50 task taxonomy](robotwin_50_task_taxonomy.md)。
 
-|task|语义分类|action 分类|2026\-08\-20 基线 P\&P（episode 通过/20）|
-|---|---|---|---|
-|`move_pillbottle_pad`|P\&P（严格）|全量单臂|20/20|
-|`move_stapler_pad`|P\&P（严格）|全量单臂|16/20|
-|`place_container_plate`|P\&P（严格）|全量单臂|18/20|
-|`place_empty_cup`|P\&P（严格）|全量单臂|17/20|
-|`place_fan`|P\&P（严格）|混合（549 / 1）|19/20|
-|`place_mouse_pad`|P\&P（严格）|全量单臂|18/20|
-|`place_object_scale`|P\&P（严格）|全量单臂|20/20|
-|`place_object_stand`|P\&P（严格）|全量单臂|19/20|
-|`place_phone_stand`|P\&P（严格）|全量单臂|13/20|
-|`place_shoe`|P\&P（严格）|全量单臂|17/20|
-|`adjust_bottle`|Target\-only|全量单臂|—|
-|`beat_block_hammer`|其他|全量单臂|—|
-|`blocks_ranking_rgb`|P\&P（相对放置）|混合（9 / 541）|—|
-|`blocks_ranking_size`|P\&P（相对放置）|混合（10 / 540）|—|
-|`click_alarmclock`|Target\-only|全量单臂|—|
-|`click_bell`|Target\-only|全量单臂|—|
-|`dump_bin_bigbin`|其他|混合（323 / 227）|—|
-|`grab_roller`|Target\-only|全量双臂|—|
-|`handover_block`|P\&P（严格）|全量双臂|—|
-|`handover_mic`|Target\-only|全量双臂|—|
-|`hanging_mug`|P\&P（严格）|全量双臂|—|
-|`lift_pot`|Target\-only|全量双臂|—|
-|`move_can_pot`|P\&P（相对放置）|全量单臂|—|
-|`move_playingcard_away`|Target\-only|全量单臂|—|
-|`open_laptop`|Target\-only|全量单臂|—|
-|`open_microwave`|Target\-only|全量单臂|—|
-|`pick_diverse_bottles`|其他|全量双臂|—|
-|`pick_dual_bottles`|其他|全量双臂|—|
-|`place_a2b_left`|P\&P（相对放置）|全量单臂|—|
-|`place_a2b_right`|P\&P（相对放置）|全量单臂|—|
-|`place_bread_basket`|P\&P（严格）|混合（269 / 281）|—|
-|`place_bread_skillet`|P\&P（严格）|全量双臂|—|
-|`place_burger_fries`|P\&P（严格）|全量双臂|—|
-|`place_can_basket`|P\&P（严格）|全量双臂|—|
-|`place_cans_plasticbox`|P\&P（严格）|全量双臂|—|
-|`place_dual_shoes`|P\&P（严格）|全量双臂|—|
-|`place_object_basket`|P\&P（严格）|全量双臂|—|
-|`press_stapler`|Target\-only|全量单臂|—|
-|`put_bottles_dustbin`|P\&P（严格）|混合（3 / 547）|—|
-|`put_object_cabinet`|P\&P（严格）|全量双臂|—|
-|`rotate_qrcode`|Target\-only|全量单臂|—|
-|`scan_object`|其他|全量双臂|—|
-|`shake_bottle`|Target\-only|全量单臂|—|
-|`shake_bottle_horizontally`|Target\-only|全量单臂|—|
-|`stack_blocks_three`|P\&P（严格）|混合（2 / 548）|—|
-|`stack_blocks_two`|P\&P（严格）|混合（90 / 460）|—|
-|`stack_bowls_three`|P\&P（严格）|混合（13 / 537）|—|
-|`stack_bowls_two`|P\&P（严格）|混合（152 / 398）|—|
-|`stamp_seal`|其他|全量单臂|—|
-|`turn_switch`|Target\-only|全量单臂|—|
+### 单臂严格 P\&P
 
-上表的历史列来自 run `pick-place20-full-default-urdf-20260820`；`—` 表示没有纳入这批 20 条
-抽样，而不是失败。这里的通过数按 episode 统计。2026\-08\-24 晚间的独立重跑见下文，
-不覆盖这组基线数值。
+|task|action 分类|2026\-08\-20 基线（通过/20）|2026\-08\-24 晚间（通过/20）|Δ（晚间−基线）|
+|---|---|---:|---:|---:|
+|`move_pillbottle_pad`|全量单臂|20/20|19/20|−1|
+|`move_stapler_pad`|全量单臂|16/20|18/20|+2|
+|`place_container_plate`|全量单臂|18/20|20/20|+2|
+|`place_empty_cup`|全量单臂|17/20|18/20|+1|
+|`place_fan`|混合（549 / 1）|19/20|19/20|0|
+|`place_mouse_pad`|全量单臂|18/20|19/20|+1|
+|`place_object_scale`|全量单臂|20/20|17/20|−3|
+|`place_object_stand`|全量单臂|19/20|18/20|−1|
+|`place_phone_stand`|全量单臂|13/20|11/20|−2|
+|`place_shoe`|全量单臂|17/20|19/20|+2|
+|**抽样合计**|—|**177/200**|**178/200**|**+1**|
+
+基线来自 run `pick-place20-full-default-urdf-20260820`，晚间重跑来自
+`pick-place20-qwen38-api-20260824-v1`；通过数按 episode 统计。
+
+### 普通 Target\-only profile（8 tasks）
+
+|task|action 分类|2026\-08\-25 Target\-only（完成/20）|
+|---|---|---:|
+|`adjust_bottle`|全量单臂|20/20|
+|`move_playingcard_away`|全量单臂|20/20|
+|`open_laptop`|全量单臂|17/20|
+|`open_microwave`|全量单臂|10/20|
+|`rotate_qrcode`|全量单臂|14/20|
+|`shake_bottle`|全量单臂|20/20|
+|`shake_bottle_horizontally`|全量单臂|20/20|
+|`turn_switch`|全量单臂|18/20|
+|**抽样合计**|—|**139/160**|
+
+### Contact\-press profile（3 tasks）
+
+|task|action 分类|2026\-08\-25 有效 A/B contact arm（完成/20）|
+|---|---|---:|
+|`click_alarmclock`|全量单臂|11/20|
+|`click_bell`|全量单臂|17/20|
+|`press_stapler`|全量单臂|20/20|
+|**抽样合计**|—|**48/60**|
+
+Target\-only 与 Contact 表中的“完成”均指 object source 已完成且已到达最终 canonical 输出的
+episode 数，不是 task 级 `passed` 状态。Target\-only 有 4/8 个 task 达到 20/20，Contact 有
+1/3 个 task 达到 20/20；Contact 表采用有效配对 A/B 的 contact arm，较早独立运行的
+`47/60` 只作为历史结果保留在第 4 节。
+
+### 未纳入以上抽样的任务
+
+|task|语义分类|action 分类|
+|---|---|---|
+|`beat_block_hammer`|其他|全量单臂|
+|`blocks_ranking_rgb`|P\&P（相对放置）|混合（9 / 541）|
+|`blocks_ranking_size`|P\&P（相对放置）|混合（10 / 540）|
+|`dump_bin_bigbin`|其他|混合（323 / 227）|
+|`grab_roller`|Target\-only|全量双臂|
+|`handover_block`|P\&P（严格）|全量双臂|
+|`handover_mic`|Target\-only|全量双臂|
+|`hanging_mug`|P\&P（严格）|全量双臂|
+|`lift_pot`|Target\-only|全量双臂|
+|`move_can_pot`|P\&P（相对放置）|全量单臂|
+|`pick_diverse_bottles`|其他|全量双臂|
+|`pick_dual_bottles`|其他|全量双臂|
+|`place_a2b_left`|P\&P（相对放置）|全量单臂|
+|`place_a2b_right`|P\&P（相对放置）|全量单臂|
+|`place_bread_basket`|P\&P（严格）|混合（269 / 281）|
+|`place_bread_skillet`|P\&P（严格）|全量双臂|
+|`place_burger_fries`|P\&P（严格）|全量双臂|
+|`place_can_basket`|P\&P（严格）|全量双臂|
+|`place_cans_plasticbox`|P\&P（严格）|全量双臂|
+|`place_dual_shoes`|P\&P（严格）|全量双臂|
+|`place_object_basket`|P\&P（严格）|全量双臂|
+|`put_bottles_dustbin`|P\&P（严格）|混合（3 / 547）|
+|`put_object_cabinet`|P\&P（严格）|全量双臂|
+|`scan_object`|其他|全量双臂|
+|`stack_blocks_three`|P\&P（严格）|混合（2 / 548）|
+|`stack_blocks_two`|P\&P（严格）|混合（90 / 460）|
+|`stack_bowls_three`|P\&P（严格）|混合（13 / 537）|
+|`stack_bowls_two`|P\&P（严格）|混合（152 / 398）|
+|`stamp_seal`|其他|全量单臂|
+
+以上 29 个任务未纳入本节三组实验抽样；这表示未测试，不表示失败。
 
 ## 4\. 当前实验与 TODO
 
@@ -197,30 +227,8 @@ episode 独立发布固定四通道 bool mask；target 在抓持窗口使用 `fr
   `mask_qc.json` 和 `qwen_failure.json` 位于
   `artifacts/runs/_sources/pick-place20-qwen38-api-20260824-v1-<task>-object-source/`。
 
-实验记录（单行汇总，便于和 2026\-08\-20 基线快速对比）：
-
-|run|runtime/model|抽样|object-source 通过|相对基线|
-|---|---|---:|---:|---|
-|`pick-place20-qwen38-api-20260824-v1`（2026\-08\-24 晚）|API / `qwen3.8-max`|200 episodes|178/200（89\.0%）|object-source：177→178（+1）|
-
-### 2026\-08\-24 晚间重跑：与基线逐任务对比
-
-下表的“昨晚通过”统计 object-source 的 `completed` episode。`Δ` 是相对 2026\-08\-20 基线的
-episode 差值，不是模型因果消融结果。
-
-|task|2026\-08\-20 基线|昨晚 object-source|Δ|昨晚主要失败/备注|
-|---|---:|---:|---:|---|
-|`move_pillbottle_pad`|20/20|19/20|−1|7188：query bank schema 拒绝（fallback 超过 4 词，且含 `with`）|
-|`move_stapler_pad`|16/20|18/20|+2|8272：query bank schema；8275：receiver temporal quarantine|
-|`place_container_plate`|18/20|20/20|+2|全量 episode 通过|
-|`place_empty_cup`|17/20|18/20|+1|16001、16380：target mask QC reject（只覆盖局部）|
-|`place_fan`|19/20|19/20|0|16815：target mask QC 请求时 API connection refused|
-|`place_mouse_pad`|18/20|19/20|+1|17098：receiver temporal quarantine|
-|`place_object_scale`|20/20|17/20|−3|18184、18200：query bank schema；18209：无 clear seed|
-|`place_object_stand`|19/20|18/20|−1|18700：API connection refused；18855：query bank schema|
-|`place_phone_stand`|13/20|11/20|−2|9 条 receiver temporal quarantine|
-|`place_shoe`|17/20|19/20|+2|19849：bbox fallback 返回候选编号不匹配（只允许 `BBOX`）|
-|**合计**|**177/200**|**178/200**|**+1**|episode 级独立处理|
+昨晚逐任务的通过数和相对基线的 `Δ` 已并入第 3 节的单臂严格 P\&P 表；下方只保留失败
+episode 的原因分类，避免重复维护同一组统计。
 
 昨晚的 22 条未完成 episode 可按以下类型复核：
 
@@ -243,15 +251,62 @@ episode 差值，不是模型因果消融结果。
 不能解释为单一模型变量带来的提升。当前“episode 级达到 85%”已达到；canonical 产物按
 episode 独立发布，失败 episode 保留诊断，不阻断同 task 的成功 episode。
 
-- **单臂 Target\-only**：11 个任务，每个任务选择 20 条 episode，共 220 条；已物化在
-  `/DATA/disk8/xuran/add_mask_robotwin/dataset/target_only_20_v2`。该数据集只表示输入和抽样合同
-  完整，mask 成功率需由带 run id 的实验结果另行统计。
+- **单臂 Target\-only（2026\-08\-25 Qwen API 全量运行，已完成）**：按互斥任务分组统计时，
+  排除归入 Contact\-press 的 `click_alarmclock`、`click_bell` 和 `press_stapler`，剩余 8 个任务，
+  每个任务 20 条 episode，共 160 条；输入位于
+  `/DATA/disk8/xuran/add_mask_robotwin/dataset/target_only_20_v2`。run id 为
+  `target-only220-qwen38-api-20260824-v1`（名称沿用 2026\-08\-24 的预定 run id，实际于
+  2026\-08\-25 10:18 启动），Qwen runtime/model 为 `api / qwen3.8-max`，SAM 使用 GPU 1，
+  EGL 使用 GPU 3；约 13:50 完成，总耗时约 3:32。object source 与最终 canonical episode
+  均完成 **139/160（86\.88%）**，严格全 20 条通过的 task 为 4/8。原始 run 同时执行了上述
+  3 个 Contact\-press 任务，因此未去重的 runner 原始汇总为 188/220；该数不用于分组总计。
+
+  逐 task 完成数见第 3 节。其中 `open_laptop/8850` 超过 4 词，
+  `open_laptop/9212` 含禁止词 `with`；`rotate_qrcode/22548` 也超过 4 词；
+  另有 1 条 mask-QC reject，其余 17 条未完成均记为 `sam_incomplete`。所有 139 条
+  source-completed episode 随后都完成 URDF、canonical publication/validation 和 review
+  render；分组中 4 个 task 含 source-excluded episode，不代表这 139 条 canonical 产物失败。
+  日志和最终 summary 分别为
+  `/tmp/target-only220-qwen38-api-20260824-v1.log`、
+  `/tmp/target-only220-qwen38-api-20260824-v1-runner-summary.json`；逐 task 产物位于
+  `.worktrees/contact-press-profile/artifacts/runs/target-only220-qwen38-api-20260824-v1-<task>/`。
+
+- **Contact-press 专用 profile（2026\-08\-25 Qwen API 并行运行，已完成）**：从 Target-only
+  中拆出 `click_alarmclock`、`click_bell`、`press_stapler` 三个直接接触 action-site 的 task，
+  每个 task 20 条，共 60 条。run id 为 `contact-press60-qwen38-api-20260824-v1`（同样沿用
+  预定命名），实际约 10:18–11:03 运行；Qwen runtime/model 为 `api / qwen3.8-max`，SAM
+  使用 GPU 4，EGL 使用 GPU 5。object source 与最终 canonical episode 均完成
+  **47/60（78\.33%）**，严格全 20 条通过的 task 为 1/3。
+
+  逐 task 完成数见第 3 节。`click_bell/2750` 因 query bank 含禁止词 `hand` 被拒绝，
+  `click_bell/2777` 因
+  `general_fallback_query` 超过 4 个小写英文词被拒绝。所有 47 条 source-completed episode
+  随后均完成 URDF、canonical publication/validation 和 review render。`click_alarmclock` 与
+  `click_bell` 的 task summary 仍为 `passed=false`，原因是 streaming URDF worker 按原始 20 条
+  episode 收尾，把没有 source receipt 的条目标记为 `SourceEpisodeUnavailable` 并抛出
+  `UrdfBatchIncompleteError`；这不是已经移除的 URDF 可见非空率 QC。contact runner summary
+  为 `/tmp/contact-press60-qwen38-api-20260824-v1-runner-summary.json`，逐 task 产物位于
+  `.worktrees/contact-press-profile/artifacts/runs/contact-press60-qwen38-api-20260824-v1-<task>/`。
+
+  上述 `47/60` 是较早的独立 contact-profile 运行，不是普通 target-only 与 contact-press 的
+  配对对照，不能单独作为 profile 选择依据。
+
+### Target-only vs Contact-press 配对决策
+
+2026-08-25 在同一批 60 条 episode 上完成了显式 profile A/B：普通 target-only 为
+**46/60（76.67%）**，contact-press 为 **48/60（80.00%）**；配对 exact McNemar 检验
+`p=0.803619`，总体流水线完成率没有显著差异。人工复核总视频和 review sheet 后，语义差异
+很明确：普通 target-only 倾向于标完整闹钟、铃或订书机，contact-press 倾向于标按钮或最小
+完整按压部件。因此 click/press 的选择依据是 action-site 标注正确性，而不是 `+3.33` 个百分点
+的聚合差值；这类任务采用 `contact_press` profile。实验口径、逐任务结果、失败原因和媒体路径
+见 [Contact-press target-only profile](experiments/contact-press-profile.md)。
 
 ![Image](https://internal-api-drive-stream.feishu.cn/space/api/box/stream/download/authcode/?code=YjQ5YWNjZDM2ZjVjZjQ4YTk1MmUzMjkyMGIzMzcyY2JfNjZmZmY0ZmRlY2FkMDcwM2FiZTk3MWQyNGFlZTcxNDRfSUQ6NzY3NTE5MzYyMzEzODUzNjY5MF8xNzg3MjA2OTc2OjE3ODcyOTMzNzZfVjM)
 
 ### TODO List
 
-* [ ] 将严格 P\&P 的 mask 成功率提高到至少 85% 找出成功率只有约 50% 的任务及失败 episode。 分析失败原因并修复 mask 生成流程。 在同一批 200 条数据上重新验证，成功数达到至少 170/200。
+* [x] 将严格 P\&P 的 mask 成功率提高到至少 85%：同一批 200 条数据的 2026\-08\-24
+  Qwen API 重跑达到 178/200（89\.0%），超过 170/200 目标；逐 task 结果和 22 条失败分类见上文。
 
 * [ ] 为 target 物品提供两种 mask 标注 pre\-target mask：表示操作前物品所在位置，提供物品初始位置信息。 post\-target mask：表示抓取后随机械臂移动的 target 物品。 在输出 metadata 中明确标注两种 mask 类型。
 
