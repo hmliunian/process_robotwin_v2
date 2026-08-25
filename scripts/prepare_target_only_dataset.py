@@ -32,38 +32,30 @@ DEFAULT_SELECTION = PROJECT_ROOT / "configs/datasets/target_only_20_v2_selection
 DEFAULT_PROFILE_REUSE_ROOT = Path("/DATA/disk8/xuran/add_mask_robotwin/dataset/profile_compat_20")
 DEFAULT_ADJUST_REUSE_ROOT = Path("/DATA/disk8/xuran/add_mask_robotwin/dataset/target_only_20")
 
-MOVABLE_TASKS = (
+MOVABLE_TARGET_TASKS = (
     "adjust_bottle",
-    "beat_block_hammer",
-    "dump_bin_bigbin",
-    "grab_roller",
-    "handover_block",
-    "handover_mic",
-    "hanging_mug",
-    "lift_pot",
-    "move_can_pot",
-    "move_pillbottle_pad",
     "move_playingcard_away",
-    "move_stapler_pad",
-    "place_a2b_left",
-    "place_a2b_right",
-    "place_container_plate",
-    "place_empty_cup",
-    "place_fan",
-    "place_mouse_pad",
-    "place_object_scale",
-    "place_object_stand",
-    "place_phone_stand",
-    "place_shoe",
-    "put_object_cabinet",
     "rotate_qrcode",
     "shake_bottle",
     "shake_bottle_horizontally",
-    "stamp_seal",
 )
-CONDITIONAL_MOVABLE_TASK = "place_bread_basket"
-ARTICULATED_TASKS = ("open_laptop", "open_microwave", "turn_switch")
-ALL_TASKS = (*MOVABLE_TASKS, CONDITIONAL_MOVABLE_TASK, *ARTICULATED_TASKS)
+ARTICULATED_ACTION_SITE_TASKS = ("open_laptop", "open_microwave", "turn_switch")
+CONTACT_ACTION_SITE_TASKS = ("click_alarmclock", "click_bell", "press_stapler")
+ALL_TASKS = (
+    "adjust_bottle",
+    "click_alarmclock",
+    "click_bell",
+    "move_playingcard_away",
+    "open_laptop",
+    "open_microwave",
+    "press_stapler",
+    "rotate_qrcode",
+    "shake_bottle",
+    "shake_bottle_horizontally",
+    "turn_switch",
+)
+EPISODES_PER_TASK = 20
+EXPECTED_EPISODE_COUNT = len(ALL_TASKS) * EPISODES_PER_TASK
 INDEX_COLUMNS = (
     "coarse_task_index",
     "task_index",
@@ -108,6 +100,14 @@ def parse_args() -> argparse.Namespace:
         "--validate-only",
         action="store_true",
         help="Recompute the published extract's counts, metadata, and file checksums.",
+    )
+    action.add_argument(
+        "--update-existing",
+        action="store_true",
+        help=(
+            "Add missing task slices to a compatible existing extract, then update its "
+            "manifests after validating all old and new files."
+        ),
     )
     return parser.parse_args()
 
@@ -190,8 +190,6 @@ def _first_close_arm(state: EpisodeState) -> str:
 def _candidate_from_row(
     source_root: Path,
     row: dict[str, Any],
-    *,
-    require_single_loop: bool,
 ) -> Candidate | None:
     if not bool(row["geometry_valid"]):
         return None
@@ -210,8 +208,6 @@ def _candidate_from_row(
         loop_arm = detect_episode_loop(state).active_arm
     except StateLoopError:
         pass
-    if require_single_loop and loop_arm is None:
-        return None
     try:
         target_only_arm = detect_episode_target_only(state).active_arm
     except StateLoopError:
@@ -371,10 +367,10 @@ def _reuse_records(profile_root: Path, adjust_root: Path) -> dict[str, dict[str,
 
 
 def _task_kind(task: str) -> str:
-    if task in ARTICULATED_TASKS:
+    if task in ARTICULATED_ACTION_SITE_TASKS:
         return "articulated_action_site"
-    if task == CONDITIONAL_MOVABLE_TASK:
-        return "single_movable_target_conditional"
+    if task in CONTACT_ACTION_SITE_TASKS:
+        return "contact_action_site"
     return "single_movable_target"
 
 
@@ -399,7 +395,6 @@ def build_selection(
                 candidate = _candidate_from_row(
                     source_root,
                     row,
-                    require_single_loop=task == CONDITIONAL_MOVABLE_TASK,
                 )
                 if candidate is None:
                     raise ValueError(f"reuse episode is no longer eligible: {task}/{episode_index}")
@@ -415,19 +410,23 @@ def build_selection(
                     candidate := _candidate_from_row(
                         source_root,
                         row,
-                        require_single_loop=task == CONDITIONAL_MOVABLE_TASK,
                     )
                 )
                 is not None
             ]
-            clean_count = 9 if task == CONDITIONAL_MOVABLE_TASK else 10
             selected = _select_candidates(
                 candidates,
-                clean_count=clean_count,
-                randomized_count=20 - clean_count,
+                clean_count=10,
+                randomized_count=10,
             )
             materialization = "copy_from_source_dataset"
             reuse_root = None
+
+        invalid_arms = sorted(
+            item.episode_index for item in selected if item.arm not in {"left", "right"}
+        )
+        if invalid_arms:
+            raise ValueError(f"{task}: selected non-single-arm episodes: {invalid_arms}")
 
         domain_counts = {
             domain: sum(item.domain == domain for item in selected)
@@ -454,9 +453,6 @@ def build_selection(
                         for relative_path in _episode_relative_files(int(row["episode_index"]))
                     )
                 ),
-                "single_loop_candidate_pool_count": (
-                    144 if task == CONDITIONAL_MOVABLE_TASK else None
-                ),
                 "materialization": materialization,
                 "reuse_dataset_root": reuse_root,
                 "episodes": [item.to_json() for item in selected],
@@ -471,23 +467,24 @@ def build_selection(
         "output_dataset_root": str(DEFAULT_OUTPUT_ROOT),
         "camera": "cam_high",
         "content_policy": (
-            "global episode ids; geometry-valid byte-identical parquet, HDF5, cam_high RGB "
-            "and cam_high depth; per-task filtered metadata"
+            "single semantic target/action site, no receiver or second task object, "
+            "single-arm execution; global episode ids; geometry-valid byte-identical "
+            "parquet, HDF5, cam_high RGB and cam_high depth; per-task filtered metadata"
         ),
         "scope": {
-            "strict_single_movable_source_episode_count": 14_994,
-            "strict_single_movable_source_fraction": 0.5452,
-            "strict_task_slice_count": 28,
-            "articulated_action_site_task_slice_count": 3,
+            "semantic_target_only_task_count": 14,
+            "semantic_target_only_episode_count": 7_700,
+            "single_arm_target_only_task_slice_count": len(ALL_TASKS),
+            "movable_target_task_slice_count": len(MOVABLE_TARGET_TASKS),
+            "articulated_action_site_task_slice_count": len(ARTICULATED_ACTION_SITE_TASKS),
+            "contact_action_site_task_slice_count": len(CONTACT_ACTION_SITE_TASKS),
             "task_count": len(tasks),
             "episode_count": sum(int(item["episode_count"]) for item in tasks),
         },
         "sampling_policy": {
-            "default_domain_counts": {"clean": 10, "randomized": 10},
-            "place_bread_basket_domain_counts": {"clean": 9, "randomized": 11},
+            "domain_counts_per_task": {"clean": 10, "randomized": 10},
             "arm_policy": (
-                "balance left/right overall when state-derived arm pools permit; otherwise "
-                "spread deterministically across global episode ids"
+                "require one state-derived active arm and balance left/right when pools permit"
             ),
             "spread_policy": "inclusive evenly spaced order statistics by global episode id",
         },
@@ -669,15 +666,40 @@ def _materialize_task(
     }
 
 
+def _selection_counts(selection: dict[str, Any]) -> tuple[int, int]:
+    task_count = len(selection["tasks"])
+    episode_count = sum(int(item["episode_count"]) for item in selection["tasks"])
+    scope = selection["scope"]
+    if int(scope["task_count"]) != task_count:
+        raise ValueError("selection scope task count mismatch")
+    if int(scope["episode_count"]) != episode_count:
+        raise ValueError("selection scope episode count mismatch")
+    return task_count, episode_count
+
+
+def _validate_planned_selection(selection: dict[str, Any]) -> None:
+    task_count, episode_count = _selection_counts(selection)
+    task_names = tuple(str(item["task"]) for item in selection["tasks"])
+    if task_names != ALL_TASKS:
+        raise ValueError(
+            f"selection task order differs from the supported target-only tasks: {task_names}"
+        )
+    if task_count != len(ALL_TASKS) or episode_count != EXPECTED_EPISODE_COUNT:
+        raise ValueError(
+            f"selection must contain {len(ALL_TASKS)} tasks / {EXPECTED_EPISODE_COUNT} episodes"
+        )
+
+
 def _validate_staging(staging_root: Path, selection: dict[str, Any]) -> None:
-    if len(selection["tasks"]) != 31:
-        raise ValueError("selection must contain exactly 31 task slices")
+    expected_task_count, expected_episode_count = _selection_counts(selection)
+    if len(selection["tasks"]) != expected_task_count:
+        raise ValueError(f"selection must contain exactly {expected_task_count} task slices")
     total = 0
     for task_record in selection["tasks"]:
         task = str(task_record["task"])
         episode_ids = [int(value) for value in task_record["episode_indices"]]
-        if len(episode_ids) != 20 or len(set(episode_ids)) != 20:
-            raise ValueError(f"{task}: expected 20 unique episode ids")
+        if len(episode_ids) != EPISODES_PER_TASK or len(set(episode_ids)) != EPISODES_PER_TASK:
+            raise ValueError(f"{task}: expected {EPISODES_PER_TASK} unique episode ids")
         task_root = staging_root / task
         manifest = _read_json(task_root / "EXTRACT_MANIFEST.json")
         if manifest["episode_indices"] != episode_ids:
@@ -691,17 +713,23 @@ def _validate_staging(staging_root: Path, selection: dict[str, Any]) -> None:
             if missing:
                 raise FileNotFoundError(f"{task}/{episode_index}: missing {missing}")
         total += len(episode_ids)
-    if total != 620:
-        raise ValueError(f"selection materialized {total} episodes, expected 620")
+    if total != expected_episode_count:
+        raise ValueError(
+            f"selection materialized {total} episodes, expected {expected_episode_count}"
+        )
 
 
 def validate_output(output_root: Path, selection: dict[str, Any]) -> dict[str, int]:
     _validate_staging(output_root, selection)
+    expected_task_count, expected_episode_count = _selection_counts(selection)
     published_selection = _read_json(output_root / "SELECTION_MANIFEST.json")
     if published_selection != selection:
         raise ValueError("published selection manifest differs from the source plan")
     collection = _read_json(output_root / "EXTRACT_MANIFEST.json")
-    if int(collection["task_count"]) != 31 or int(collection["episode_count"]) != 620:
+    if (
+        int(collection["task_count"]) != expected_task_count
+        or int(collection["episode_count"]) != expected_episode_count
+    ):
         raise ValueError("collection manifest count mismatch")
     collection_tasks = {str(item["task"]): item for item in collection["datasets"]}
     if set(collection_tasks) != {str(item["task"]) for item in selection["tasks"]}:
@@ -741,6 +769,116 @@ def validate_output(output_root: Path, selection: dict[str, Any]) -> dict[str, i
         if dataset_root != task_root:
             raise ValueError(f"{task}: collection dataset_root is stale: {dataset_root}")
     return {"verified_files": verified_files, "verified_bytes": verified_bytes}
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    temporary = path.with_name(f".{path.name}.tmp-{uuid.uuid4().hex[:8]}")
+    _write_json(temporary, payload)
+    temporary.replace(path)
+
+
+def update_existing(
+    source_root: Path,
+    output_root: Path,
+    selection_path: Path,
+    selection: dict[str, Any],
+) -> dict[str, int]:
+    if not output_root.is_dir():
+        raise FileNotFoundError(f"existing output root does not exist: {output_root}")
+    published_selection_path = output_root / "SELECTION_MANIFEST.json"
+    old_selection = _read_json(published_selection_path)
+    old_validation = validate_output(output_root, old_selection)
+
+    planned_by_task = {str(item["task"]): item for item in selection["tasks"]}
+    old_tasks = {str(item["task"]): item for item in old_selection["tasks"]}
+    if set(old_tasks) == set(planned_by_task):
+        if old_selection != selection:
+            raise ValueError("existing task set is current but its selection content differs")
+        print("Existing extract already matches the planned task set", flush=True)
+        return old_validation
+    if not set(old_tasks) < set(planned_by_task):
+        raise ValueError("existing task set must be a strict subset of the new selection")
+    for task, old_record in old_tasks.items():
+        planned_record = planned_by_task[task]
+        if old_record["episode_indices"] != planned_record["episode_indices"]:
+            raise ValueError(f"{task}: existing episode selection would change")
+
+    actual_task_dirs = {
+        path.name
+        for path in output_root.iterdir()
+        if path.is_dir() and not path.name.startswith(".")
+    }
+    if actual_task_dirs != set(old_tasks):
+        raise ValueError(
+            "existing task directories differ from the published selection: "
+            f"actual={sorted(actual_task_dirs)}, manifest={sorted(old_tasks)}"
+        )
+
+    old_collection = _read_json(output_root / "EXTRACT_MANIFEST.json")
+    collection_by_task = {str(item["task"]): item for item in old_collection["datasets"]}
+    if set(collection_by_task) != set(old_tasks):
+        raise ValueError("existing collection task set differs from its selection")
+
+    missing_tasks = [task for task in ALL_TASKS if task not in old_tasks]
+    staging_root = output_root / f".update-staging-{uuid.uuid4().hex[:8]}"
+    staging_root.mkdir()
+    moved_tasks: list[str] = []
+    manifests_replaced = False
+    print(
+        f"Validated existing {len(old_tasks)} tasks / "
+        f"{old_validation['verified_files']} manifest records",
+        flush=True,
+    )
+    try:
+        for task in missing_tasks:
+            record = _materialize_task(
+                source_root=source_root,
+                staging_root=staging_root,
+                final_root=output_root,
+                selection_path=selection_path,
+                task_record=planned_by_task[task],
+            )
+            collection_by_task[task] = record
+            print(f"staged {task}: {EPISODES_PER_TASK} episodes", flush=True)
+
+        for task in missing_tasks:
+            staged_task = staging_root / task
+            destination = output_root / task
+            if destination.exists():
+                raise FileExistsError(destination)
+            staged_task.rename(destination)
+            moved_tasks.append(task)
+
+        datasets = [collection_by_task[task] for task in ALL_TASKS]
+        collection = {
+            "format": "robotwin_target_only_extract_collection_v2",
+            "source_dataset_root": str(source_root),
+            "selection_manifest": str(published_selection_path),
+            "layout": "<output_root>/<task>/RoboTwin sparse cam_high RGB-D dataset",
+            "profile": "target_only",
+            "content_policy": selection["content_policy"],
+            "task_count": len(datasets),
+            "episode_count": sum(int(item["episode_count"]) for item in datasets),
+            "datasets": datasets,
+        }
+        _write_json_atomic(published_selection_path, selection)
+        _write_json_atomic(output_root / "EXTRACT_MANIFEST.json", collection)
+        manifests_replaced = True
+        validation = validate_output(output_root, selection)
+        _write_json_atomic(selection_path, selection)
+        staging_root.rmdir()
+    except Exception:
+        if manifests_replaced:
+            _write_json_atomic(published_selection_path, old_selection)
+            _write_json_atomic(output_root / "EXTRACT_MANIFEST.json", old_collection)
+        for task in reversed(moved_tasks):
+            destination = output_root / task
+            staged_task = staging_root / task
+            if destination.exists() and not staged_task.exists():
+                destination.rename(staged_task)
+        print(f"Update failed; staging data retained at {staging_root}", flush=True)
+        raise
+    return validation
 
 
 def materialize(
@@ -788,7 +926,8 @@ def materialize(
     except Exception:
         print(f"Materialization failed; staging data retained at {staging_root}", flush=True)
         raise
-    print(f"Materialized 31 task slices / 620 episodes at {output_root}")
+    task_count, episode_count = _selection_counts(selection)
+    print(f"Materialized {task_count} task slices / {episode_count} episodes at {output_root}")
 
 
 def main() -> None:
@@ -802,14 +941,15 @@ def main() -> None:
         args.adjust_reuse_root.expanduser().resolve(),
     )
     selection["output_dataset_root"] = str(output_root)
-    if selection_path.exists():
+    _validate_planned_selection(selection)
+    if selection_path.exists() and not args.update_existing:
         existing = _read_json(selection_path)
         if existing != selection:
             raise ValueError(
                 f"selection drift detected; refusing to overwrite existing plan: {selection_path}"
             )
         print(f"Verified existing selection manifest: {selection_path}")
-    else:
+    elif not args.update_existing:
         _write_json(selection_path, selection)
         print(f"Wrote selection manifest: {selection_path}")
     print(
@@ -818,7 +958,13 @@ def main() -> None:
         f"reuse {selection['reuse_episode_count']}, copy from source "
         f"{selection['source_copy_episode_count']}"
     )
-    if args.materialize:
+    if args.update_existing:
+        validation = update_existing(source_root, output_root, selection_path, selection)
+        print(
+            f"Current/updated extract validated: {validation['verified_files']} files / "
+            f"{validation['verified_bytes'] / 2**20:.1f} MiB at {output_root}"
+        )
+    elif args.materialize:
         materialize(source_root, output_root, selection_path, selection)
         validation = validate_output(output_root, selection)
         print(
