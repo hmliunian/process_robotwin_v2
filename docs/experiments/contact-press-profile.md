@@ -68,15 +68,18 @@ contact profile 使用三份专用模板：
 
 ## 验证方法
 
-实验分两步，保持候选和其他变量可复现：
+验证拆成三个互不替代的实验：
 
-1. **固定候选 A/B**：对原 17 个 mask-QC reject 读取已归档的 loop、seed、候选 mask 和
-   attempt 顺序，只替换 QC prompt，重新请求 Qwen；不运行 SAM、不生成新候选。记录
-   `old -> new` decision，并人工复核所有 `rejected -> passed`。
-2. **120 全流程**：在同一 episode 列表和 contact profile 配置下重新执行
-   semantic → SAM candidate/QC → native propagation → URDF → canonical publication；与
-   旧 run 对齐 episode、stage、failure reason 和最终成功率。不得用 source 成功数替代完整
-   pipeline 成功数。
+1. **显式 profile A/B（已完成）**：在固定 press 子集的同一批 60 条 episode 上，分别强制
+   使用普通 `grasp_manipulation` target-only 和 `contact_press` 配置，完整执行
+   semantic → SAM candidate/QC → native propagation → URDF → canonical publication。
+2. **固定候选 A/B（待运行）**：对原 17 个 mask-QC reject 读取已归档的 loop、seed、候选
+   mask 和 attempt 顺序，只替换 QC prompt，重新请求 Qwen；不运行 SAM、不生成新候选。
+3. **120 全流程（待运行）**：在 3 个 contact-action 和 3 个 articulated task 的同一 episode
+   列表上重跑 contact profile，并与旧 run 对齐 episode、stage、failure reason 和最终成功率。
+
+所有成功率均以最终 canonical episode 为单位；不得用 source 可用数或 task 级 `passed` 状态
+替代最终完成数。
 
 实现提交（按依赖顺序）：
 
@@ -86,39 +89,88 @@ contact profile 使用三份专用模板：
 - `132a860` — merge `fix/target-only-first-close`；
 - `b4603ec` — align the latest first-close semantics and contracts。
 
-## 结果登记（待补）
+## 2026-08-25 显式 profile A/B（60 episodes）
 
-以下数值必须由实际产物填写；当前留空，避免把 projected 或未运行结果写成实验结果。
+### 可比性与成功定义
+
+实验只覆盖独立物化的 3 个 `contact_action_site` task：`click_alarmclock`、`click_bell`、
+`press_stapler`，每类 20 条。`open_laptop`、`open_microwave`、`turn_switch` 属于
+`articulated_action_site`，不在本次 60 条集合内。
+
+两臂均运行提交 `7619299`，并对每个 task 显式传入同一个
+`target_only_20_v2_contact_press/<task>` 数据根。普通 target-only 强制加载
+`configs/process_target_only_qwen38_api.yaml`，contact-press 强制加载
+`configs/process_contact_press_qwen38_api.yaml`；没有使用会按 `task_kind` 自动切 profile 的
+`--data-path` 入口。60/60 原始视频 SHA-256 一致，60/60 rendered prompt SHA-256 不同，符合
+只改变 profile prompt 合同的预期。
+
+这是有效的完整 profile A/B，但不是冻结模型响应和候选的严格确定性单变量实验：两臂使用
+不同 GPU，并分别请求远端 Qwen API；服务和 query 合同噪声仍会进入完成率。因此统计结论只
+描述这次完整流水线运行，语义判断还必须结合逐 episode 视频复核。
+
+本节的“完成”要求最终 `process_summary.json` 记录为 `completed`/`skipped_complete`，且对应
+canonical overlay 存在。两臂所有 source-completed episode 都通过了 URDF、canonical
+publication、validation 和 render；未完成项都在 object-source 阶段被排除。
+
+### 成功率与配对结果
+
+| task | 普通 target-only | contact-press | contact − target |
+| --- | ---: | ---: | ---: |
+| `click_alarmclock` | 16/20（80%） | 11/20（55%） | −5（−25 pp） |
+| `click_bell` | 18/20（90%） | 17/20（85%） | −1（−5 pp） |
+| `press_stapler` | 12/20（60%） | 20/20（100%） | +8（+40 pp） |
+| **合计** | **46/60（76.67%）** | **48/60（80.00%）** | **+2（+3.33 pp）** |
+
+配对矩阵为：两者都成功 39 条、仅普通 target-only 成功 7 条、仅 contact-press 成功 9 条、
+两者都失败 5 条；agreement 为 73.33%。exact McNemar 双侧检验 `p=0.803619`，因此不能从
+这 60 条推断 contact-press 带来总体完成率提升。任务间方向相反，比聚合差值更重要。
+
+### 失败结构与人工视频复核
+
+普通 target-only 的 14 条失败由 10 条 Qwen query-bank 合同拒绝和 4 条 `sam_incomplete`
+组成。其中 `press_stapler` 有 7 条都因 `shape_category_query` 使用禁止词 `object` 被拒绝，
+另有 1 条因普通 target-only 的 grasp/hold 合同与桌面按压动作不匹配而未完成。contact-press
+的 12 条失败由 2 条 Qwen query-bank 合同拒绝和 10 条 `sam_incomplete` 组成；9 条
+`sam_incomplete` 集中在 `click_alarmclock`。
+
+人工复核总视频和 review sheet 后，两个 profile 的语义差异稳定可见：
+
+- 普通 target-only 按“被抓取/持有的完整物体”解释 target，倾向于输出整个闹钟、铃或订书机；
+- contact-press 按“即将被驱动的最小完整功能部件”解释 target，倾向于输出按钮或按压面；
+- `click_alarmclock` 中有 5 条普通 target-only 成功而 contact-press 失败：2 条没有清晰 action-site
+  seed（2232、2620），2 条按钮被侧视角遮挡（2256、2748），1 条候选只覆盖整机而被正确拒绝
+  （2386）。接受整机 mask 虽会提高流水线完成率，但不满足按钮/action-site 标注合同。
+
+因此本实验的决策依据是标注语义与人工视频复核，而不是总体 `+3.33 pp`：
+`contact_action_site` 应使用 `contact_press`；`single_movable_target` 继续使用
+`grasp_manipulation`。闹钟后续应改善按钮可见性、seed 和 bbox 定位，不能通过放宽 QC 接受
+整机 mask 来提高数字。
+
+### 证据与产物
+
+- 汇总和逐 episode 配对记录：
+  `artifacts/contact_press_vs_target_only_ab_valid_20260825/summary.json`；
+- 60 条总对比视频：
+  `artifacts/contact_press_vs_target_only_ab_valid_20260825/videos/all_60_comparison.mp4`；
+- 总 review sheet：
+  `artifacts/contact_press_vs_target_only_ab_valid_20260825/comparison_review_sheet.jpg`；
+- 普通 target-only collection summary：
+  `artifacts/runs/contact-ab60-target-only-7619299-20260825-v1-collection-summary.json`；
+- contact-press collection summary：
+  `artifacts/runs/contact-ab60-contact-press-7619299-20260825-v1-collection-summary.json`。
+
+早先 `artifacts/contact_press_vs_target_only_ab_20260825/` 中命名为 target-only/contact-press 的
+两组 run 实际都被 `--data-path` 自动路由到 contact profile，只能作为同 profile 重跑审计，
+不能用于本节结论。
+
+## 剩余验证
 
 | 实验 | 输出/判定 | 状态 |
 | --- | --- | --- |
-| Stage 1（120 episodes） | 6 个 action-site task（3 contact-action + 3 articulated）均为 20/20；合计 `120/120` | 已完成；只证明时间线和 sparse-frame 合同通过 |
-| 固定候选 A/B（17 rejects） | replay JSON 路径、`old→new` 转换计数、人工确认清单 | TODO：运行 `scripts/replay_contact_press_mask_qc.py` 并登记结果 |
-| contact_press 全流程（120） | completed/120、各阶段失败分布、最终成功率、run/source 路径 | TODO：完成 120 条重跑后登记 |
-| 成功率对比 | baseline `78/120` vs 新流程实际 completed 数；百分点变化 | TODO：仅依据全流程 summary 计算 |
-| 误判结论 | A/B 翻转中确认的 QC 误判数；其余为真实候选/服务/时序失败 | TODO：逐条复核，不自动推断 |
-
-### 当前可复现统计
-
-当前独立物化的 press 子集只包含 `click_alarmclock`、`click_bell`、`press_stapler`，共 60 条
-episode，路径为 `/DATA/disk8/xuran/add_mask_robotwin/dataset/target_only_20_v2_contact_press`；
-`open_laptop`、`open_microwave`、`turn_switch` 不在该数据集内。
-
-在 `press_stapler` 的 20 条 episode 上，合并后的 branch 使用已有冻结 source run 做
-`URDF --dry-run --allow-partial-source`，结果为 `12` 条可规划、`8` 条按 source contract
-排除，dry-run summary 的 `passed=true`。这是输入/规划合同检查，不是渲染完成数。
-
-已有 `target-only20-v2-first-close-v4-20260821-full220` 完整 run 的最终成功率如下；这些是
-旧 prompt 的 baseline，不是本 branch 新 contact prompt 的结果：
-
-| 范围 | 完成 | 总数 | 成功率 |
-| --- | ---: | ---: | ---: |
-| `press_stapler` | 12 | 20 | 60.00% |
-| 三个 contact-action task（click_alarmclock、click_bell、press_stapler） | 42 | 60 | 70.00% |
-| 六个 action-site task（3 个 contact-action + 3 个 articulated） | 78 | 120 | 65.00% |
-
-新 profile 的 Qwen/SAM 全流程尚未重跑：本机 Qwen endpoint 当前未监听，GPU 均被其他训练
-任务占用，因此不能把上述 baseline 当作新 prompt 的提升结果。
+| Stage 1（120 episodes） | 6 个 action-site task 均为 20/20；合计 `120/120` | 已完成；只证明时间线和 sparse-frame 合同通过 |
+| 显式 profile A/B（60） | target-only `46/60` vs contact-press `48/60`；人工复核选择 action-site 语义 | 已完成 |
+| 固定候选 A/B（17 rejects） | replay JSON、`old→new` 转换计数、人工确认清单 | TODO：运行 `scripts/replay_contact_press_mask_qc.py` |
+| contact-press 全流程（120） | completed/120、失败分布、run/source 路径 | TODO：补齐 3 个 articulated task 后运行 |
 
 ## 代码验证
 
