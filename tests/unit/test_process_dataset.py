@@ -1324,6 +1324,56 @@ def test_live_urdf_pipeline_streams_by_default_and_reuses_backend_result(
     assert summary["passed"] is True
 
 
+def test_live_urdf_pipeline_continues_after_partial_source_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _cli_config(tmp_path)
+    dataset = tmp_path / "dataset"
+    _touch_episode(dataset, 7)
+    _touch_episode(dataset, 8)
+    canonical: dict[str, Any] = {}
+
+    def fake_source(_config: Any, **kwargs: Any) -> dict[str, Any]:
+        source_run_dir = Path(kwargs["output_root"]) / str(kwargs["run_id"])
+        source_run_dir.mkdir(parents=True)
+        return {
+            "passed": False,
+            "records": [
+                {"episode": 7, "status": "completed"},
+                {"episode": 8, "status": "sam_incomplete"},
+            ],
+        }
+
+    def fake_canonical(**kwargs: Any) -> dict[str, Any]:
+        canonical.update(kwargs)
+        return {"passed": True, "gripper_backend": "urdf"}
+
+    monkeypatch.setattr(process_module, "process_dataset", fake_source)
+    monkeypatch.setattr(
+        process_module,
+        "_release_sam_cuda_cache",
+        lambda _gpus: {"gc_collected": 0, "cuda_available": True, "gpus": []},
+    )
+    monkeypatch.setattr(process_module, "process_urdf_source_run", fake_canonical)
+
+    summary = process_module.process_live_urdf_pipeline(
+        pipeline_config=config,
+        dataset_root=dataset,
+        task="task",
+        camera="cam_high",
+        output_root=tmp_path / "output",
+        urdf_path=process_module.DEFAULT_BUNDLED_URDF_PATH,
+        run_id="live-partial-source",
+        skip_render=True,
+        backend_factory=lambda **_kwargs: object(),
+    )
+
+    assert canonical["episode_ids"] is None
+    assert canonical["allow_partial_source"] is False
+    assert summary["passed"] is True
+
+
 def test_main_json_mode_prints_one_machine_readable_summary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1831,7 +1881,7 @@ def test_process_urdf_source_run_never_calls_sam_or_legacy_renderer(
     ).resolve()
 
 
-def test_process_urdf_source_run_requires_explicit_partial_source_opt_in(
+def test_process_urdf_source_run_allows_partial_source_by_default(
     tmp_path: Path,
 ) -> None:
     dataset = tmp_path / "dataset"
@@ -1864,19 +1914,13 @@ def test_process_urdf_source_run_requires_explicit_partial_source_opt_in(
         "dry_run": True,
         "experiment_runner": fake_experiment,
     }
-    with pytest.raises(ValueError, match="--allow-partial-source"):
-        process_module.process_urdf_source_run(**common)
-
-    summary = process_module.process_urdf_source_run(
-        **common,
-        allow_partial_source=True,
-    )
+    summary = process_module.process_urdf_source_run(**common)
 
     assert len(observed) == 1
     assert observed[0].episode_ids == (7,)
     assert summary["passed"] is True
     assert summary["backend"]["source_selection_complete"] is False
-    assert summary["backend"]["allow_partial_source"] is True
+    assert summary["backend"]["allow_partial_source"] is False
     assert summary["backend"]["source_excluded"] == [
         {
             "episode": 8,
@@ -1935,13 +1979,7 @@ def test_process_urdf_source_run_records_incomplete_dataset_inputs(
         "dry_run": True,
         "experiment_runner": fake_experiment,
     }
-    with pytest.raises(ValueError, match="--allow-partial-source"):
-        process_module.process_urdf_source_run(**common)
-
-    summary = process_module.process_urdf_source_run(
-        **common,
-        allow_partial_source=True,
-    )
+    summary = process_module.process_urdf_source_run(**common)
 
     assert observed[0].episode_ids == (7,)
     assert summary["requested_episode_ids"] == [7, 8]
@@ -2174,6 +2212,86 @@ def test_process_urdf_source_run_blocks_render_on_canonical_revalidation_failure
         record.get("status") == "render_failed" for record in summary["records"]
     )
     assert reporter.finished_episodes == [(7, "canonical_validation_failed")]
+
+
+def test_process_urdf_source_run_renders_episodes_after_partial_validation_failure(
+    tmp_path: Path,
+) -> None:
+    dataset = tmp_path / "dataset"
+    source = tmp_path / "source-run"
+    for episode_id in (7, 8):
+        _touch_episode(dataset, episode_id)
+    _write_source_summary(
+        source,
+        dataset,
+        [
+            {"episode": 7, "status": "completed"},
+            {"episode": 8, "status": "completed"},
+        ],
+    )
+    for episode_id in (7, 8):
+        _write_source_episode(source, episode_id)
+    rendered: list[tuple[int, ...]] = []
+
+    def fake_experiment(config: Any) -> dict[str, Any]:
+        config.run_dir.mkdir(parents=True)
+        return {
+            "status": "complete",
+            "episodes": [
+                {
+                    "episode_index": episode_id,
+                    "status": "complete",
+                    "output_dir": f"episode_{episode_id:06d}",
+                    "active_arm": "right",
+                    "source_lineage": _source_lineage(source, episode_id),
+                }
+                for episode_id in (7, 8)
+            ],
+        }
+
+    def fake_render(
+        _config: Any,
+        *,
+        run_id: str,
+        episode_ids: tuple[int, ...],
+        output_dir: Path,
+    ) -> dict[str, Any]:
+        assert run_id == "urdf-validation-partial"
+        assert output_dir == (tmp_path / "output/urdf-validation-partial").resolve()
+        rendered.append(episode_ids)
+        return {"episode_count": len(episode_ids), "review_sheets": []}
+
+    def validate_episode(**kwargs: Any) -> dict[str, Any]:
+        if kwargs["backend_episode_record"]["episode_index"] == 7:
+            raise urdf_module.UrdfGripperPublishError("synthetic canonical mismatch")
+        return {"status": "completed"}
+
+    summary = process_module.process_urdf_source_run(
+        pipeline_config=process_module.load_config(
+            Path("configs/pilot_move_pillbottle_pad.yaml")
+        ),
+        dataset_root=dataset,
+        source_run_dir=source,
+        task="task",
+        camera="cam_high",
+        output_root=tmp_path / "output",
+        urdf_path=tmp_path / "aloha.urdf",
+        run_id="urdf-validation-partial",
+        episode_ids=(7, 8),
+        experiment_runner=fake_experiment,
+        episode_publisher=lambda **_kwargs: {"status": "completed"},
+        episode_validator=validate_episode,
+        render_builder=fake_render,
+    )
+
+    assert rendered == [(8,)]
+    assert summary["render"]["episode_count"] == 1
+    assert summary["passed"] is False
+    assert any(
+        record.get("episode") == 7
+        and record.get("status") == "canonical_validation_failed"
+        for record in summary["records"]
+    )
 
 
 def test_process_urdf_source_run_renders_successes_after_partial_backend_failure(
