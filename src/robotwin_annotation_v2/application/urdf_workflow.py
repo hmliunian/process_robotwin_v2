@@ -1067,7 +1067,7 @@ class UrdfWorkflow:
             source_records = source_summary.get("records")
             has_completed_episode = isinstance(source_records, Sequence) and any(
                 isinstance(record, Mapping)
-                and record.get("status") in {"completed", "skipped_complete"}
+                and record.get("status") in {"completed", "skipped_complete", "complete"}
                 for record in source_records
             )
             if not has_completed_episode:
