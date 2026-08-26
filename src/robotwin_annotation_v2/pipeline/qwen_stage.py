@@ -158,7 +158,10 @@ def build_qwen_request(
 def _response_schema(context: LoopContext) -> str:
     role_schema = {
         "status": "ok | no_clear_seed",
-        "seed_frame_id": "integer | null",
+        "seed_frame_id": (
+            "integer from this role's seed_candidate=yes frames for ok; "
+            "null only for no_clear_seed"
+        ),
         "category_query": (
             "required 1-4 lowercase English words for ok; "
             "null only for no_clear_seed"

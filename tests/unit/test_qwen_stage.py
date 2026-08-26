@@ -207,6 +207,14 @@ def test_open_set_semantic_prompt_requires_category_query_for_ok_roles() -> None
         '"category_query": "required 1-4 lowercase English words for ok; '
         'null only for no_clear_seed"'
     ) in prompt_text
+    assert (
+        '对每个角色，当 status="ok" 时，seed_frame_id 必须来自该角色标记为 '
+        "seed_candidate=yes 的候选；"
+    ) in prompt_text
+    assert (
+        '"seed_frame_id": "integer from this role\'s seed_candidate=yes frames for ok; '
+        'null only for no_clear_seed"'
+    ) in prompt_text
 
 
 def test_parse_semantic_plan_uses_first_qwen_recommendation() -> None:
