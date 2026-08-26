@@ -159,7 +159,10 @@ def _response_schema(context: LoopContext) -> str:
     role_schema = {
         "status": "ok | no_clear_seed",
         "seed_frame_id": "integer | null",
-        "category_query": "1-4 lowercase English words | null",
+        "category_query": (
+            "required 1-4 lowercase English words for ok; "
+            "null only for no_clear_seed"
+        ),
         "color_category_query": "1-4 lowercase English words | null",
         "shape_category_query": "1-4 lowercase English words | null",
         "general_fallback_query": "1-4 lowercase English words | null",

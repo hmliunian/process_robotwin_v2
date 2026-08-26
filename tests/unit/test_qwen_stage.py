@@ -191,6 +191,24 @@ def test_semantic_prompt_defines_receiver_by_direct_contact() -> None:
     assert "例如 teal white bottle" in prompt_text
 
 
+def test_open_set_semantic_prompt_requires_category_query_for_ok_roles() -> None:
+    template = (
+        PROJECT_ROOT / "configs/prompts/target_receiver_semantic_open_set.txt"
+    ).read_text(encoding="utf-8")
+
+    request = build_qwen_request(_context(), _frames(), template)
+    prompt_text = " ".join(request.rendered_prompt.split())
+
+    assert (
+        '对每个角色，当 status="ok" 时，category_query 必须是非空字符串，且 '
+        "recommended_order 必须包含 category_query。"
+    ) in prompt_text
+    assert (
+        '"category_query": "required 1-4 lowercase English words for ok; '
+        'null only for no_clear_seed"'
+    ) in prompt_text
+
+
 def test_parse_semantic_plan_uses_first_qwen_recommendation() -> None:
     plan = parse_semantic_plan(
         _response(),
