@@ -10,8 +10,10 @@ from robotwin_annotation_v2.config import (
     ConfigError,
     GripperRoiConfig,
     MaskConfig,
+    ParallelConfig,
     Sam3Config,
     load_config,
+    parse_gpu_list,
 )
 from robotwin_annotation_v2.domain import (
     AnnotationMode,
@@ -79,6 +81,7 @@ def test_default_api_config_explicitly_selects_qwen38_max() -> None:
     assert config.qwen.probe == "models"
     assert config.qwen.temperature == 0
     assert not config.qwen.enable_thinking
+    assert config.parallel == ParallelConfig()
 
 
 def test_legacy_qwen_config_without_runtime_defaults_to_local() -> None:
@@ -98,6 +101,50 @@ def test_api_runtime_requires_environment_credential_name(tmp_path: Path) -> Non
     )
 
     with pytest.raises(ConfigError, match="api_key_env"):
+        load_config(config_path)
+
+
+def test_parallel_config_is_opt_in_and_requires_api_runtime(tmp_path: Path) -> None:
+    source = (PROJECT_ROOT / "configs/process_qwen38_api.yaml").read_text(encoding="utf-8")
+    config_path = tmp_path / "parallel.yaml"
+    config_path.write_text(
+        source + "\nparallel:\n  sam_worker_gpus: [1, 4]\n  qwen_max_in_flight: 3\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+    assert config.parallel.sam_worker_gpus == (1, 4)
+    assert config.parallel.qwen_max_in_flight == 3
+    assert config.parallel.enabled
+
+
+def test_parallel_config_rejects_duplicate_gpu_and_invalid_limits() -> None:
+    with pytest.raises(ConfigError, match="duplicate GPUs"):
+        ParallelConfig(sam_worker_gpus=(1, 1))
+    with pytest.raises(ConfigError, match="positive integer"):
+        ParallelConfig(qwen_max_in_flight=0)
+
+
+def test_parse_gpu_list_accepts_whitespace_and_rejects_malformed_values() -> None:
+    assert parse_gpu_list(" 1, 4,7 ") == (1, 4, 7)
+    assert parse_gpu_list("") == ()
+    with pytest.raises(ConfigError, match="comma-separated"):
+        parse_gpu_list("1,,2")
+    with pytest.raises(ConfigError, match="duplicate GPUs"):
+        parse_gpu_list("1,1")
+    with pytest.raises(ConfigError, match="non-negative"):
+        parse_gpu_list("-1")
+
+
+def test_parallel_sam_workers_require_api_runtime(tmp_path: Path) -> None:
+    source = (PROJECT_ROOT / "configs/pilot_move_pillbottle_pad.yaml").read_text(encoding="utf-8")
+    config_path = tmp_path / "parallel-local.yaml"
+    config_path.write_text(
+        source + "\nparallel:\n  sam_worker_gpus: [1]\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="qwen.runtime=api"):
         load_config(config_path)
 
 

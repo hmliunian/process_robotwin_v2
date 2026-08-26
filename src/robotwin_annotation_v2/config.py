@@ -54,6 +54,51 @@ def _integers(value: Any, *, field: str) -> tuple[int, ...]:
         raise ConfigError(f"{field} must be a list of integers") from exc
 
 
+def parse_gpu_list(value: str, *, field: str = "GPU list") -> tuple[int, ...]:
+    """Parse a comma-separated CLI GPU list using the config GPU contract."""
+
+    if not isinstance(value, str):
+        raise ConfigError(f"{field} must be a comma-separated list of integers")
+    stripped = value.strip()
+    if not stripped:
+        return ()
+    parts = tuple(part.strip() for part in stripped.split(","))
+    if any(not part for part in parts):
+        raise ConfigError(f"{field} must be a comma-separated list of integers")
+    try:
+        gpus = tuple(int(part) for part in parts)
+    except ValueError as exc:
+        raise ConfigError(f"{field} must be a comma-separated list of integers") from exc
+    _validate_gpu_list(gpus, field=field)
+    return gpus
+
+
+def _validate_gpu_list(gpus: tuple[int, ...], *, field: str) -> None:
+    if any(isinstance(gpu, bool) or not isinstance(gpu, int) for gpu in gpus):
+        raise ConfigError(f"{field} must contain integers")
+    if any(gpu < 0 for gpu in gpus):
+        raise ConfigError(f"{field} must contain non-negative integers")
+    if len(set(gpus)) != len(gpus):
+        raise ConfigError(f"{field} must not contain duplicate GPUs")
+
+
+def _gpu_ids(value: Any, *, field: str) -> tuple[int, ...]:
+    if not isinstance(value, list) or any(
+        isinstance(item, bool) or not isinstance(item, int) for item in value
+    ):
+        raise ConfigError(f"{field} must be a list of integers")
+    gpus = tuple(value)
+    _validate_gpu_list(gpus, field=field)
+    return gpus
+
+
+def _integer(value: Any, *, field: str, minimum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        qualifier = "positive" if minimum == 1 else "non-negative"
+        raise ConfigError(f"{field} must be a {qualifier} integer")
+    return value
+
+
 def _positive_float(value: Any, *, field: str) -> float:
     if isinstance(value, bool):
         raise ConfigError(f"{field} must be a finite number greater than zero")
@@ -129,6 +174,26 @@ class Sam3Config:
             raise ConfigError("sam3.gpus must contain exactly one GPU")
         if any(gpu < 0 for gpu in self.gpus):
             raise ConfigError("sam3.gpus must contain non-negative integers")
+
+
+@dataclass(frozen=True)
+class ParallelConfig:
+    """Opt-in process parallelism; an empty GPU tuple preserves serial execution."""
+
+    sam_worker_gpus: tuple[int, ...] = ()
+    qwen_max_in_flight: int = 1
+
+    def __post_init__(self) -> None:
+        _validate_gpu_list(self.sam_worker_gpus, field="parallel.sam_worker_gpus")
+        _integer(
+            self.qwen_max_in_flight,
+            field="parallel.qwen_max_in_flight",
+            minimum=1,
+        )
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.sam_worker_gpus)
 
 
 @dataclass(frozen=True)
@@ -245,6 +310,11 @@ class PipelineConfig:
     gripper_roi: GripperRoiConfig
     output_root: Path
     annotation: AnnotationConfig = AnnotationConfig(AnnotationMode.PICK_PLACE)
+    parallel: ParallelConfig = ParallelConfig()
+
+    def __post_init__(self) -> None:
+        if self.parallel.enabled and self.qwen.runtime != "api":
+            raise ConfigError("parallel SAM workers require qwen.runtime=api")
 
 
 def load_config(path: Path) -> PipelineConfig:
@@ -263,6 +333,7 @@ def load_config(path: Path) -> PipelineConfig:
     qwen_raw = _required(raw, "qwen")
     sam3_raw = _required(raw, "sam3")
     mask_raw = raw.get("mask", {})
+    parallel_raw = raw.get("parallel", {})
     gripper_roi_raw = _required(raw, "gripper_roi")
     output_raw = raw.get("output", {})
     annotation_raw = raw.get("annotation", {"mode": AnnotationMode.PICK_PLACE.value})
@@ -271,13 +342,15 @@ def load_config(path: Path) -> PipelineConfig:
         qwen_raw,
         sam3_raw,
         mask_raw,
+        parallel_raw,
         gripper_roi_raw,
         output_raw,
         annotation_raw,
     )
     if not all(isinstance(item, dict) for item in sections):
         raise ConfigError(
-            "dataset, qwen, sam3, mask, gripper_roi, output and annotation must be mappings"
+            "dataset, qwen, sam3, mask, parallel, gripper_roi, output and annotation "
+            "must be mappings"
         )
 
     raw_mode = annotation_raw.get("mode", AnnotationMode.PICK_PLACE.value)
@@ -361,6 +434,17 @@ def load_config(path: Path) -> PipelineConfig:
             field="sam3.checkpoint",
         ),
         gpus=_integers(sam3_raw.get("gpus", [0]), field="sam3.gpus"),
+    )
+    parallel = ParallelConfig(
+        sam_worker_gpus=_gpu_ids(
+            parallel_raw.get("sam_worker_gpus", []),
+            field="parallel.sam_worker_gpus",
+        ),
+        qwen_max_in_flight=_integer(
+            parallel_raw.get("qwen_max_in_flight", 1),
+            field="parallel.qwen_max_in_flight",
+            minimum=1,
+        ),
     )
     qc_enabled = bool(mask_raw.get("qc_enabled", False))
     removed_s4_fields = sorted(_REMOVED_S4_MASK_FIELDS & mask_raw.keys())
@@ -456,4 +540,5 @@ def load_config(path: Path) -> PipelineConfig:
         gripper_roi=gripper_roi,
         output_root=output_root,
         annotation=annotation,
+        parallel=parallel,
     )

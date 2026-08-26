@@ -80,10 +80,11 @@ episode 默认跳过，CUDA 级故障会立即终止 worker。`run` 会按 qwen 
 
 `just process <dataset_root>` 是推荐的一键入口：自动扫描
 `data/chunk-*/episode_*.parquet`，核对 video/sidecar，处理全部完整 episode，最后生成
-四通道 overlay 视频以及 target/receiver/gripper 的 early/late review sheets。它会先探测
-配置中的 Qwen endpoint；已有健康服务时直接复用且不关闭，否则排除 SAM/显式 EGL GPU，
-选择至少有 60,000 MiB 空闲显存的最空闲 GPU 启动服务。由本次命令启动的 Qwen 会在
-process 成功、失败或被中断后自动关闭，加载日志保存在 `artifacts/qwen-services/`。
+四通道 overlay 视频以及 target/receiver/gripper 的 early/late review sheets。配置为
+`qwen.runtime=api` 时，它只探测远程 endpoint，失败即退出，绝不启动本地模型；只有
+`qwen.runtime=local` 才会复用已有服务，或排除 SAM/显式 EGL GPU 后选择合格 GPU 启动服务。
+由本次命令启动的本地 Qwen 会在 process 成功、失败或被中断后自动关闭，加载日志保存在
+`artifacts/qwen-services/`。
 
 默认 API 配置优先读取环境变量 `QWEN_API_KEY`；未设置时，`just process` 会读取被 Git
 忽略的 `secrets/qwen_api_key.txt`。可复制 `secrets/qwen_api_key.txt.example` 后填入单行
@@ -110,6 +111,19 @@ just process <dataset_root> --verbose
 `--output-format` 是 `--ui` 的等价别名；设置 `NO_COLOR` 会关闭 Rich 颜色，`CI` 或
 `TERM=dumb` 环境会自动使用纯文本模式。完整机器可读结果仍以 run 目录中的
 `process_summary.json` 为准。
+
+Qwen API 配置可直接启用多 GPU SAM；以下命令在每张显式卡上常驻一个 SAM worker，并把所有
+worker 的远程 Qwen HTTP 请求限制为最多 4 个并发：
+
+```bash
+just process <dataset_root> \
+  --sam-worker-gpus 0,1,2,3 \
+  --qwen-max-in-flight 4 \
+  --urdf-egl-device-id 4
+```
+
+不传 `--sam-worker-gpus` 时沿用 YAML；YAML 也未配置时保持单进程串行。该调度不查询或等待
+GPU 空闲显存，只校验重复 SAM GPU，以及 live URDF 中 SAM pool 与 EGL GPU 是否重叠。
 
 完整文档从 [docs/README.md](docs/README.md) 开始；当前实现契约见
 [docs/architecture.md](docs/architecture.md)，coverage20 实验、参数依据和证据边界见

@@ -217,7 +217,13 @@ def run_loop(config: PipelineConfig, episode_index: int, run_id: str | None) -> 
     )
 
 
-def run_qwen(config: PipelineConfig, episode_index: int, run_id: str | None) -> None:
+def run_qwen(
+    config: PipelineConfig,
+    episode_index: int,
+    run_id: str | None,
+    *,
+    check_health: bool = True,
+) -> None:
     dataset = _dataset(config)
     ref = _episode_ref(config, episode_index)
     context = _build_context(config, dataset, ref)
@@ -230,7 +236,13 @@ def run_qwen(config: PipelineConfig, episode_index: int, run_id: str | None) -> 
     selected_run_id = run_id or store.new_run_id()
     loop_path = store.save_loop(selected_run_id, ref, context.to_json())
     try:
-        result = run_qwen_stage(context, frames, config.qwen, client)
+        result = run_qwen_stage(
+            context,
+            frames,
+            config.qwen,
+            client,
+            check_health=check_health,
+        )
     except QwenStageError as exc:
         paths = store.save_qwen_failure(
             selected_run_id,

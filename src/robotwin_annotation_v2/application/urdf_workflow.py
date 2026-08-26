@@ -813,6 +813,7 @@ class UrdfWorkflow:
             backend={
                 "type": "urdf",
                 "source_mode": source_mode,
+                "source_backend": selection.source_summary.get("backend"),
                 "source_release": (None if source_release is None else dict(source_release)),
                 "source_run_dir": str(config.source_run_dir),
                 "source_run_id": selection.source_summary["run_id"],
@@ -937,10 +938,13 @@ class UrdfWorkflow:
                 )
             reporter.note(f"object-mask source will be frozen at {source_run_dir}")
 
+        sam_worker_gpus = (
+            pipeline_config.parallel.sam_worker_gpus or pipeline_config.sam3.gpus
+        )
         selected_egl_device: int | None = None
         if urdf_pipeline and backend_factory is None:
             selected_egl_device = self.hooks.select_egl_device(
-                pipeline_config.sam3.gpus,
+                sam_worker_gpus,
                 urdf_egl_device_id,
             )
             if selected_egl_device is None and reporter is not None:
@@ -982,7 +986,7 @@ class UrdfWorkflow:
             if reporter is not None:
                 reporter.note(
                     "streaming Source -> URDF pipeline enabled: "
-                    f"sam_gpus={list(pipeline_config.sam3.gpus)} "
+                    f"sam_gpus={list(sam_worker_gpus)} "
                     f"egl_gpu={selected_egl_device} buffer={urdf_pipeline_buffer_size}"
                 )
             source_summary, prepared_result, prepared_backend_error = (
@@ -1042,16 +1046,10 @@ class UrdfWorkflow:
                 reporter.lane_finished("source")
         if reporter is not None:
             reporter.phase_started("sam_backend_release")
-        source_release = self.hooks.release_sam_cuda_cache(pipeline_config.sam3.gpus)
+        source_release = self.hooks.release_sam_cuda_cache(sam_worker_gpus)
         if reporter is not None:
             gpu_details = "; ".join(
-                (
-                    f"gpu={record['gpu']} "
-                    f"allocated={record['allocated_before_bytes']}"
-                    f"->{record['allocated_after_bytes']} "
-                    f"reserved={record['reserved_before_bytes']}"
-                    f"->{record['reserved_after_bytes']}"
-                )
+                f"gpu={record['gpu']} cache_cleared={record['cache_cleared']}"
                 for record in source_release["gpus"]
             )
             reporter.phase_finished(

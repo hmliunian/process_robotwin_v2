@@ -3,8 +3,14 @@ from __future__ import annotations
 import base64
 import io
 import json
+import multiprocessing as mp
+import os
+import threading
+import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any, Self
 
 import numpy as np
@@ -14,6 +20,10 @@ from robotwin_annotation_v2.adapters import (
     OpenAICompatibleQwenClient,
     image_data_url,
 )
+from robotwin_annotation_v2.adapters.qwen_client import (
+    FileRequestGate,
+    install_qwen_request_gate,
+)
 
 
 class FakeHTTPResponse(io.BytesIO):
@@ -22,6 +32,13 @@ class FakeHTTPResponse(io.BytesIO):
 
     def __exit__(self, *_args: object) -> None:
         self.close()
+
+
+def _acquire_gate_and_exit(gate: FileRequestGate, connection: Any) -> None:
+    assert gate.acquire(timeout=1)
+    connection.send(True)
+    connection.close()
+    os._exit(23)
 
 
 def test_image_data_url_contains_png() -> None:
@@ -170,3 +187,146 @@ def test_api_client_reports_http_and_timeout_failures(
 
     with pytest.raises(RuntimeError, match=message):
         client.health()
+
+
+class _RecordingGate:
+    def __init__(self, *, acquired: bool = True) -> None:
+        self.acquired = acquired
+        self.acquire_timeouts: list[float | None] = []
+        self.releases = 0
+
+    def acquire(self, blocking: bool = True, timeout: float | None = None) -> bool:
+        del blocking
+        self.acquire_timeouts.append(timeout)
+        return self.acquired
+
+    def release(self) -> None:
+        self.releases += 1
+
+
+def test_qwen_request_gate_releases_after_transport_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gate = _RecordingGate()
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(TimeoutError("network timeout")),
+    )
+    client = OpenAICompatibleQwenClient(
+        endpoint="http://127.0.0.1:18086/v1/chat/completions",
+        model="fake-qwen",
+        timeout_seconds=7,
+    )
+
+    install_qwen_request_gate(gate)
+    try:
+        with pytest.raises(RuntimeError, match="request failed"):
+            client.health()
+    finally:
+        install_qwen_request_gate(None)
+
+    assert gate.acquire_timeouts == [7]
+    assert gate.releases == 1
+
+
+def test_qwen_request_gate_timeout_does_not_send_or_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gate = _RecordingGate(acquired=False)
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: pytest.fail("request must wait for a permit"),
+    )
+    client = OpenAICompatibleQwenClient(
+        endpoint="http://127.0.0.1:18086/v1/chat/completions",
+        model="fake-qwen",
+        timeout_seconds=3,
+    )
+
+    install_qwen_request_gate(gate)
+    try:
+        with pytest.raises(RuntimeError, match="concurrency permit"):
+            client.health()
+    finally:
+        install_qwen_request_gate(None)
+
+    assert gate.acquire_timeouts == [3]
+    assert gate.releases == 0
+
+
+class _PeakGate:
+    def __init__(self, capacity: int) -> None:
+        self._semaphore = threading.BoundedSemaphore(capacity)
+        self._lock = threading.Lock()
+        self.active = 0
+        self.peak = 0
+
+    def acquire(self, blocking: bool = True, timeout: float | None = None) -> bool:
+        acquired = self._semaphore.acquire(blocking=blocking, timeout=timeout)
+        if acquired:
+            with self._lock:
+                self.active += 1
+                self.peak = max(self.peak, self.active)
+        return acquired
+
+    def release(self) -> None:
+        with self._lock:
+            self.active -= 1
+        self._semaphore.release()
+
+
+def test_qwen_request_gate_bounds_concurrent_http_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gate = _PeakGate(2)
+
+    def fake_urlopen(
+        _request: urllib.request.Request,
+        timeout: float,
+    ) -> FakeHTTPResponse:
+        assert timeout == 5
+        time.sleep(0.05)
+        return FakeHTTPResponse(b'{"status":"ok","model":"fake-qwen"}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    client = OpenAICompatibleQwenClient(
+        endpoint="http://127.0.0.1:18086/v1/chat/completions",
+        model="fake-qwen",
+        timeout_seconds=5,
+    )
+
+    install_qwen_request_gate(gate)
+    try:
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            results = tuple(executor.map(lambda _index: client.health(), range(4)))
+    finally:
+        install_qwen_request_gate(None)
+
+    assert all(result["status"] == "ok" for result in results)
+    assert gate.peak == 2
+    assert gate.active == 0
+
+
+def test_file_request_gate_recovers_token_after_hard_process_exit(
+    tmp_path: Path,
+) -> None:
+    gate = FileRequestGate.create(tmp_path / "gate", capacity=1)
+    contender = FileRequestGate(gate.token_paths)
+    context = mp.get_context("spawn")
+    parent_connection, child_connection = context.Pipe(duplex=False)
+    process = context.Process(
+        target=_acquire_gate_and_exit,
+        args=(gate, child_connection),
+    )
+
+    process.start()
+    child_connection.close()
+    assert parent_connection.recv() is True
+    process.join(timeout=5)
+    assert process.exitcode == 23
+    assert contender.acquire(timeout=1) is True
+    contender.release()
+    parent_connection.close()
+    process.close()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import subprocess
 import sys
@@ -81,13 +82,38 @@ def test_capture_urdf_json_progress_translates_jsonl_and_preserves_detail(
     assert reporter.details == ["renderer diagnostic"]
 
 
-def test_select_urdf_egl_device_uses_freest_non_sam_gpu(
+def test_select_urdf_egl_device_uses_first_non_sam_gpu_without_memory_probe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    completed = SimpleNamespace(stdout="0, 9000\n1, 12000\n2, 12000\ninvalid\n")
-    monkeypatch.setattr(urdf_runtime.subprocess, "run", lambda *_args, **_kwargs: completed)
+    completed = SimpleNamespace(stdout="0\n1\n2\ninvalid\n")
+    calls: list[list[str]] = []
 
-    assert urdf_runtime.select_urdf_egl_device((0,), None) == 1
+    def run(command: list[str], **_kwargs: Any) -> Any:
+        calls.append(command)
+        return completed
+
+    monkeypatch.setattr(urdf_runtime.subprocess, "run", run)
+
+    assert urdf_runtime.select_urdf_egl_device((0, 2), None) == 1
+    assert calls == [
+        [
+            "nvidia-smi",
+            "--query-gpu=index",
+            "--format=csv,noheader,nounits",
+        ]
+    ]
+
+
+def test_explicit_urdf_egl_device_does_not_inspect_gpu_occupancy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        urdf_runtime.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("explicit EGL selection must not run nvidia-smi"),
+    )
+
+    assert urdf_runtime.select_urdf_egl_device((0, 2), 4) == 4
 
 
 @pytest.mark.parametrize("requested", (-1, True, 2))
@@ -112,6 +138,36 @@ def test_release_sam_cuda_cache_is_cpu_safe(
         "cuda_available": False,
         "gpus": [],
     }
+
+
+def test_release_sam_cuda_cache_does_not_query_gpu_memory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cleared: list[int] = []
+    current_gpu: list[int] = []
+
+    @contextlib.contextmanager
+    def device(gpu: int) -> Any:
+        current_gpu.append(gpu)
+        yield
+
+    fake_cuda = SimpleNamespace(
+        is_available=lambda: True,
+        device_count=lambda: 4,
+        device=device,
+        empty_cache=lambda: cleared.append(current_gpu[-1]),
+        memory_allocated=lambda *_args: pytest.fail("must not inspect allocated memory"),
+        memory_reserved=lambda *_args: pytest.fail("must not inspect reserved memory"),
+    )
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=fake_cuda))
+    monkeypatch.setattr(urdf_runtime.gc, "collect", lambda: 5)
+
+    assert urdf_runtime.release_sam_cuda_cache((2, 2, 7)) == {
+        "gc_collected": 5,
+        "cuda_available": True,
+        "gpus": [{"gpu": 2, "cache_cleared": True}],
+    }
+    assert cleared == [2]
 
 
 def test_load_urdf_workflow_runtime_adapts_batch_incomplete_result(
