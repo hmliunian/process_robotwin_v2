@@ -59,12 +59,12 @@ def _frames() -> dict[int, Image.Image]:
     }
 
 
-def _target_only_context() -> LoopContext:
+def _target_only_context(*, reopen_start: int | None = None) -> LoopContext:
     return LoopContext(
         episode=EpisodeRef("move_object", 1, "cam_high"),
         task_text="Pick up the bottle.",
         frame_count=20,
-        events=TargetOnlyEvents("right", 2, 6, 8),
+        events=TargetOnlyEvents("right", 2, 6, 8, reopen_start),
         semantic_frames=(
             SemanticFrame(
                 0,
@@ -246,7 +246,7 @@ def test_target_only_semantic_prompt_contains_only_target_contract() -> None:
     assert "remove_start: 2" in request.rendered_prompt
     assert "close_start: 6" in request.rendered_prompt
     assert "close_end: 8" in request.rendered_prompt
-    assert "episode_end: 19" in request.rendered_prompt
+    assert "hold_end: 19" in request.rendered_prompt
     assert "open_start" not in request.rendered_prompt
     assert "open_done" not in request.rendered_prompt
 
@@ -268,9 +268,22 @@ def test_target_only_open_set_semantic_prompt_uses_target_only_timeline() -> Non
     assert "remove_start: 2" in request.rendered_prompt
     assert "close_start: 6" in request.rendered_prompt
     assert "close_end: 8" in request.rendered_prompt
-    assert "episode_end: 19" in request.rendered_prompt
+    assert "hold_end: 19" in request.rendered_prompt
     assert "open_start" not in request.rendered_prompt
     assert "open_done" not in request.rendered_prompt
+
+
+def test_target_only_semantic_prompt_ends_hold_before_reopen() -> None:
+    template = (
+        PROJECT_ROOT / "configs/prompts/target_only_semantic_open_set.txt"
+    ).read_text(encoding="utf-8")
+    context = _target_only_context(reopen_start=15)
+    frames = {frame_id: _frames()[frame_id] for frame_id in (0, 9)}
+
+    request = build_qwen_request(context, frames, template)
+
+    assert "hold_end: 14" in request.rendered_prompt
+    assert "episode_end:" not in request.rendered_prompt
 
 
 def test_target_only_rejects_a_pick_place_prompt_before_model_request() -> None:

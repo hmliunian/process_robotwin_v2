@@ -21,6 +21,8 @@ from robotwin_annotation_v2.application.discovery import (
     build_dynamic_manifest,
     discover_episodes,
 )
+from robotwin_annotation_v2.config import AnnotationConfig
+from robotwin_annotation_v2.domain import TargetOnlyTaskKind, TargetProfile
 
 
 def test_process_dataset_launcher_delegates_to_canonical_runtime() -> None:
@@ -289,8 +291,17 @@ def _source_lineage(
     return dict(validated.lineage)
 
 
-def _cli_config(tmp_path: Path) -> SimpleNamespace:
+def _cli_config(
+    tmp_path: Path,
+    *,
+    mode: process_module.AnnotationMode = process_module.AnnotationMode.PICK_PLACE,
+    runtime: str = "local",
+) -> SimpleNamespace:
     return SimpleNamespace(
+        config_path=tmp_path / f"{mode.value}.yaml",
+        output_root=tmp_path / "configured-output",
+        annotation=AnnotationConfig(mode),
+        qwen=SimpleNamespace(runtime=runtime),
         dataset=SimpleNamespace(
             root=tmp_path / "configured-dataset",
             task="configured-task",
@@ -367,6 +378,56 @@ def test_dynamic_manifest_contains_measured_contract(
     assert manifest["raw_video_frame_surplus"] == 1
     assert manifest["regression_episode_ids"] == [7, 8]
     assert manifest["dataset_root"] == str(tmp_path.resolve())
+
+
+def test_dynamic_manifest_preserves_typed_task_kind(tmp_path: Path) -> None:
+    episode = DiscoveredEpisode(
+        episode_id=7,
+        parquet=tmp_path / "episode_000007.parquet",
+        video=tmp_path / "episode_000007.mp4",
+        sidecar=tmp_path / "episode_000007.hdf5",
+    )
+
+    manifest = build_dynamic_manifest(
+        tmp_path,
+        task="task",
+        camera="cam_high",
+        episodes=(episode,),
+        measure_episode_fn=lambda _episode: (24, (240, 320), 1),
+        task_kind=TargetOnlyTaskKind.CONTACT_ACTION_SITE,
+    )
+
+    assert manifest["task_kind"] == "contact_action_site"
+
+
+def test_runtime_dynamic_manifest_copies_extract_task_kind(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "EXTRACT_MANIFEST.json").write_text(
+        json.dumps({"task_kind": "articulated_action_site"}),
+        encoding="utf-8",
+    )
+    episode = DiscoveredEpisode(
+        episode_id=7,
+        parquet=tmp_path / "episode_000007.parquet",
+        video=tmp_path / "episode_000007.mp4",
+        sidecar=tmp_path / "episode_000007.hdf5",
+    )
+    monkeypatch.setattr(
+        process_module,
+        "_measure_episode",
+        lambda _episode: (24, (240, 320), 1),
+    )
+
+    manifest = process_module.build_dynamic_manifest(
+        tmp_path,
+        task="task",
+        camera="cam_high",
+        episodes=(episode,),
+    )
+
+    assert manifest["task_kind"] == "articulated_action_site"
 
 
 def test_process_dataset_reports_sam_stages_without_embedded_json(
@@ -673,8 +734,9 @@ def test_parse_args_defaults_to_urdf_and_preserves_just_sentinel_paths() -> None
     )
 
     assert args.gripper_backend == "urdf"
+    assert args.config == process_module.DEFAULT_PROCESS_CONFIG
+    assert args.output_dir is None
     assert args.urdf_depth_tolerance_mm is None
-    assert args.urdf_minimum_eligible_nonempty_fraction is None
     assert args.source_run_dir == "-"
     assert args.urdf_path == "-"
     assert process_module._optional_cli_path(args.source_run_dir) is None
@@ -729,28 +791,43 @@ def test_parse_args_accepts_path_only_modes(
 
 
 @pytest.mark.parametrize(
-    ("mode", "semantic_prompt", "qc_prompt"),
+    ("profile", "mode", "semantic_prompt", "qc_prompt", "bbox_prompt"),
     (
         (
+            "process_qwen38_api.yaml",
             process_module.AnnotationMode.PICK_PLACE,
             "target_receiver_semantic_open_set.txt",
             "mask_candidate_qc_open_set.txt",
+            "open_set_bbox_localization.txt",
         ),
         (
+            "process_target_only_qwen38_api.yaml",
             process_module.AnnotationMode.TARGET_ONLY,
             "target_only_semantic_open_set.txt",
             "target_only_mask_candidate_qc_open_set.txt",
+            "open_set_bbox_localization.txt",
+        ),
+        (
+            "process_contact_press_qwen38_api.yaml",
+            process_module.AnnotationMode.TARGET_ONLY,
+            "target_only_contact_press_semantic_open_set.txt",
+            "target_only_contact_press_mask_candidate_qc_open_set.txt",
+            "target_only_contact_press_bbox_localization.txt",
         ),
     ),
 )
-def test_path_only_default_profiles_enable_s1_through_s3(
+def test_explicit_api_profiles_enable_s1_through_s3(
+    profile: str,
     mode: Any,
     semantic_prompt: str,
     qc_prompt: str,
+    bbox_prompt: str,
 ) -> None:
-    config = process_module.load_config(process_module.PATH_MODE_CONFIGS[mode])
+    config = process_module.load_config(Path("configs") / profile)
 
     assert config.annotation.mode is mode
+    assert config.qwen.runtime == "api"
+    assert config.qwen.model == "qwen3.8-max"
     assert config.qwen.prompt_template.name == semantic_prompt
     assert config.mask.qc_prompt_template is not None
     assert config.mask.qc_prompt_template.name == qc_prompt
@@ -759,9 +836,53 @@ def test_path_only_default_profiles_enable_s1_through_s3(
     assert config.mask.qc_seed_fallback_enabled
     assert config.mask.qc_bbox_fallback_enabled
     assert config.mask.qc_bbox_prompt_template is not None
-    assert config.mask.qc_bbox_prompt_template.name == (
-        "open_set_bbox_localization.txt"
+    assert config.mask.qc_bbox_prompt_template.name == bbox_prompt
+
+
+def test_contact_press_profile_uses_action_site_prompts() -> None:
+    config = process_module.load_config(process_module.CONTACT_PRESS_CONFIGS["api"])
+
+    assert config.annotation.profile is TargetProfile.CONTACT_PRESS
+    assert config.qwen.runtime == "api"
+    assert config.qwen.prompt_template.name == (
+        "target_only_contact_press_semantic_open_set.txt"
     )
+    assert config.mask.qc_prompt_template is not None
+    assert config.mask.qc_prompt_template.name == (
+        "target_only_contact_press_mask_candidate_qc_open_set.txt"
+    )
+    assert config.mask.qc_bbox_prompt_template is not None
+    assert config.mask.qc_bbox_prompt_template.name == (
+        "target_only_contact_press_bbox_localization.txt"
+    )
+
+
+def test_path_mode_does_not_silently_replace_selected_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = SimpleNamespace(
+        root=tmp_path,
+        task="adjust_bottle",
+        camera="cam_high",
+        episode_ids=(0,),
+    )
+    monkeypatch.setattr(
+        process_module,
+        "resolve_dataset_input",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            root=tmp_path,
+            targets=(target,),
+            is_collection=False,
+        ),
+    )
+    args = process_module._parse_args(["--data-path", str(tmp_path), "--target-only"])
+
+    with pytest.raises(ValueError, match=r"process_qwen38_api.yaml.*pick_place"):
+        process_module._run_from_args(
+            args,
+            process_module.ProcessUI(emit_json_summary=False, verbose=False),
+        )
 
 
 def test_path_only_single_task_dispatches_from_manifest(
@@ -774,10 +895,15 @@ def test_path_only_single_task_dispatches_from_manifest(
         task="adjust_bottle",
         camera="cam_high",
         episode_ids=(0,),
+        profile=TargetProfile.GRASP_MANIPULATION,
     )
     resolved = SimpleNamespace(root=dataset, targets=(target,), is_collection=False)
     calls: dict[str, Any] = {}
-    config = _cli_config(tmp_path)
+    config = _cli_config(
+        tmp_path,
+        mode=process_module.AnnotationMode.TARGET_ONLY,
+        runtime="api",
+    )
 
     monkeypatch.setattr(
         process_module,
@@ -801,6 +927,8 @@ def test_path_only_single_task_dispatches_from_manifest(
             "--data-path",
             str(dataset),
             "--target-only",
+            "--config",
+            str(config.config_path),
             "--episode-ids",
             "0",
             "--skip-render",
@@ -813,9 +941,7 @@ def test_path_only_single_task_dispatches_from_manifest(
     )
 
     assert summary["passed"] is True
-    assert calls["config_path"] == process_module.PATH_MODE_CONFIGS[
-        process_module.AnnotationMode.TARGET_ONLY
-    ]
+    assert calls["config_path"] == config.config_path
     assert calls["dataset_root"] == dataset
     assert calls["task"] == "adjust_bottle"
     assert calls["episode_ids"] == (0,)
@@ -825,23 +951,41 @@ def test_path_only_collection_runs_each_task_and_writes_summary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    targets = tuple(
+    targets = (
         SimpleNamespace(
-            root=tmp_path / task,
-            task=task,
+            root=tmp_path / "alpha",
+            task="alpha",
             camera="cam_high",
-            episode_ids=(episode_id,),
-        )
-        for task, episode_id in (("alpha", 1), ("beta", 2))
+            episode_ids=(1,),
+            profile=TargetProfile.GRASP_MANIPULATION,
+        ),
+        SimpleNamespace(
+            root=tmp_path / "beta",
+            task="beta",
+            camera="cam_high",
+            episode_ids=(2,),
+            profile=TargetProfile.CONTACT_PRESS,
+        ),
     )
     resolved = SimpleNamespace(root=tmp_path, targets=targets, is_collection=True)
     calls: list[dict[str, Any]] = []
+    config_paths: list[Path] = []
     monkeypatch.setattr(
         process_module,
         "resolve_dataset_input",
         lambda *_args, **_kwargs: resolved,
     )
-    monkeypatch.setattr(process_module, "load_config", lambda _path: _cli_config(tmp_path))
+    config = _cli_config(
+        tmp_path,
+        mode=process_module.AnnotationMode.TARGET_ONLY,
+        runtime="api",
+    )
+
+    def fake_load_config(path: Path) -> Any:
+        config_paths.append(path)
+        return config
+
+    monkeypatch.setattr(process_module, "load_config", fake_load_config)
 
     def fake_live(**kwargs: Any) -> dict[str, Any]:
         calls.append(kwargs)
@@ -853,6 +997,8 @@ def test_path_only_collection_runs_each_task_and_writes_summary(
             "--data-path",
             str(tmp_path),
             "--target-only",
+            "--config",
+            str(config.config_path),
             "--run-id",
             "collection-test",
             "--output-dir",
@@ -870,6 +1016,11 @@ def test_path_only_collection_runs_each_task_and_writes_summary(
     assert [call["run_id"] for call in calls] == [
         "collection-test-alpha",
         "collection-test-beta",
+    ]
+    assert config_paths == [
+        config.config_path,
+        config.config_path,
+        process_module.CONTACT_PRESS_CONFIGS["api"],
     ]
     assert summary["passed"] is True
     assert Path(summary["artifact"]).is_file()
@@ -927,6 +1078,31 @@ def test_main_legacy_cli_dispatches_sam_without_urdf_path(
     assert calls["force"] is False
     assert calls["skip_render"] is False
     assert isinstance(calls["reporter"], process_module.ProcessUI)
+
+
+def test_cli_uses_config_output_root_without_explicit_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _cli_config(tmp_path)
+    calls: dict[str, Any] = {}
+
+    def fake_process(_config: Any, **kwargs: Any) -> dict[str, Any]:
+        calls.update(kwargs)
+        return {"passed": True}
+
+    monkeypatch.setattr(process_module, "load_config", lambda _path: config)
+    monkeypatch.setattr(process_module, "process_dataset", fake_process)
+    args = process_module._parse_args(
+        ["--gripper-backend", "sam", "--dataset-root", str(tmp_path / "dataset")]
+    )
+
+    process_module._run_from_args(
+        args,
+        process_module.ProcessUI(emit_json_summary=False, verbose=False),
+    )
+
+    assert calls["output_root"] == config.output_root
 
 
 def test_main_live_urdf_cli_uses_bundled_asset_and_not_derived_entrypoint(
@@ -1148,6 +1324,56 @@ def test_live_urdf_pipeline_streams_by_default_and_reuses_backend_result(
     assert summary["passed"] is True
 
 
+def test_live_urdf_pipeline_continues_after_partial_source_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _cli_config(tmp_path)
+    dataset = tmp_path / "dataset"
+    _touch_episode(dataset, 7)
+    _touch_episode(dataset, 8)
+    canonical: dict[str, Any] = {}
+
+    def fake_source(_config: Any, **kwargs: Any) -> dict[str, Any]:
+        source_run_dir = Path(kwargs["output_root"]) / str(kwargs["run_id"])
+        source_run_dir.mkdir(parents=True)
+        return {
+            "passed": False,
+            "records": [
+                {"episode": 7, "status": "completed"},
+                {"episode": 8, "status": "sam_incomplete"},
+            ],
+        }
+
+    def fake_canonical(**kwargs: Any) -> dict[str, Any]:
+        canonical.update(kwargs)
+        return {"passed": True, "gripper_backend": "urdf"}
+
+    monkeypatch.setattr(process_module, "process_dataset", fake_source)
+    monkeypatch.setattr(
+        process_module,
+        "_release_sam_cuda_cache",
+        lambda _gpus: {"gc_collected": 0, "cuda_available": True, "gpus": []},
+    )
+    monkeypatch.setattr(process_module, "process_urdf_source_run", fake_canonical)
+
+    summary = process_module.process_live_urdf_pipeline(
+        pipeline_config=config,
+        dataset_root=dataset,
+        task="task",
+        camera="cam_high",
+        output_root=tmp_path / "output",
+        urdf_path=process_module.DEFAULT_BUNDLED_URDF_PATH,
+        run_id="live-partial-source",
+        skip_render=True,
+        backend_factory=lambda **_kwargs: object(),
+    )
+
+    assert canonical["episode_ids"] is None
+    assert canonical["allow_partial_source"] is False
+    assert summary["passed"] is True
+
+
 def test_main_json_mode_prints_one_machine_readable_summary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1249,15 +1475,6 @@ def test_main_json_mode_prints_failed_summary_before_exit(
         ),
         (
             ("--gripper-backend", "sam", "--urdf-depth-tolerance-mm", "9"),
-            "URDF-only options",
-        ),
-        (
-            (
-                "--gripper-backend",
-                "sam",
-                "--urdf-minimum-eligible-nonempty-fraction",
-                "0.8",
-            ),
             "URDF-only options",
         ),
         (
@@ -1508,8 +1725,6 @@ def test_main_urdf_cli_forwards_parameters_without_legacy_process(
             "--dry-run",
             "--urdf-depth-tolerance-mm",
             "5.5",
-            "--urdf-minimum-eligible-nonempty-fraction",
-            "0.8",
             "--skip-render",
             "--allow-partial-source",
         ],
@@ -1528,7 +1743,6 @@ def test_main_urdf_cli_forwards_parameters_without_legacy_process(
     assert calls["resume"] is False
     assert calls["dry_run"] is True
     assert calls["depth_tolerance_mm"] == 5.5
-    assert calls["minimum_eligible_nonempty_fraction"] == 0.8
     assert calls["skip_render"] is True
     assert calls["allow_partial_source"] is True
 
@@ -1667,7 +1881,7 @@ def test_process_urdf_source_run_never_calls_sam_or_legacy_renderer(
     ).resolve()
 
 
-def test_process_urdf_source_run_requires_explicit_partial_source_opt_in(
+def test_process_urdf_source_run_allows_partial_source_by_default(
     tmp_path: Path,
 ) -> None:
     dataset = tmp_path / "dataset"
@@ -1700,19 +1914,13 @@ def test_process_urdf_source_run_requires_explicit_partial_source_opt_in(
         "dry_run": True,
         "experiment_runner": fake_experiment,
     }
-    with pytest.raises(ValueError, match="--allow-partial-source"):
-        process_module.process_urdf_source_run(**common)
-
-    summary = process_module.process_urdf_source_run(
-        **common,
-        allow_partial_source=True,
-    )
+    summary = process_module.process_urdf_source_run(**common)
 
     assert len(observed) == 1
     assert observed[0].episode_ids == (7,)
     assert summary["passed"] is True
     assert summary["backend"]["source_selection_complete"] is False
-    assert summary["backend"]["allow_partial_source"] is True
+    assert summary["backend"]["allow_partial_source"] is False
     assert summary["backend"]["source_excluded"] == [
         {
             "episode": 8,
@@ -1771,13 +1979,7 @@ def test_process_urdf_source_run_records_incomplete_dataset_inputs(
         "dry_run": True,
         "experiment_runner": fake_experiment,
     }
-    with pytest.raises(ValueError, match="--allow-partial-source"):
-        process_module.process_urdf_source_run(**common)
-
-    summary = process_module.process_urdf_source_run(
-        **common,
-        allow_partial_source=True,
-    )
+    summary = process_module.process_urdf_source_run(**common)
 
     assert observed[0].episode_ids == (7,)
     assert summary["requested_episode_ids"] == [7, 8]
@@ -2012,6 +2214,86 @@ def test_process_urdf_source_run_blocks_render_on_canonical_revalidation_failure
     assert reporter.finished_episodes == [(7, "canonical_validation_failed")]
 
 
+def test_process_urdf_source_run_renders_episodes_after_partial_validation_failure(
+    tmp_path: Path,
+) -> None:
+    dataset = tmp_path / "dataset"
+    source = tmp_path / "source-run"
+    for episode_id in (7, 8):
+        _touch_episode(dataset, episode_id)
+    _write_source_summary(
+        source,
+        dataset,
+        [
+            {"episode": 7, "status": "completed"},
+            {"episode": 8, "status": "completed"},
+        ],
+    )
+    for episode_id in (7, 8):
+        _write_source_episode(source, episode_id)
+    rendered: list[tuple[int, ...]] = []
+
+    def fake_experiment(config: Any) -> dict[str, Any]:
+        config.run_dir.mkdir(parents=True)
+        return {
+            "status": "complete",
+            "episodes": [
+                {
+                    "episode_index": episode_id,
+                    "status": "complete",
+                    "output_dir": f"episode_{episode_id:06d}",
+                    "active_arm": "right",
+                    "source_lineage": _source_lineage(source, episode_id),
+                }
+                for episode_id in (7, 8)
+            ],
+        }
+
+    def fake_render(
+        _config: Any,
+        *,
+        run_id: str,
+        episode_ids: tuple[int, ...],
+        output_dir: Path,
+    ) -> dict[str, Any]:
+        assert run_id == "urdf-validation-partial"
+        assert output_dir == (tmp_path / "output/urdf-validation-partial").resolve()
+        rendered.append(episode_ids)
+        return {"episode_count": len(episode_ids), "review_sheets": []}
+
+    def validate_episode(**kwargs: Any) -> dict[str, Any]:
+        if kwargs["backend_episode_record"]["episode_index"] == 7:
+            raise urdf_module.UrdfGripperPublishError("synthetic canonical mismatch")
+        return {"status": "completed"}
+
+    summary = process_module.process_urdf_source_run(
+        pipeline_config=process_module.load_config(
+            Path("configs/pilot_move_pillbottle_pad.yaml")
+        ),
+        dataset_root=dataset,
+        source_run_dir=source,
+        task="task",
+        camera="cam_high",
+        output_root=tmp_path / "output",
+        urdf_path=tmp_path / "aloha.urdf",
+        run_id="urdf-validation-partial",
+        episode_ids=(7, 8),
+        experiment_runner=fake_experiment,
+        episode_publisher=lambda **_kwargs: {"status": "completed"},
+        episode_validator=validate_episode,
+        render_builder=fake_render,
+    )
+
+    assert rendered == [(8,)]
+    assert summary["render"]["episode_count"] == 1
+    assert summary["passed"] is False
+    assert any(
+        record.get("episode") == 7
+        and record.get("status") == "canonical_validation_failed"
+        for record in summary["records"]
+    )
+
+
 def test_process_urdf_source_run_renders_successes_after_partial_backend_failure(
     tmp_path: Path,
 ) -> None:
@@ -2049,10 +2331,7 @@ def test_process_urdf_source_run_renders_successes_after_partial_backend_failure
                 {
                     "episode_index": 8,
                     "status": "failed",
-                    "error": (
-                        "eligible nonempty fraction is below the run threshold: "
-                        "0.898649 < 0.900000"
-                    ),
+                    "error": "synthetic renderer failure",
                 },
             ],
         }
@@ -2114,7 +2393,7 @@ def test_process_urdf_source_run_renders_successes_after_partial_backend_failure
     assert summary["backend"]["error"] == expected_error
     assert [record["status"] for record in summary["records"]] == [
         "completed",
-        "gripper_incomplete",
+        "failed",
     ]
     persisted = json.loads(Path(summary["artifact"]).read_text(encoding="utf-8"))
     assert set(persisted) == {

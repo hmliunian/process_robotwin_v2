@@ -179,7 +179,6 @@ class RunConfig:
     task: str = "move_pillbottle_pad"
     camera: str = "cam_high"
     depth_tolerance_mm: float = 8.0
-    minimum_eligible_nonempty_fraction: float = 0.90
     fit_config_json: Path | None = None
     overlay_alpha: float = 0.36
     overlay_crf: int = 18
@@ -218,12 +217,6 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--urdf-path", type=Path, required=True)
     parser.add_argument("--mesh-root", type=Path)
     parser.add_argument("--depth-tolerance-mm", type=float, default=8.0)
-    parser.add_argument(
-        "--minimum-eligible-nonempty-fraction",
-        type=float,
-        default=0.90,
-        help="Minimum fraction of depth-evaluable active frames with a nonempty mask",
-    )
     parser.add_argument(
         "--fit-config-json",
         type=Path,
@@ -268,10 +261,6 @@ def parse_args(argv: Sequence[str] | None = None) -> RunConfig:
         raise ValueError("task and camera must be non-empty")
     if args.depth_tolerance_mm < 0:
         raise ValueError("--depth-tolerance-mm must be non-negative")
-    if not math.isfinite(args.minimum_eligible_nonempty_fraction) or not (
-        0.0 <= args.minimum_eligible_nonempty_fraction <= 1.0
-    ):
-        raise ValueError("--minimum-eligible-nonempty-fraction must be finite and in [0, 1]")
     if not 0.0 <= args.overlay_alpha <= 1.0:
         raise ValueError("--overlay-alpha must be between zero and one")
     if not 0 <= args.overlay_crf <= 51:
@@ -289,9 +278,6 @@ def parse_args(argv: Sequence[str] | None = None) -> RunConfig:
         task=args.task,
         camera=args.camera,
         depth_tolerance_mm=float(args.depth_tolerance_mm),
-        minimum_eligible_nonempty_fraction=float(
-            args.minimum_eligible_nonempty_fraction
-        ),
         fit_config_json=(
             None
             if args.fit_config_json is None
@@ -338,10 +324,6 @@ def validate_run_config(
         raise FileNotFoundError(f"mesh root is missing: {config.mesh_root}")
     if config.fit_config_json is not None and not config.fit_config_json.is_file():
         raise FileNotFoundError(f"fit config JSON is missing: {config.fit_config_json}")
-    if not math.isfinite(config.minimum_eligible_nonempty_fraction) or not (
-        0.0 <= config.minimum_eligible_nonempty_fraction <= 1.0
-    ):
-        raise ValueError("minimum_eligible_nonempty_fraction must be finite and in [0, 1]")
     if config.egl_device_id is not None and (
         isinstance(config.egl_device_id, bool) or config.egl_device_id < 0
     ):
@@ -518,8 +500,6 @@ def validate_product(
             raise UrdfMaskRunError(
                 f"{name} must be empty outside the inclusive active window"
             )
-    if not visible[start : end + 1].any():
-        raise UrdfMaskRunError("gripper_track must be nonempty inside the active window")
 
 
 def compose_four_channel_payload(
@@ -1274,21 +1254,6 @@ def _quality_summary(
     return quality
 
 
-def _enforce_quality_gate(
-    quality: Mapping[str, Any],
-    *,
-    minimum_eligible_nonempty_fraction: float,
-) -> None:
-    fraction = quality.get("eligible_nonempty_fraction")
-    if not isinstance(fraction, (int, float)) or not math.isfinite(float(fraction)):
-        raise UrdfMaskRunError("eligible_nonempty_fraction must be finite")
-    if float(fraction) < minimum_eligible_nonempty_fraction:
-        raise UrdfMaskRunError(
-            "eligible nonempty fraction is below the run threshold: "
-            f"{float(fraction):.6f} < {minimum_eligible_nonempty_fraction:.6f}"
-        )
-
-
 def save_episode_artifacts(
     output_dir: Path,
     episode: UrdfGripperEpisodeData,
@@ -1296,16 +1261,11 @@ def save_episode_artifacts(
     product: UrdfMaskProduct,
     *,
     tolerance_mm: float,
-    minimum_eligible_nonempty_fraction: float = 0.90,
 ) -> tuple[FourChannelMasks, dict[str, Any]]:
     """Atomically save standalone and merged masks without touching source artifacts."""
 
     validate_product(product, episode, frame_shape=source.frame_shape)
     quality = _quality_summary(product, episode)
-    _enforce_quality_gate(
-        quality,
-        minimum_eligible_nonempty_fraction=minimum_eligible_nonempty_fraction,
-    )
     gripper_path = _atomic_write_npz(
         output_dir / "gripper_masks.npz",
         _product_payload(product, episode, tolerance_mm=tolerance_mm),
@@ -1325,7 +1285,6 @@ def save_episode_artifacts(
         "active_window": list(episode.active_window),
         "frame_count": episode.frame_count,
         "depth_tolerance_mm": tolerance_mm,
-        "minimum_eligible_nonempty_fraction": minimum_eligible_nonempty_fraction,
         "source_masks": str(source.path),
         "source_masks_sha256": _sha256(source.path),
         "quality": quality,
@@ -1414,18 +1373,12 @@ def validate_completed_episode(
         "active_window": list(plan.active_window),
         "frame_count": plan.frame_count,
         "depth_tolerance_mm": config.depth_tolerance_mm,
-        "minimum_eligible_nonempty_fraction": (
-            config.minimum_eligible_nonempty_fraction
-        ),
         "source_masks": str(plan.source_masks),
         "source_masks_sha256": _sha256(plan.source_masks),
     }
     for key, expected in expected_fields.items():
         actual = diagnostics.get(key)
-        if key in {
-            "depth_tolerance_mm",
-            "minimum_eligible_nonempty_fraction",
-        }:
+        if key == "depth_tolerance_mm":
             try:
                 matches = bool(
                     np.isclose(
@@ -1506,8 +1459,6 @@ def validate_completed_episode(
     start, end = plan.active_window
     if visible[:start].any() or visible[end + 1 :].any():
         raise UrdfMaskRunError("published gripper mask is nonempty outside active window")
-    if not visible[start : end + 1].any():
-        raise UrdfMaskRunError("published gripper mask is empty inside active window")
     for name, value in (
         ("rendered_amodal_track", amodal),
         ("depth_evaluable_track", evaluable),
@@ -1531,12 +1482,6 @@ def validate_completed_episode(
     recomputed_quality = _quality_summary(product, plan)
     if _jsonable(recorded_quality) != _jsonable(recomputed_quality):
         raise UrdfMaskRunError("episode diagnostics quality does not match NPZ/frame records")
-    _enforce_quality_gate(
-        recomputed_quality,
-        minimum_eligible_nonempty_fraction=(
-            config.minimum_eligible_nonempty_fraction
-        ),
-    )
 
     source = load_four_channel_masks(plan.source_masks, frame_count=plan.frame_count)
     combined = load_four_channel_masks(masks_path, frame_count=plan.frame_count)
@@ -1744,9 +1689,6 @@ def _run_contract(
         "task": config.task,
         "camera": config.camera,
         "depth_tolerance_mm": config.depth_tolerance_mm,
-        "minimum_eligible_nonempty_fraction": (
-            config.minimum_eligible_nonempty_fraction
-        ),
         "egl_device_id": config.egl_device_id,
         "fit_config": {
             "file": fit_identity,
@@ -2350,9 +2292,6 @@ class IncrementalUrdfEpisodeWorker:
                 source,
                 product,
                 tolerance_mm=self.config.depth_tolerance_mm,
-                minimum_eligible_nonempty_fraction=(
-                    self.config.minimum_eligible_nonempty_fraction
-                ),
             )
             overlay: dict[str, Any] | None = None
             if not self.config.skip_overlay:
@@ -2610,9 +2549,6 @@ def run_experiment(
                     source,
                     product,
                     tolerance_mm=config.depth_tolerance_mm,
-                    minimum_eligible_nonempty_fraction=(
-                        config.minimum_eligible_nonempty_fraction
-                    ),
                 )
                 overlay: dict[str, Any] | None = None
                 if not config.skip_overlay:

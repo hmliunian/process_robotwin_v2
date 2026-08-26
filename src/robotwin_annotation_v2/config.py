@@ -6,10 +6,16 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import yaml
 
-from .domain import AnnotationMode, AnnotationSpec, annotation_spec
+from .domain import (
+    AnnotationMode,
+    AnnotationSpec,
+    TargetProfile,
+    annotation_spec,
+)
 
 _REMOVED_S4_MASK_FIELDS = frozenset(
     {
@@ -76,12 +82,35 @@ class QwenConfig:
     endpoint: str
     model: str
     prompt_template: Path
+    runtime: str = "local"
+    api_key_env: str | None = None
+    probe: str = "health"
+    temperature: float = 0.0
+    enable_thinking: bool = False
     timeout_seconds: float = 180.0
     max_tokens: int = 800
     query_selection: str = "first_recommended"
     allow_query_fallback: bool = False
 
     def __post_init__(self) -> None:
+        if self.runtime not in {"api", "local"}:
+            raise ConfigError("qwen.runtime must be api or local")
+        if not self.endpoint.strip() or not self.model.strip():
+            raise ConfigError("qwen.endpoint and qwen.model must be non-empty")
+        expected_probe = "models" if self.runtime == "api" else "health"
+        if self.probe != expected_probe:
+            raise ConfigError(f"qwen.runtime={self.runtime} requires qwen.probe={expected_probe}")
+        if self.runtime == "api":
+            if not self.api_key_env:
+                raise ConfigError("qwen.api_key_env is required for API runtime")
+            if urlsplit(self.endpoint).scheme != "https":
+                raise ConfigError("qwen.runtime=api requires an HTTPS endpoint")
+        elif self.api_key_env is not None:
+            raise ConfigError("qwen.api_key_env is only supported for API runtime")
+        if not math.isfinite(self.temperature) or self.temperature < 0:
+            raise ConfigError("qwen.temperature must be a finite non-negative number")
+        if not isinstance(self.enable_thinking, bool):
+            raise ConfigError("qwen.enable_thinking must be a boolean")
         if self.query_selection != "first_recommended":
             raise ConfigError("only query_selection=first_recommended is supported")
         if self.allow_query_fallback:
@@ -192,6 +221,14 @@ class AnnotationConfig:
     """Task-declared semantic mode and its resolved pipeline behavior."""
 
     mode: AnnotationMode
+    profile: TargetProfile = TargetProfile.GRASP_MANIPULATION
+
+    def __post_init__(self) -> None:
+        if (
+            self.profile is TargetProfile.CONTACT_PRESS
+            and self.mode is not AnnotationMode.TARGET_ONLY
+        ):
+            raise ConfigError("annotation.profile=contact_press requires target_only mode")
 
     @property
     def spec(self) -> AnnotationSpec:
@@ -243,13 +280,22 @@ def load_config(path: Path) -> PipelineConfig:
             "dataset, qwen, sam3, mask, gripper_roi, output and annotation must be mappings"
         )
 
+    raw_mode = annotation_raw.get("mode", AnnotationMode.PICK_PLACE.value)
+    raw_profile = annotation_raw.get(
+        "profile",
+        TargetProfile.GRASP_MANIPULATION.value,
+    )
     try:
-        annotation = AnnotationConfig(
-            AnnotationMode(annotation_raw.get("mode", AnnotationMode.PICK_PLACE.value))
-        )
-    except ValueError as exc:
+        annotation_mode = AnnotationMode(raw_mode)
+    except (TypeError, ValueError) as exc:
         choices = ", ".join(mode.value for mode in AnnotationMode)
         raise ConfigError(f"annotation.mode must be one of: {choices}") from exc
+    try:
+        target_profile = TargetProfile(raw_profile)
+    except (TypeError, ValueError) as exc:
+        choices = ", ".join(profile.value for profile in TargetProfile)
+        raise ConfigError(f"annotation.profile must be one of: {choices}") from exc
+    annotation = AnnotationConfig(annotation_mode, target_profile)
 
     prompt_roi_raw = _required(gripper_roi_raw, "prompt", section="gripper_roi")
     hard_roi_raw = _required(gripper_roi_raw, "hard", section="gripper_roi")
@@ -283,6 +329,13 @@ def load_config(path: Path) -> PipelineConfig:
         smoke_episode_ids=smoke,
         regression_episode_ids=regression,
     )
+    qwen_runtime = str(qwen_raw.get("runtime", "local"))
+    api_key_env_raw = qwen_raw.get("api_key_env")
+    if api_key_env_raw is not None and not isinstance(api_key_env_raw, str):
+        raise ConfigError("qwen.api_key_env must be a string or null")
+    enable_thinking = qwen_raw.get("enable_thinking", False)
+    if not isinstance(enable_thinking, bool):
+        raise ConfigError("qwen.enable_thinking must be a boolean")
     qwen = QwenConfig(
         endpoint=str(_required(qwen_raw, "endpoint", section="qwen")),
         model=str(_required(qwen_raw, "model", section="qwen")),
@@ -291,6 +344,11 @@ def load_config(path: Path) -> PipelineConfig:
             base_dir=base_dir,
             field="qwen.prompt_template",
         ),
+        runtime=qwen_runtime,
+        api_key_env=api_key_env_raw,
+        probe=str(qwen_raw.get("probe", "models" if qwen_runtime == "api" else "health")),
+        temperature=float(qwen_raw.get("temperature", 0.0)),
+        enable_thinking=enable_thinking,
         timeout_seconds=float(qwen_raw.get("timeout_seconds", 180.0)),
         max_tokens=int(qwen_raw.get("max_tokens", 800)),
         query_selection=str(qwen_raw.get("query_selection", "first_recommended")),

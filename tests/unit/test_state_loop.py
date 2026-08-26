@@ -42,11 +42,31 @@ def test_detect_target_only_close_and_hold_events() -> None:
     assert events == TargetOnlyEvents("left", 3, 5, 9)
 
 
-def test_target_only_rejects_pick_place_reopen() -> None:
-    gripper = np.array([1.0] * 5 + [0.7, 0.4, 0.1, 0.1, 0.1] + [0.4, 0.95, 0.95, 0.95])
+def test_target_only_records_first_reopen_and_ignores_later_close() -> None:
+    gripper = np.array(
+        [1.0] * 5 + [0.7, 0.4, 0.1, 0.1, 0.1] + [0.4, 0.95, 0.95, 0.95] + [0.6, 0.1, 0.1, 0.1]
+    )
     eef = np.zeros((len(gripper), 6), dtype=np.float64)
 
-    with np.testing.assert_raises_regex(RuntimeError, "unexpectedly reopens"):
+    events = detect_target_only_events(gripper, eef, arm="right")
+
+    assert events == TargetOnlyEvents("right", 5, 5, 9, 10)
+
+
+def test_target_only_ignores_closed_state_jitter_before_reopen() -> None:
+    gripper = np.array([1.0] * 3 + [0.0] * 3 + [0.1, 0.1, 0.5] + [1.0] * 3)
+    eef = np.zeros((len(gripper), 6), dtype=np.float64)
+
+    events = detect_target_only_events(gripper, eef, arm="right")
+
+    assert events == TargetOnlyEvents("right", 3, 3, 5, 8)
+
+
+def test_target_only_still_rejects_without_stable_close() -> None:
+    gripper = np.array([1.0] * 5 + [0.7, 0.4] + [0.2] * 4)
+    eef = np.zeros((len(gripper), 6), dtype=np.float64)
+
+    with np.testing.assert_raises_regex(RuntimeError, "no stable closed transition"):
         detect_target_only_events(gripper, eef, arm="right")
 
 
@@ -67,6 +87,22 @@ def test_episode_target_only_selects_the_only_close_and_hold_arm() -> None:
     events = detect_episode_target_only(state)
 
     assert events.active_arm == "left"
+
+
+def test_episode_target_only_rejects_two_stable_close_arms() -> None:
+    closed = np.array([1.0] * 5 + [0.7, 0.4, 0.1, 0.1, 0.1] + [0.1] * 6)
+    frame_count = len(closed)
+    reopened = np.array([1.0] * 5 + [0.7, 0.4, 0.1, 0.1, 0.1] + [0.4, 0.95, 0.95, 0.95, 0.95, 0.95])
+    state = EpisodeState(
+        frame_count=frame_count,
+        task_text="lift the bottle",
+        gripper_states=np.stack((closed, reopened), axis=1),
+        eef_states=np.zeros((frame_count, 2, 6), dtype=np.float64),
+        paths=EpisodePaths(Path("state.parquet"), Path("video.mp4"), Path("sidecar.hdf5")),
+    )
+
+    with np.testing.assert_raises_regex(RuntimeError, "got 2"):
+        detect_episode_target_only(state)
 
 
 def test_semantic_frames_are_sparse_and_purpose_labelled() -> None:
@@ -96,6 +132,23 @@ def test_target_only_semantic_frames_never_request_receiver_context() -> None:
     assert all(frame.eligible_roles == ("target",) for frame in frames)
     assert all(frame.purpose is not FramePurpose.PLACE_CONTEXT for frame in frames)
     assert all(0 <= frame.frame_id < 139 for frame in frames)
+
+
+def test_target_only_semantic_context_stops_before_reopen() -> None:
+    events = TargetOnlyEvents("left", 4, 53, 65, 100)
+
+    frames = sample_semantic_frames(
+        events,
+        frame_count=139,
+        annotation_mode=AnnotationMode.TARGET_ONLY,
+    )
+
+    assert [frame.frame_id for frame in frames] == [0, 16, 33, 49, 66, 82]
+    assert events.t_reopen_start is not None
+    assert (
+        max(frame.frame_id for frame in frames if frame.purpose is FramePurpose.POST_GRASP_CONTEXT)
+        < events.t_reopen_start
+    )
 
 
 def test_target_only_semantic_frames_deduplicate_a_short_episode() -> None:

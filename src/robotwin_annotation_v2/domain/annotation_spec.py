@@ -19,6 +19,46 @@ class AnnotationMode(StrEnum):
     TARGET_ONLY = "target_only"
 
 
+class TargetProfile(StrEnum):
+    """Target identity semantics selected independently of the timeline mode."""
+
+    GRASP_MANIPULATION = "grasp_manipulation"
+    CONTACT_PRESS = "contact_press"
+
+
+class TargetOnlyTaskKind(StrEnum):
+    """Manifest vocabulary used to choose target-only semantic behavior."""
+
+    SINGLE_MOVABLE_TARGET = "single_movable_target"
+    SINGLE_MOVABLE_TARGET_CONDITIONAL = "single_movable_target_conditional"
+    CONTACT_ACTION_SITE = "contact_action_site"
+    ARTICULATED_ACTION_SITE = "articulated_action_site"
+
+
+def target_profile_for_task_kind(
+    task_kind: TargetOnlyTaskKind | str | None,
+) -> TargetProfile:
+    """Map manifest ``task_kind`` to semantic profile without task-name inference.
+
+    Older target-only extracts do not declare ``task_kind``.  They retain the
+    original grasp-manipulation behavior, while unknown declared values fail
+    closed instead of silently selecting the wrong prompt profile.
+    """
+
+    if task_kind is None:
+        return TargetProfile.GRASP_MANIPULATION
+    try:
+        resolved = TargetOnlyTaskKind(task_kind)
+    except (TypeError, ValueError) as exc:
+        choices = ", ".join(item.value for item in TargetOnlyTaskKind)
+        raise ValueError(
+            f"unsupported target-only task_kind {task_kind!r}; choose {choices}"
+        ) from exc
+    if resolved is TargetOnlyTaskKind.CONTACT_ACTION_SITE:
+        return TargetProfile.CONTACT_PRESS
+    return TargetProfile.GRASP_MANIPULATION
+
+
 class ObjectRole(StrEnum):
     """Semantic object channels produced by Qwen and SAM."""
 
@@ -70,6 +110,7 @@ class AnnotationSpec:
         """Return whether ``role`` participates in semantic/QC/SAM stages."""
 
         return ObjectRole(role) in self.required_object_roles
+
 
 ANNOTATION_SPECS: dict[AnnotationMode, AnnotationSpec] = {
     AnnotationMode.PICK_PLACE: AnnotationSpec(

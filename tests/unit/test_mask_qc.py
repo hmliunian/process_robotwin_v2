@@ -1147,7 +1147,7 @@ def test_target_only_qc_prompt_contains_only_target_rules() -> None:
     assert "remove_start: 2" in prompt_text
     assert "close_start: 6" in prompt_text
     assert "close_end: 8" in prompt_text
-    assert "episode_end: 19" in prompt_text
+    assert "hold_end: 19" in prompt_text
     assert "open_start" not in prompt_text
     assert "open_done" not in prompt_text
 
@@ -1184,7 +1184,7 @@ def test_target_only_open_set_qc_prompt_uses_target_only_timeline() -> None:
     assert "remove_start: 2" in prompt_text
     assert "close_start: 6" in prompt_text
     assert "close_end: 8" in prompt_text
-    assert "episode_end: 19" in prompt_text
+    assert "hold_end: 19" in prompt_text
     assert "open_start" not in prompt_text
     assert "open_done" not in prompt_text
 

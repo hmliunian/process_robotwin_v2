@@ -27,7 +27,6 @@ from robotwin_annotation_v2.urdf_gripper_publisher import (
 from .discovery import DiscoveryResult
 
 DEFAULT_URDF_DEPTH_TOLERANCE_MM = 8.0
-DEFAULT_URDF_MINIMUM_ELIGIBLE_NONEMPTY_FRACTION = 0.90
 DEFAULT_URDF_PIPELINE_BUFFER_SIZE = 2
 
 
@@ -112,9 +111,6 @@ class UrdfWorkflow:
         dry_run: bool = False,
         resume: bool = False,
         depth_tolerance_mm: float = DEFAULT_URDF_DEPTH_TOLERANCE_MM,
-        minimum_eligible_nonempty_fraction: float = (
-            DEFAULT_URDF_MINIMUM_ELIGIBLE_NONEMPTY_FRACTION
-        ),
         fit_config_json: Path | None = None,
         allow_partial_source: bool = False,
         source_mode: str = "frozen_run",
@@ -229,22 +225,13 @@ class UrdfWorkflow:
                 "source_selection",
                 detail=(f"selected={len(selection.episode_ids)} excluded={len(all_excluded)}"),
             )
-        if all_excluded and not allow_partial_source:
-            examples = ", ".join(
-                f"{record['episode']} ({record['reason']})" for record in all_excluded[:10]
-            )
-            suffix = "" if len(all_excluded) <= 10 else ", ..."
-            raise ValueError(
-                f"dataset/source contracts exclude {len(all_excluded)} episodes: "
-                f"{examples}{suffix}; pass --allow-partial-source to process only the "
-                "fully eligible subset"
-            )
+        # Automatic discovery is episode-granular: an excluded source or dataset
+        # episode is recorded below while every eligible episode continues through
+        # the URDF workflow.  ``allow_partial_source`` remains in the API for CLI
+        # compatibility; explicit episode selections are still checked strictly by
+        # ``select_urdf_source_episodes``.
         if not math.isfinite(depth_tolerance_mm) or depth_tolerance_mm < 0:
             raise ValueError("URDF depth tolerance must be finite and non-negative")
-        if not math.isfinite(minimum_eligible_nonempty_fraction) or not (
-            0.0 <= minimum_eligible_nonempty_fraction <= 1.0
-        ):
-            raise ValueError("URDF minimum eligible nonempty fraction must be finite and in [0, 1]")
         selected_run_id = self.hooks.validate_run_id(run_id or runtime.new_run_id())
         resolved_output_root = output_root.expanduser().resolve()
         canonical_run_dir = resolved_output_root / selected_run_id
@@ -272,7 +259,6 @@ class UrdfWorkflow:
             task=task,
             camera=camera,
             depth_tolerance_mm=depth_tolerance_mm,
-            minimum_eligible_nonempty_fraction=minimum_eligible_nonempty_fraction,
             fit_config_json=(
                 None if fit_config_json is None else fit_config_json.expanduser().resolve()
             ),
@@ -416,15 +402,10 @@ class UrdfWorkflow:
                     backend_error = str(
                         backend_record.get("error", "URDF backend episode is incomplete")
                     )
-                    episode_status = (
-                        "gripper_incomplete"
-                        if "eligible nonempty fraction" in backend_error
-                        else "failed"
-                    )
                     records.append(
                         {
                             "episode": episode_id,
-                            "status": episode_status,
+                            "status": "failed",
                             "gripper_backend": "urdf",
                             "error": backend_error,
                             "backend_status": backend_record.get("status"),
@@ -433,10 +414,10 @@ class UrdfWorkflow:
                     if reporter is not None:
                         reporter.episode_finished(
                             episode_id,
-                            status=episode_status,
+                            status="failed",
                             detail=backend_error,
                         )
-                    publish_progress(position, episode_id, episode_status, backend_error)
+                    publish_progress(position, episode_id, "failed", backend_error)
                     continue
                 frozen_lineage = selection.source_lineages[episode_id]
                 if backend_record.get("source_lineage") != frozen_lineage:
@@ -548,7 +529,8 @@ class UrdfWorkflow:
                 reporter.lane_finished("publish")
 
             if not skip_render and renderable_ids:
-                pre_render_failures: list[dict[str, Any]] = []
+                validation_failures: list[dict[str, Any]] = []
+                validated_ids: list[int] = []
                 canonical_validator = (
                     runtime.validate_episode if episode_validator is None else episode_validator
                 )
@@ -575,7 +557,7 @@ class UrdfWorkflow:
                                 "source lineage differs from the published episode"
                             )
                     except (FileNotFoundError, UrdfGripperPublishError) as exc:
-                        pre_render_failures.append(
+                        validation_failures.append(
                             {
                                 "episode": episode_id,
                                 "status": "source_lineage_changed",
@@ -612,8 +594,8 @@ class UrdfWorkflow:
                             task=task,
                             camera=camera,
                         )
-                    except Exception as exc:  # noqa: BLE001 - validation is fail-closed
-                        pre_render_failures.append(
+                    except Exception as exc:  # noqa: BLE001 - isolate validation per episode
+                        validation_failures.append(
                             {
                                 "episode": episode_id,
                                 "status": "canonical_validation_failed",
@@ -662,47 +644,42 @@ class UrdfWorkflow:
                             episode_id,
                             status=published_episode_statuses[episode_id],
                         )
+                    validated_ids.append(episode_id)
                 if report_pipeline_lanes and reporter is not None:
                     reporter.lane_progress(
                         "validation",
                         lane_total,
                         lane_total,
-                        status="failed" if pre_render_failures else "completed",
+                        status="failed" if validation_failures else "completed",
                     )
                     reporter.lane_finished(
                         "validation",
-                        status="failed" if pre_render_failures else "completed",
+                        status="failed" if validation_failures else "completed",
                         detail=(
-                            f"failures={len(pre_render_failures)}" if pre_render_failures else None
+                            f"failures={len(validation_failures)}"
+                            if validation_failures
+                            else None
                         ),
                     )
-                if pre_render_failures:
-                    records.extend(pre_render_failures)
+                if validation_failures:
+                    records.extend(validation_failures)
                     if reporter is not None:
                         reporter.phase_finished(
                             "canonical_validation",
                             status="failed",
-                            detail=f"failures={len(pre_render_failures)}; render blocked",
+                            detail=(
+                                f"failures={len(validation_failures)}; "
+                                f"continuing with {len(validated_ids)} validated episodes"
+                            ),
                         )
-                        if report_pipeline_lanes:
-                            reporter.lane_progress(
-                                "render",
-                                lane_total,
-                                lane_total,
-                                status="skipped",
-                                detail="blocked by canonical validation failures",
-                            )
-                            reporter.lane_finished(
-                                "render",
-                                status="skipped",
-                                detail="blocked by canonical validation failures",
-                            )
                 else:
                     if reporter is not None:
                         reporter.phase_finished("canonical_validation")
+                if validated_ids:
+                    if reporter is not None:
                         reporter.phase_started(
                             "canonical_render",
-                            total=len(renderable_ids),
+                            total=len(validated_ids),
                         )
                     try:
                         if pipeline_config is None:
@@ -721,7 +698,7 @@ class UrdfWorkflow:
                             render_report = self.hooks.render_processed(
                                 dynamic,
                                 run_id=selected_run_id,
-                                episode_ids=tuple(renderable_ids),
+                                episode_ids=tuple(validated_ids),
                                 output_dir=canonical_run_dir,
                                 reporter=reporter,
                             )
@@ -729,7 +706,7 @@ class UrdfWorkflow:
                             render_report = render_builder(
                                 dynamic,
                                 run_id=selected_run_id,
-                                episode_ids=tuple(renderable_ids),
+                                episode_ids=tuple(validated_ids),
                                 output_dir=canonical_run_dir,
                             )
                         if reporter is not None:
@@ -766,6 +743,19 @@ class UrdfWorkflow:
                                     detail=error,
                                 )
                                 reporter.lane_finished("render", status="failed", detail=error)
+                elif reporter is not None and report_pipeline_lanes:
+                    reporter.lane_progress(
+                        "render",
+                        lane_total,
+                        lane_total,
+                        status="skipped",
+                        detail="no episodes passed canonical validation",
+                    )
+                    reporter.lane_finished(
+                        "render",
+                        status="skipped",
+                        detail="no episodes passed canonical validation",
+                    )
             elif reporter is not None:
                 reason = "disabled by --skip-render" if skip_render else "no publishable episodes"
                 reporter.note(f"canonical_render skipped: {reason}", level="warning")
@@ -866,9 +856,6 @@ class UrdfWorkflow:
         episode_ids: tuple[int, ...] | None = None,
         skip_render: bool = False,
         depth_tolerance_mm: float = DEFAULT_URDF_DEPTH_TOLERANCE_MM,
-        minimum_eligible_nonempty_fraction: float = (
-            DEFAULT_URDF_MINIMUM_ELIGIBLE_NONEMPTY_FRACTION
-        ),
         fit_config_json: Path | None = None,
         allow_partial_source: bool = False,
         urdf_pipeline: bool = True,
@@ -886,10 +873,6 @@ class UrdfWorkflow:
             raise FileNotFoundError(f"URDF asset is missing: {resolved_urdf_path}")
         if not math.isfinite(depth_tolerance_mm) or depth_tolerance_mm < 0:
             raise ValueError("URDF depth tolerance must be finite and non-negative")
-        if not math.isfinite(minimum_eligible_nonempty_fraction) or not (
-            0.0 <= minimum_eligible_nonempty_fraction <= 1.0
-        ):
-            raise ValueError("URDF minimum eligible nonempty fraction must be finite and in [0, 1]")
 
         selected_run_id = self.hooks.validate_run_id(run_id or ArtifactStore.new_run_id())
         canonical_run_dir = resolved_output_root / selected_run_id
@@ -928,17 +911,6 @@ class UrdfWorkflow:
                 )
             source_episode_ids = requested_ids
         else:
-            if depth_discovery.skipped and not allow_partial_source:
-                examples = ", ".join(
-                    f"{record['episode']} ({','.join(record['missing'])})"
-                    for record in depth_discovery.skipped[:10]
-                )
-                suffix = "" if len(depth_discovery.skipped) <= 10 else ", ..."
-                raise ValueError(
-                    "dataset contract excludes episodes before the live source stage: "
-                    f"{examples}{suffix}; pass --allow-partial-source to process only "
-                    "the depth-eligible subset"
-                )
             source_episode_ids = depth_eligible_ids
 
         if reporter is not None:
@@ -999,7 +971,6 @@ class UrdfWorkflow:
                 task=task,
                 camera=camera,
                 depth_tolerance_mm=depth_tolerance_mm,
-                minimum_eligible_nonempty_fraction=(minimum_eligible_nonempty_fraction),
                 fit_config_json=(
                     None if fit_config_json is None else fit_config_json.expanduser().resolve()
                 ),
@@ -1087,13 +1058,29 @@ class UrdfWorkflow:
                 "sam_backend_release",
                 detail=gpu_details or "no CUDA cache was present",
             )
-        if not bool(source_summary.get("passed")) and (
-            requested_ids is not None or not allow_partial_source
-        ):
-            raise RuntimeError(
-                "live object-source stage did not pass; its frozen diagnostics "
-                f"are at {source_run_dir}"
+        if not bool(source_summary.get("passed")):
+            if requested_ids is not None:
+                raise RuntimeError(
+                    "live object-source stage did not pass for an explicitly requested "
+                    f"episode set; its frozen diagnostics are at {source_run_dir}"
+                )
+            source_records = source_summary.get("records")
+            has_completed_episode = isinstance(source_records, Sequence) and any(
+                isinstance(record, Mapping)
+                and record.get("status") in {"completed", "skipped_complete", "complete"}
+                for record in source_records
             )
+            if not has_completed_episode:
+                raise RuntimeError(
+                    "live object-source stage produced no completed episodes; its frozen "
+                    f"diagnostics are at {source_run_dir}"
+                )
+            if reporter is not None:
+                reporter.note(
+                    "live object-source stage had episode failures; continuing with "
+                    "completed episodes",
+                    level="warning",
+                )
 
         return self.hooks.process_frozen_source(
             pipeline_config=pipeline_config,
@@ -1110,7 +1097,6 @@ class UrdfWorkflow:
             dry_run=False,
             resume=False,
             depth_tolerance_mm=depth_tolerance_mm,
-            minimum_eligible_nonempty_fraction=(minimum_eligible_nonempty_fraction),
             fit_config_json=fit_config_json,
             allow_partial_source=allow_partial_source,
             source_mode="live_object_source_stage",
@@ -1126,7 +1112,6 @@ class UrdfWorkflow:
 
 __all__ = [
     "DEFAULT_URDF_DEPTH_TOLERANCE_MM",
-    "DEFAULT_URDF_MINIMUM_ELIGIBLE_NONEMPTY_FRACTION",
     "DEFAULT_URDF_PIPELINE_BUFFER_SIZE",
     "UrdfRunConfig",
     "UrdfSourceSelection",

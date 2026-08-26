@@ -85,6 +85,11 @@ episode 默认跳过，CUDA 级故障会立即终止 worker。`run` 会按 qwen 
 选择至少有 60,000 MiB 空闲显存的最空闲 GPU 启动服务。由本次命令启动的 Qwen 会在
 process 成功、失败或被中断后自动关闭，加载日志保存在 `artifacts/qwen-services/`。
 
+默认 API 配置优先读取环境变量 `QWEN_API_KEY`；未设置时，`just process` 会读取被 Git
+忽略的 `secrets/qwen_api_key.txt`。可复制 `secrets/qwen_api_key.txt.example` 后填入单行
+key，并设置权限 `chmod 600 secrets/qwen_api_key.txt`。也可通过 `QWEN_API_KEY_FILE` 指定
+其他本地文件；凭据不会写入 YAML、命令行或运行产物。
+
 交互终端默认显示 episode 总进度、当前阶段、跳过/失败状态、耗时和最终 artifact；stderr
 不是交互终端时改为稳定的逐行日志，stdout 被重定向时仍会写出最终 JSON。可显式选择输出方式：
 

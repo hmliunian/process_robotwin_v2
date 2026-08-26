@@ -12,6 +12,8 @@ import av
 import numpy as np
 import pandas as pd
 
+from robotwin_annotation_v2.domain import TargetOnlyTaskKind
+
 CHUNK_PATTERN = re.compile(r"chunk-(\d{3})$")
 EPISODE_FILE_PATTERN = re.compile(r"episode_(\d+)\.parquet$")
 
@@ -165,6 +167,7 @@ def build_dynamic_manifest(
     camera: str,
     episodes: Sequence[DiscoveredEpisode],
     measure_episode_fn: Callable[[DiscoveredEpisode], EpisodeMeasurement] | None = None,
+    task_kind: TargetOnlyTaskKind | str | None = None,
 ) -> dict[str, Any]:
     """Build the manifest contract expected by RoboTwinDataset in memory."""
 
@@ -174,7 +177,7 @@ def build_dynamic_manifest(
     frame_count, shape, surplus = measure_episode(episodes[0])
     if frame_count < 1:
         raise ValueError("first discovered episode has no usable frames")
-    return {
+    manifest: dict[str, Any] = {
         "format_version": "robotwin_dataset_manifest_dynamic_v1",
         "task": task,
         "camera": camera,
@@ -190,6 +193,15 @@ def build_dynamic_manifest(
             "sidecars/episode_{episode_id}.hdf5",
         ],
     }
+    if task_kind is not None:
+        try:
+            manifest["task_kind"] = TargetOnlyTaskKind(task_kind).value
+        except (TypeError, ValueError) as exc:
+            choices = ", ".join(item.value for item in TargetOnlyTaskKind)
+            raise ValueError(
+                f"unsupported dynamic-manifest task_kind {task_kind!r}; choose {choices}"
+            ) from exc
+    return manifest
 
 
 __all__ = [

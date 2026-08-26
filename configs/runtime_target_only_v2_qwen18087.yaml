@@ -4,13 +4,13 @@ annotation:
   mode: target_only
 
 dataset:
-  root: /DATA/disk8/xuran/add_mask_robotwin/dataset/target_only_20_v2/beat_block_hammer
+  root: /DATA/disk8/xuran/add_mask_robotwin/dataset/target_only_20_v2/adjust_bottle
   manifest: datasets/target_only_20_v2_selection.json
-  task: beat_block_hammer
+  task: adjust_bottle
   camera: cam_high
-  smoke_episode_ids: [550]
-  regression_episode_ids: [550, 551, 562, 565, 574, 577, 584, 585, 598, 599,
-                           600, 605, 713, 756, 844, 863, 970, 973, 1096, 1098]
+  smoke_episode_ids: [0]
+  regression_episode_ids: [0, 6, 10, 18, 21, 30, 34, 42, 48, 49,
+                           50, 51, 171, 176, 287, 313, 415, 431, 547, 549]
 
 qwen:
   endpoint: http://127.0.0.1:18087/v1/chat/completions

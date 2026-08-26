@@ -1,9 +1,8 @@
 """Typed timeline events and derived output windows.
 
 Pick/place and target-only episodes share one grasp prefix, but they do not
-share the same complete state machine.  In particular, a target-only
-close-and-hold episode has no release event.  Keeping two explicit event
-types prevents downstream code from inventing fake ``open`` boundaries.
+share the same complete state machine.  Target-only validity ends with the
+first stable close; a later reopen only ends the held-target encoding.
 """
 
 from __future__ import annotations
@@ -127,7 +126,7 @@ LoopEvents = PickPlaceEvents
 
 @dataclass(frozen=True)
 class TargetOnlyEvents:
-    """Three boundaries for an approach, close, and hold operation.
+    """Boundaries for the first approach, close, and hold operation.
 
     ``t_remove_start`` means the start of the robot's removal operation (the
     first stable active-arm motion), not the later instant at which the object
@@ -138,6 +137,7 @@ class TargetOnlyEvents:
     t_remove_start: int
     t_close_start: int
     t_close_end: int
+    t_reopen_start: int | None = None
 
     def __post_init__(self) -> None:
         if self.active_arm not in {"left", "right"}:
@@ -147,6 +147,11 @@ class TargetOnlyEvents:
             raise ValueError("target-only event frames must be non-negative")
         if not self.t_remove_start <= self.t_close_start < self.t_close_end:
             raise ValueError(f"target-only events are not ordered: {values}")
+        if self.t_reopen_start is not None and self.t_reopen_start <= self.t_close_end:
+            raise ValueError(
+                "target-only reopen must follow close completion: "
+                f"{self.t_reopen_start} <= {self.t_close_end}"
+            )
 
     @property
     def target_window(self) -> FrameWindow:
@@ -155,19 +160,23 @@ class TargetOnlyEvents:
         return FrameWindow(self.t_remove_start, self.t_close_end)
 
     def target_hold_window(self, frame_count: int) -> FrameWindow | None:
-        if frame_count <= self.t_close_end:
-            raise ValueError("target-only close event extends beyond the episode")
-        if self.t_close_end + 1 >= frame_count:
-            return None
-        return FrameWindow(self.t_close_end + 1, frame_count - 1)
+        self.operation_window(frame_count)
+        start = self.t_close_end + 1
+        end = frame_count - 1 if self.t_reopen_start is None else self.t_reopen_start - 1
+        return None if end < start else FrameWindow(start, end)
 
     def operation_window(self, frame_count: int) -> FrameWindow:
         if frame_count <= self.t_close_end:
             raise ValueError("target-only close event extends beyond the episode")
+        if self.t_reopen_start is not None and self.t_reopen_start >= frame_count:
+            raise ValueError("target-only reopen event extends beyond the episode")
         return FrameWindow(self.t_remove_start, frame_count - 1)
 
     def to_json(self) -> dict[str, object]:
-        return asdict(self)
+        payload = asdict(self)
+        if self.t_reopen_start is None:
+            payload.pop("t_reopen_start")
+        return payload
 
 
 type TimelineEvents = PickPlaceEvents | TargetOnlyEvents

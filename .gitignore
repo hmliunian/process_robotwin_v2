@@ -52,6 +52,10 @@ dmypy.json
 artifacts/
 run/
 
+# Local credentials and verification notes (never commit secrets)
+secrets/*.txt
+docs/qwen_3_8_maas_api.md
+
 # OS
 .DS_Store
 Thumbs.db

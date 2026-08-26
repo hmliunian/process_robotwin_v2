@@ -134,8 +134,10 @@ gripper   = [move_start, open_done]
 Target-only：
 
 - 不得伪造 release/open 事件；
+- 首次稳定 close 是准入条件，后续 reopen 不影响合法性；
 - target 普通段 `[remove_start, close_end]`；
-- target hold 段 `[close_end + 1, T - 1]`；
+- target hold 段无 reopen 时为 `[close_end + 1, T - 1]`，否则结束于
+  `reopen_start - 1`；reopen 后恢复普通可见编码；
 - receiver 为 not applicable，而不是 failed 或 not annotated。
 
 模式必须与事件类型匹配；semantic frame ID 必须唯一并保留 purpose、seed eligibility 和
@@ -172,8 +174,9 @@ eligible roles。
 - 当前 `configs/pilot_move_pillbottle_pad.yaml` 和
   `configs/pilot_adjust_bottle_target_only.yaml` 都显式启用完整 S1–S3；
 - 声明了匹配 `profile` 的 `EXTRACT_MANIFEST.json` 可用
-  `--data-path --pick-place/--target-only` 加载对应 profile；缺少 `profile` 的旧 extract 会 fail
-  closed，须改用 positional dataset root 与显式 `--config`；
+  `--data-path --pick-place/--target-only` 加载；调用方仍须传入 mode-compatible `--config`，
+  target-only 再按 manifest `task_kind` 选择 8+3 runtime profile。缺少 `profile` 的旧 extract
+  会 fail closed，须改用 positional dataset root 与显式 `--config`；
 - 其他 baseline/实验 profile 仍可显式关闭某一层；不能把“字段安全默认关闭”写成“所有默认入口
   都关闭”；
 - `qwen.allow_query_fallback` 必须继续为 false；open-set query 扩展由
@@ -400,11 +403,11 @@ Renderer 只读 canonical masks，不修复 mask；对象覆盖 gripper；held t
 | 事项 | 重构前文档描述 | 当前实现/测试 | 已确认合同 |
 | --- | --- | --- | --- |
 | 默认 gripper backend | `docs/README.md` 曾称 SAM | CLI 与 `AnnotationSpec` 默认 URDF | 默认 URDF；SAM 必须显式请求 |
-| 新 `loop.json` 版本 | `architecture.md` 称 v1 | `LoopContext.to_json()` 写 v3 | 新写 v3，旧读兼容 |
+| 新 `loop.json` 版本 | `architecture.md` 称 v1 | `LoopContext.to_json()` 写 v4 | 新写 v4，读取兼容 v1–v4 |
 | lineage 描述 | 文档主要描述 v1 | 无 source contract 时使用 lineage v1；带 contract/receipt 时使用 lineage v2 | validator 统一验证 v1/v2；frozen-source 可消费任一版；contract writer 写 v2、reader 兼容 v1/v2；receipt 仅适用于 lineage v2 |
 
-`docs/README.md` 与 `docs/architecture.md` 已按右列修正。若以后改变默认 backend 或 schema，
-必须单独形成行为变更任务、迁移说明和测试；不得把它称为兼容层清理。
+`docs/README.md` 与 `docs/architecture.md` 已按右列修正。v4 是后续 target-only 首次闭合判定的
+schema 变更，不属于原结构重构。
 
 ## 5. 重构前热点与迁移目标（历史）
 
@@ -1040,8 +1043,8 @@ production pipeline。具体包括 `prepare_target_only_dataset.py`、
 | canonical NPZ publication | `adapters/canonical_publication.py::CanonicalMaskPublisher` | `write_canonical_masks()` 是旧函数入口，SAM/URDF 已直接使用 publisher |
 | URDF 整树 publication | `UrdfCanonicalEpisodePublisher` | 旧 publish/validate 函数委托该 owner |
 | source lineage | `SourceLineageValidator` | 无 source contract 为 lineage v1，带 contract/receipt 为 lineage v2；frozen-source 可消费任一版本；当前 contract writer 写 v2、reader 兼容 v1/v2，旧 validate 函数均委托该 owner |
-| timeline detector/type | `pipeline/timeline_detector.py` + `PickPlaceEvents` / `TargetOnlyEvents` | v1/v2/v3 JSON 由 codec 读取；旧 Python 类型名只是 alias |
-| loop JSON codec | `adapters/loop_context_codec.py` | 新写 v3；v1/v2/v3 只读兼容 |
+| timeline detector/type | `pipeline/timeline_detector.py` + `PickPlaceEvents` / `TargetOnlyEvents` | v1–v4 JSON 由 codec 读取；旧 Python 类型名只是 alias |
+| loop JSON codec | `adapters/loop_context_codec.py` | 新写 v4；v1–v4 只读兼容 |
 | public renderer | `adapters/rendering.py` 的 public API | 私有名称 wrapper 仅服务旧 import/test |
 | URDF geometry/FK renderer | `urdf_gripper_renderer.py::AlohaUrdfRenderer` | `application/urdf_batch.py` 在执行边界懒加载；finger search 由 `adapters/urdf/finger_fit.py` 持有，未来目录移动不得复制实现 |
 

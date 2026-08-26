@@ -204,8 +204,8 @@ def load_authoritative_loop_context(
     """Load one frozen timeline and normalize its downstream windows.
 
     Legacy v1/v2 artifacts retain their historic short target window.  V3
-    extends target publication through the post-close hold interval while
-    preserving the same concrete event state machines.
+    extends target publication through the episode; V4 records an optional
+    reopen boundary that only ends the held-target encoding.
     """
 
     source = path.expanduser().resolve()
@@ -224,6 +224,7 @@ def load_authoritative_loop_context(
         "robotwin_loop_context_v1",
         "robotwin_loop_context_v2",
         "robotwin_loop_context_v3",
+        "robotwin_loop_context_v4",
     }:
         raise LoopContextCodecError(
             f"unsupported source loop format: {format_version!r}"
@@ -266,6 +267,7 @@ def load_authoritative_loop_context(
     if format_version in {
         "robotwin_loop_context_v2",
         "robotwin_loop_context_v3",
+        "robotwin_loop_context_v4",
     } and raw_roles is None:
         raise LoopContextCodecError(
             f"source loop {format_version} must declare required_object_roles"
@@ -354,6 +356,7 @@ def load_authoritative_loop_context(
                 f"{raw_timeline_kind!r} != {expected_kind!r}"
             )
         timeline_kind = expected_kind
+        valid_event_keys: tuple[set[str], ...]
         if annotation_mode is AnnotationMode.PICK_PLACE:
             event_keys = {
                 "active_arm",
@@ -363,6 +366,7 @@ def load_authoritative_loop_context(
                 "t_open_start",
                 "t_open_done",
             }
+            valid_event_keys = (event_keys,)
             event_values = {
                 key: _required_integer(
                     event_payload,
@@ -382,7 +386,8 @@ def load_authoritative_loop_context(
                 ) from exc
             normalized_windows = _pick_place_windows(
                 events,
-                include_held_target=format_version == "robotwin_loop_context_v3",
+                include_held_target=format_version
+                in {"robotwin_loop_context_v3", "robotwin_loop_context_v4"},
             )
         else:
             event_keys = {
@@ -391,6 +396,11 @@ def load_authoritative_loop_context(
                 "t_close_start",
                 "t_close_end",
             }
+            valid_event_keys = (
+                (event_keys, event_keys | {"t_reopen_start"})
+                if format_version == "robotwin_loop_context_v4"
+                else (event_keys,)
+            )
             event_values = {
                 key: _required_integer(
                     event_payload,
@@ -399,9 +409,17 @@ def load_authoritative_loop_context(
                 )
                 for key in event_keys - {"active_arm"}
             }
+            reopen_start = event_payload.get("t_reopen_start")
+            if reopen_start is not None and (
+                isinstance(reopen_start, bool) or not isinstance(reopen_start, int)
+            ):
+                raise LoopContextCodecError(
+                    "source loop events t_reopen_start must be an integer or null"
+                )
             try:
                 events = TargetOnlyEvents(
                     active_arm=cast(ArmName, active_arm),
+                    t_reopen_start=reopen_start,
                     **event_values,
                 )
             except ValueError as exc:
@@ -412,15 +430,20 @@ def load_authoritative_loop_context(
                 raise LoopContextCodecError(
                     "target_only close_end exceeds the episode frame range"
                 )
+            if events.t_reopen_start is not None and events.t_reopen_start >= frame_count:
+                raise LoopContextCodecError(
+                    "target_only reopen_start exceeds the episode frame range"
+                )
             normalized_windows = _target_only_windows(
                 events,
                 frame_count=frame_count,
-                include_held_target=format_version == "robotwin_loop_context_v3",
+                include_held_target=format_version
+                in {"robotwin_loop_context_v3", "robotwin_loop_context_v4"},
             )
-        if set(event_payload) != event_keys:
+        if set(event_payload) not in valid_event_keys:
             raise LoopContextCodecError(
-                f"{annotation_mode.value} source events must contain exactly "
-                f"{sorted(event_keys)}"
+                f"{annotation_mode.value} source events must contain exactly one of "
+                f"{[sorted(keys) for keys in valid_event_keys]}"
             )
         _validate_versioned_windows(
             windows,

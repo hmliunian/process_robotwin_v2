@@ -12,7 +12,11 @@ import robotwin_annotation_v2.application.discovery as _discovery
 import robotwin_annotation_v2.application.urdf_runtime as _urdf_runtime
 from robotwin_annotation_v2.adapters.artifact_store import ArtifactStore
 from robotwin_annotation_v2.adapters.robotwin_dataset import RoboTwinDataset
-from robotwin_annotation_v2.application.dataset_input import resolve_dataset_input
+from robotwin_annotation_v2.application.dataset_input import (
+    DatasetTarget,
+    read_dataset_task_kind,
+    resolve_dataset_input,
+)
 from robotwin_annotation_v2.application.dataset_pipeline import (
     DatasetBackendRunner,
     DatasetPipeline,
@@ -32,7 +36,6 @@ from robotwin_annotation_v2.application.sam_workflow import (
 )
 from robotwin_annotation_v2.application.urdf_workflow import (
     DEFAULT_URDF_DEPTH_TOLERANCE_MM,
-    DEFAULT_URDF_MINIMUM_ELIGIBLE_NONEMPTY_FRACTION,
     DEFAULT_URDF_PIPELINE_BUFFER_SIZE,
     UrdfWorkflow,
     UrdfWorkflowHooks,
@@ -41,6 +44,7 @@ from robotwin_annotation_v2.config import PipelineConfig, load_config
 from robotwin_annotation_v2.domain import (
     AnnotationMode,
     GripperBackend,
+    TargetProfile,
 )
 from robotwin_annotation_v2.models import ProcessRequest
 from robotwin_annotation_v2.terminal_ui import UI_MODES, ProcessUI, create_process_ui
@@ -59,9 +63,20 @@ DEFAULT_BUNDLED_URDF_PATH = (
     / "aloha-agilex"
     / "arx5_description_isaac_gripper.urdf"
 )
+DEFAULT_PROCESS_CONFIG = PROJECT_ROOT / "configs" / "process_qwen38_api.yaml"
 PATH_MODE_CONFIGS = {
-    AnnotationMode.PICK_PLACE: PROJECT_ROOT / "configs" / "pilot_move_pillbottle_pad.yaml",
-    AnnotationMode.TARGET_ONLY: PROJECT_ROOT / "configs" / "pilot_adjust_bottle_target_only.yaml",
+    "local": {
+        AnnotationMode.PICK_PLACE: PROJECT_ROOT / "configs" / "pilot_move_pillbottle_pad.yaml",
+        AnnotationMode.TARGET_ONLY: PROJECT_ROOT / "configs" / "pilot_adjust_bottle_target_only.yaml",
+    },
+    "api": {
+        AnnotationMode.PICK_PLACE: DEFAULT_PROCESS_CONFIG,
+        AnnotationMode.TARGET_ONLY: PROJECT_ROOT / "configs" / "process_target_only_qwen38_api.yaml",
+    },
+}
+CONTACT_PRESS_CONFIGS = {
+    "local": PROJECT_ROOT / "configs" / "pilot_contact_press_target_only.yaml",
+    "api": PROJECT_ROOT / "configs" / "process_contact_press_qwen38_api.yaml",
 }
 CHUNK_PATTERN = _discovery.CHUNK_PATTERN
 EPISODE_FILE_PATTERN = _discovery.EPISODE_FILE_PATTERN
@@ -143,6 +158,7 @@ def build_dynamic_manifest(
         camera=camera,
         episodes=episodes,
         measure_episode_fn=_measure_episode,
+        task_kind=read_dataset_task_kind(root),
     )
 
 
@@ -229,9 +245,6 @@ def process_urdf_source_run(
     dry_run: bool = False,
     resume: bool = False,
     depth_tolerance_mm: float = DEFAULT_URDF_DEPTH_TOLERANCE_MM,
-    minimum_eligible_nonempty_fraction: float = (
-        DEFAULT_URDF_MINIMUM_ELIGIBLE_NONEMPTY_FRACTION
-    ),
     fit_config_json: Path | None = None,
     allow_partial_source: bool = False,
     source_mode: str = "frozen_run",
@@ -264,7 +277,6 @@ def process_urdf_source_run(
         dry_run=dry_run,
         resume=resume,
         depth_tolerance_mm=depth_tolerance_mm,
-        minimum_eligible_nonempty_fraction=minimum_eligible_nonempty_fraction,
         fit_config_json=fit_config_json,
         allow_partial_source=allow_partial_source,
         source_mode=source_mode,
@@ -378,9 +390,6 @@ def process_live_urdf_pipeline(
     episode_ids: tuple[int, ...] | None = None,
     skip_render: bool = False,
     depth_tolerance_mm: float = DEFAULT_URDF_DEPTH_TOLERANCE_MM,
-    minimum_eligible_nonempty_fraction: float = (
-        DEFAULT_URDF_MINIMUM_ELIGIBLE_NONEMPTY_FRACTION
-    ),
     fit_config_json: Path | None = None,
     allow_partial_source: bool = False,
     urdf_pipeline: bool = True,
@@ -403,7 +412,6 @@ def process_live_urdf_pipeline(
         episode_ids=episode_ids,
         skip_render=skip_render,
         depth_tolerance_mm=depth_tolerance_mm,
-        minimum_eligible_nonempty_fraction=minimum_eligible_nonempty_fraction,
         fit_config_json=fit_config_json,
         allow_partial_source=allow_partial_source,
         urdf_pipeline=urdf_pipeline,
@@ -440,11 +448,16 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--config",
         type=Path,
-        default=Path("configs/pilot_move_pillbottle_pad.yaml"),
+        default=DEFAULT_PROCESS_CONFIG,
+        help=f"Pipeline YAML (default: {DEFAULT_PROCESS_CONFIG})",
     )
     parser.add_argument("--task")
     parser.add_argument("--camera")
-    parser.add_argument("--output-dir", type=Path, default=Path("artifacts/runs"))
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        help="Override output.root from the selected config",
+    )
     parser.add_argument("--run-id")
     parser.add_argument("--episode-ids", type=int, nargs="*")
     parser.add_argument(
@@ -469,10 +482,6 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--urdf-mesh-root", type=Path)
     parser.add_argument("--urdf-depth-tolerance-mm", type=float)
-    parser.add_argument(
-        "--urdf-minimum-eligible-nonempty-fraction",
-        type=float,
-    )
     parser.add_argument("--urdf-fit-config-json", type=Path)
     parser.add_argument(
         "--urdf-egl-device-id",
@@ -497,8 +506,8 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--allow-partial-source",
         action="store_true",
         help=(
-            "During automatic episode discovery, process only source episodes whose "
-            "target and receiver passed QC; explicit --episode-ids remain fail-closed"
+            "Retained for compatibility; automatic discovery already processes eligible "
+            "episodes independently, while explicit --episode-ids remain strict"
         ),
     )
     parser.add_argument("--dry-run", action="store_true")
@@ -544,6 +553,22 @@ def _path_target_args(
     return argparse.Namespace(**values)
 
 
+def _path_profile_config(
+    profile: PipelineConfig,
+    target: DatasetTarget,
+) -> Path:
+    """Resolve a task-kind-derived profile without inspecting the task name."""
+
+    mode = profile.annotation.mode
+    if target.profile is profile.annotation.profile:
+        return profile.config_path
+    if target.profile is TargetProfile.CONTACT_PRESS:
+        if mode is not AnnotationMode.TARGET_ONLY:
+            raise ValueError("contact_press profile requires target_only mode")
+        return CONTACT_PRESS_CONFIGS[profile.qwen.runtime]
+    return PATH_MODE_CONFIGS[profile.qwen.runtime][mode]
+
+
 def _run_path_input(args: argparse.Namespace, reporter: ProcessUI) -> dict[str, Any]:
     if args.dataset_root is not None:
         raise ValueError("--data-path and --dataset-root cannot be used together")
@@ -558,13 +583,18 @@ def _run_path_input(args: argparse.Namespace, reporter: ProcessUI) -> dict[str, 
     if resolved.is_collection and args.episode_ids is not None and len(resolved.targets) != 1:
         raise ValueError("collection --episode-ids requires selecting one --task")
 
-    config = PATH_MODE_CONFIGS[mode]
+    profile = load_config(args.config)
+    if profile.annotation.mode is not mode:
+        raise ValueError(
+            f"--{mode.value.replace('_', '-')} requires annotation.mode={mode.value}, "
+            f"but {profile.config_path} declares {profile.annotation.mode.value}"
+        )
     if not resolved.is_collection:
         target = resolved.targets[0]
         return _run_from_args(
             _path_target_args(
                 args,
-                config=config,
+                config=_path_profile_config(profile, target),
                 dataset_root=target.root,
                 task=target.task,
                 camera=target.camera,
@@ -581,7 +611,7 @@ def _run_path_input(args: argparse.Namespace, reporter: ProcessUI) -> dict[str, 
             summary = _run_from_args(
                 _path_target_args(
                     args,
-                    config=config,
+                    config=_path_profile_config(profile, target),
                     dataset_root=target.root,
                     task=target.task,
                     camera=target.camera,
@@ -620,7 +650,8 @@ def _run_path_input(args: argparse.Namespace, reporter: ProcessUI) -> dict[str, 
         "passed": all(record["status"] == "completed" for record in records),
     }
     artifact = ArtifactStore.write_json(
-        args.output_dir.expanduser().resolve() / f"{collection_run_id}-collection-summary.json",
+        (profile.output_root if args.output_dir is None else args.output_dir).expanduser().resolve()
+        / f"{collection_run_id}-collection-summary.json",
         result,
     )
     result["artifact"] = str(artifact)
@@ -638,6 +669,7 @@ def _run_from_args(
     if args.path_mode is not None:
         raise ValueError("--target-only/--pick-place require --data-path")
     config = load_config(args.config)
+    output_root = config.output_root if args.output_dir is None else args.output_dir
     source_run_dir = _optional_cli_path(args.source_run_dir)
     urdf_path = _optional_cli_path(args.urdf_path)
     if args.gripper_backend == "sam":
@@ -646,7 +678,6 @@ def _run_from_args(
             or urdf_path is not None
             or args.urdf_mesh_root is not None
             or args.urdf_depth_tolerance_mm is not None
-            or args.urdf_minimum_eligible_nonempty_fraction is not None
             or args.urdf_fit_config_json is not None
             or args.urdf_egl_device_id is not None
             or args.urdf_pipeline_buffer_size != DEFAULT_URDF_PIPELINE_BUFFER_SIZE
@@ -663,7 +694,7 @@ def _run_from_args(
         camera = config.dataset.camera if args.camera is None else args.camera
         request = ProcessRequest(
             dataset_root=dataset_root,
-            output_root=args.output_dir,
+            output_root=output_root,
             task=task,
             camera=camera,
             run_id=args.run_id,
@@ -715,11 +746,6 @@ def _run_from_args(
             if args.urdf_depth_tolerance_mm is None
             else args.urdf_depth_tolerance_mm
         )
-        minimum_eligible_nonempty_fraction = (
-            DEFAULT_URDF_MINIMUM_ELIGIBLE_NONEMPTY_FRACTION
-            if args.urdf_minimum_eligible_nonempty_fraction is None
-            else args.urdf_minimum_eligible_nonempty_fraction
-        )
         if source_run_dir is None:
             if args.dry_run or args.resume:
                 raise ValueError(
@@ -733,7 +759,7 @@ def _run_from_args(
             camera = config.dataset.camera if args.camera is None else args.camera
             request = ProcessRequest(
                 dataset_root=dataset_root,
-                output_root=args.output_dir,
+                output_root=output_root,
                 task=task,
                 camera=camera,
                 run_id=args.run_id,
@@ -758,9 +784,6 @@ def _run_from_args(
                     episode_ids=selected.episode_ids,
                     skip_render=selected.skip_render,
                     depth_tolerance_mm=depth_tolerance_mm,
-                    minimum_eligible_nonempty_fraction=(
-                        minimum_eligible_nonempty_fraction
-                    ),
                     fit_config_json=args.urdf_fit_config_json,
                     allow_partial_source=args.allow_partial_source,
                     urdf_pipeline=not args.no_urdf_pipeline,
@@ -803,7 +826,7 @@ def _run_from_args(
                 raise ValueError("source process summary does not define task/camera")
             request = ProcessRequest(
                 dataset_root=dataset_root,
-                output_root=args.output_dir,
+                output_root=output_root,
                 task=task,
                 camera=camera,
                 run_id=args.run_id,
@@ -831,9 +854,6 @@ def _run_from_args(
                     dry_run=args.dry_run,
                     resume=args.resume,
                     depth_tolerance_mm=depth_tolerance_mm,
-                    minimum_eligible_nonempty_fraction=(
-                        minimum_eligible_nonempty_fraction
-                    ),
                     fit_config_json=args.urdf_fit_config_json,
                     allow_partial_source=args.allow_partial_source,
                     egl_device_id=args.urdf_egl_device_id,

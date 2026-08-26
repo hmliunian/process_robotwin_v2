@@ -312,8 +312,88 @@ def test_settings_preserve_symlinked_qwen_virtualenv_python(tmp_path: Path) -> N
         )
     )
 
-    settings = manager_script._settings(args, args.config)
+    settings = manager_script._settings(args, manager_script.load_config(args.config))
 
     assert settings.python_executable == qwen_python
     assert settings.python_executable.is_symlink()
     assert settings.python_executable.resolve() == Path(sys.executable).resolve()
+
+
+def test_api_runtime_runs_without_local_qwen_or_gpu_options(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    probes: list[str] = []
+    process_calls: list[tuple[tuple[str, ...], Path]] = []
+
+    class FakeClient:
+        def health(self) -> dict[str, str]:
+            probes.append("models")
+            return {"status": "ok"}
+
+    monkeypatch.setattr(
+        manager_script.OpenAICompatibleQwenClient,
+        "from_config",
+        lambda _config: FakeClient(),
+    )
+    monkeypatch.setattr(
+        manager_script,
+        "_settings",
+        lambda *_args: pytest.fail("API runtime must not construct local Qwen settings"),
+    )
+    monkeypatch.setattr(
+        manager_script,
+        "_run_process",
+        lambda arguments, config_path: process_calls.append(
+            (tuple(arguments), config_path)
+        )
+        or 0,
+    )
+    args = manager_script._parse_args(
+        (
+            "--config",
+            "configs/process_qwen38_api.yaml",
+            "--",
+            "--dataset-root",
+            "/data",
+        )
+    )
+
+    assert manager_script._run(args) == 0
+    assert probes == ["models"]
+    assert process_calls == [
+        (("--dataset-root", "/data"), Path("configs/process_qwen38_api.yaml"))
+    ]
+    stderr = capsys.readouterr().err
+    assert "configs/process_qwen38_api.yaml" in stderr
+    assert "qwen.runtime=api" in stderr
+    assert "qwen.model=qwen3.8-max" in stderr
+
+
+def test_api_key_file_is_loaded_only_when_environment_is_unset(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    key_file = tmp_path / "qwen_api_key.txt"
+    key_file.write_text("test-secret\n", encoding="utf-8")
+    monkeypatch.delenv("QWEN_API_KEY", raising=False)
+    monkeypatch.setenv("QWEN_API_KEY_FILE", str(key_file))
+    config = manager_script.load_config(Path("configs/process_qwen38_api.yaml"))
+
+    manager_script._load_qwen_api_key_file(config)
+
+    assert manager_script.os.environ["QWEN_API_KEY"] == "test-secret"
+
+
+def test_api_key_file_rejects_multiple_values(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    key_file = tmp_path / "qwen_api_key.txt"
+    key_file.write_text("first\nsecond\n", encoding="utf-8")
+    monkeypatch.delenv("QWEN_API_KEY", raising=False)
+    monkeypatch.setenv("QWEN_API_KEY_FILE", str(key_file))
+    config = manager_script.load_config(Path("configs/process_qwen38_api.yaml"))
+
+    with pytest.raises(ManagedQwenError, match="exactly one non-empty line"):
+        manager_script._load_qwen_api_key_file(config)

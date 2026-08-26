@@ -3,7 +3,7 @@
 Prompt rendering is deliberately the only semantic stage that knows the
 concrete timeline event types.  The prompt files may therefore describe the
 real task timeline without teaching the Qwen and mask-QC stages about each
-other's business rules or inventing release events for close-and-hold tasks.
+other's business rules.
 """
 
 from __future__ import annotations
@@ -25,11 +25,13 @@ def timeline_prompt_fields(context: LoopContext) -> dict[str, str]:
         "episode_end": str(context.frame_count - 1),
     }
     if isinstance(events, TargetOnlyEvents):
+        hold = events.target_hold_window(context.frame_count)
         return {
             **common,
             "remove_start": str(events.t_remove_start),
             "close_start": str(events.t_close_start),
             "close_end": str(events.t_close_end),
+            "hold_end": str(events.t_close_end if hold is None else hold.end),
         }
     if isinstance(events, PickPlaceEvents):
         return {

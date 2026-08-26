@@ -12,7 +12,8 @@
 
 - 一个 active arm；
 - 一个由 annotation mode 声明的 loop：pick-place 为
-  approach → close → transport → open，target-only 为 remove/approach → close → hold；
+  approach → close → transport → open，target-only 为 remove/approach → 首次稳定 close → hold；
+  target-only 后续是否 reopen 不影响准入；
 - pick-place 需要一个 `target_0` 和一个 `receiver_0`；target-only 只需要 `target_0`，
   `receiver_0` 保留为全零的 canonical `not_applicable` channel；
 - 固定 `cam_high` 视角；
@@ -91,6 +92,19 @@ Parquet 的连续 `frame_index` 是所有 mask 和 URDF 几何计算的有效帧
 `configs/datasets/*.json`。固定 manifest 仍用于 coverage20 regression、分阶段命令和可重复
 验收。动态发现不会修改原数据集。
 
+Target-only extract 可以在 task manifest 中声明 `task_kind`，运行时据此选择 target prompt
+profile，不按任务名猜测：
+
+| `task_kind` | runtime profile |
+| --- | --- |
+| `contact_action_site` | `contact_press` |
+| `single_movable_target`、`single_movable_target_conditional` | `grasp_manipulation` |
+| `articulated_action_site` 或字段缺失 | `grasp_manipulation` |
+
+当前 `target_only_20_v2` 固定为 8+3：只有 `click_alarmclock`、`click_bell`、
+`press_stapler` 三类使用 `contact_press`；其余 8 类保持普通 target-only。articulated task
+保留独立 provenance，但在完成专门 A/B 前不自动切换 profile。
+
 ## 3. Stage 1：State Loop
 
 Stage 1 只读取 metadata、state 和帧数，不判断视觉实例，也不调用 Qwen/SAM。
@@ -103,10 +117,11 @@ pick-place 事件顺序必须满足：
 t_move_start <= t_close_start < t_close_done < t_open_start < t_open_done
 ```
 
-target-only 使用独立三边界合同：
+target-only 使用独立首次闭合合同，并可记录后续 reopen：
 
 ```text
 t_remove_start <= t_close_start < t_close_end < frame_count
+t_reopen_start is null or t_close_end < t_reopen_start < frame_count
 ```
 
 下表语义阶段适用于 pick-place：
@@ -128,10 +143,11 @@ gripper   = [move_start, open_done]
 ```
 
 target 内部再分成两种逐帧编码：普通段 `[move_start, close_done]` 使用 `1`，持有段
-`[close_done + 1, open_start - 1]` 使用 `2`；从 `open_start` 起 target 归零。Target-only
-没有 release 事件，普通段为 `[remove_start, close_end]`，持有段为
-`[close_end + 1, T - 1]`。边界均按 inclusive 处理。事件帧由 detector 从 state 计算，不能为
-特定 episode 写死。
+`[close_done + 1, open_start - 1]` 使用 `2`；从 `open_start` 起 target 归零。Target-only 的
+operation、target 和 gripper 窗口均为 `[remove_start, T - 1]`；普通段
+`[remove_start, close_end]` 使用 `1`，持有段从 `close_end + 1` 到首次 `reopen_start - 1`
+使用 `2`，没有 reopen 时延续到 `T - 1`。reopen 后 target 恢复普通可见编码 `1`，不会使
+episode 失败。边界均按 inclusive 处理，事件帧不能为特定 episode 写死。
 
 ### 3.2 语义帧
 
@@ -148,8 +164,8 @@ receiver 可以用动作前帧做 seed，但只在 receiver 输出窗口发布 m
 
 ### 3.3 输出与失败
 
-新写 `loop.json` 使用 `robotwin_loop_context_v3`，至少保存 episode/camera、frame count、active
-arm、事件、窗口、语义帧、annotation mode 和 state/video source。统一 codec 只读兼容 v1/v2/v3；
+新写 `loop.json` 使用 `robotwin_loop_context_v4`，至少保存 episode/camera、frame count、active
+arm、事件、窗口、语义帧、annotation mode 和 state/video source。统一 codec 只读兼容 v1–v4；
 兼容读取不会授权新 writer 降级。state 缺失、多个/零合法 loop、事件顺序错误或窗口越界时保存
 失败原因，后续阶段不得运行。
 
@@ -176,7 +192,8 @@ pick-place 的 target 和 receiver 在一次 semantic request 中联合判断，
 
 ### 4.2 角色语义
 
-- target：随后被 gripper 抓取并移动的物体。
+- target：`grasp_manipulation` profile 中是随后被 gripper 抓取并移动的完整物体；
+  `contact_press` profile 中是即将被接触或驱动的最小完整功能部件/action site。
 - receiver：任务完成时与 target 直接接触的完整物体或目标区域；不要求承托 target，也不
   要求位于其下方。
 - receiver 身份先由 `place_context` 确认，再回到合法 seed 帧中选择同一对象的清晰视图。
@@ -372,8 +389,10 @@ normalized opening 是 drive target，不是接触后的真实 finger qpos，因
 步骤。Z-buffer 处理 self-occlusion，scene depth 去除被 target、receiver、桌面、其他 link
 或 clutter 遮挡的几何。不会使用 RGB 分割、颜色阈值、对象 mask subtraction 或时序填充。
 
-自动质量门只统计 rendered/scene depth 都有效的 eligible active frame；默认要求至少 90%
-eligible frames 发布非空 mask。完全出画帧不会错误降低该比例。
+URDF 不运行基于可见非空率的 gripper QC：夹爪可能在 active window 内完全出画，此时全空
+visible mask 是合法结果。renderer 仍严格校验 shape/dtype、active-window clipping、四层 mask
+包含关系、depth/component filtering 和产物 lineage；`quality` 中的 coverage 仅供诊断，不影响
+episode 是否成功。SAM gripper 的视觉与时序 QC 保持不变。
 
 仓库默认资产：
 
@@ -447,20 +466,21 @@ depth。该入口自动复用健康 Qwen endpoint；若 endpoint 不可用，会
 若第二个 positional token 以 `-` 开头，它会被当作 process 参数，输出根仍为
 `artifacts/runs`。
 
-也可以只提供带兼容 `EXTRACT_MANIFEST.json` 的单任务目录或 collection，而不显式传 pipeline
-配置：
+也可以提供带兼容 `EXTRACT_MANIFEST.json` 的单任务目录或 collection。`--config` 必须与所选
+mode 匹配；正式 API 示例为：
 
 ```bash
-just process --data-path DATASET_OR_COLLECTION --pick-place
-just process --data-path DATASET_OR_COLLECTION --target-only
+just process --data-path DATASET_OR_COLLECTION --pick-place \
+  --config configs/process_qwen38_api.yaml
+just process --data-path DATASET_OR_COLLECTION --target-only \
+  --config configs/process_target_only_qwen38_api.yaml
 ```
 
-path 模式分别加载 `configs/pilot_move_pillbottle_pad.yaml` 和
-`configs/pilot_adjust_bottle_target_only.yaml` 作为默认推理 profile；数据目录中的 manifest 只
-替换 dataset root、task、camera 和 episode ids。两个默认 profile 都启用完整的 S1–S3
-open-set object-mask 路径：最多 8 个候选、curated query fallback、多合法 seed fallback、
-mode-specific appearance prompt，以及所有文本尝试失败后的 Qwen bbox → SAM box fallback。
-因此 collection 中的每个 task 使用同一套 mode profile，不需要逐 task 配置这些开关。
+path 模式使用显式配置确定 Qwen runtime/model 和基础 mode；manifest 替换 dataset root、task、
+camera 和 episode ids，并按 `task_kind` 选择 target profile。普通 target-only task 保留传入配置，
+`contact_action_site` 改用同一 runtime 类别的 contact-press 配置；articulated task 不切换。
+bundled local profile 使用 18086，API profile 使用 Qwen API。特殊的
+`runtime_target_only_v2_qwen18087.yaml` 是单任务 pilot，不作为 mixed 11-task collection 配置。
 
 `EXTRACT_MANIFEST.json` 必须显式声明与 mode 匹配的 `profile`。缺少该字段的旧 extract 会
 fail closed；此时使用 `just process DATASET_ROOT [OUTPUT_ROOT] --config PROFILE`，不要同时传
@@ -492,7 +512,6 @@ URDF-only 参数：
 --urdf-path
 --urdf-mesh-root
 --urdf-depth-tolerance-mm
---urdf-minimum-eligible-nonempty-fraction
 --urdf-fit-config-json
 --urdf-egl-device-id GPU       # physical EGL GPU；streaming 时必须与 SAM GPU 不同
 --urdf-pipeline-buffer-size N  # live streaming source-ready queue，默认 2
@@ -768,7 +787,7 @@ src/robotwin_annotation_v2/pipeline/
 src/robotwin_annotation_v2/adapters/
   canonical_masks.py                          canonical v2 reader/v3 DTO/validator
   canonical_publication.py                    SAM/URDF 共用的 v3 原子 NPZ publisher
-  loop_context_codec.py                       loop v1/v2/v3 读取与 v3 当前语义
+  loop_context_codec.py                       loop v1–v4 读取与 v4 当前语义
   rendering.py                                package-owned public renderer
 
 src/robotwin_annotation_v2/urdf_gripper_publisher.py

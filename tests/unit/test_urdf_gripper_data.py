@@ -157,6 +157,43 @@ def test_target_only_v3_extends_target_through_episode_hold(tmp_path: Path) -> N
     assert context.target_hold_window == (10, 14)
 
 
+def test_target_only_v4_stops_hold_before_reopen(tmp_path: Path) -> None:
+    events = TargetOnlyEvents("right", 3, 5, 9, 13)
+    path = tmp_path / "loop.json"
+    payload = {
+        "format_version": "robotwin_loop_context_v4",
+        "annotation_mode": "target_only",
+        "timeline_kind": "close_hold",
+        "required_object_roles": ["target"],
+        "episode": {
+            "task": "move_pillbottle_pad",
+            "episode_index": 7152,
+            "episode_id": "007152",
+            "camera": "cam_high",
+        },
+        "frame_count": 15,
+        "events": events.to_json(),
+        "windows": {
+            "operation": [3, 14],
+            "target_0": [3, 14],
+            "receiver_0": None,
+            "gripper": [3, 14],
+        },
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    context = load_authoritative_loop_context(
+        path,
+        expected_task="move_pillbottle_pad",
+        expected_episode_index=7152,
+        expected_camera="cam_high",
+    )
+
+    assert context.events == events
+    assert context.gripper_window == (3, 14)
+    assert context.target_hold_window == (10, 12)
+
+
 def test_target_only_v2_rejects_gripper_window_that_stops_at_close_end(
     tmp_path: Path,
 ) -> None:

@@ -17,7 +17,11 @@ from robotwin_annotation_v2.adapters.canonical_publication import (
 )
 from robotwin_annotation_v2.config import MaskConfig
 from robotwin_annotation_v2.domain import AnnotationMode
-from robotwin_annotation_v2.mask_schema import FrameEncoding, target_hold_window
+from robotwin_annotation_v2.mask_schema import (
+    FrameEncoding,
+    build_frame_encoding,
+    target_hold_window,
+)
 from robotwin_annotation_v2.models import (
     EpisodeRef,
     FramePurpose,
@@ -113,13 +117,13 @@ def _plan(*, target: RoleSemanticPlan | None = None) -> SemanticPlan:
     )
 
 
-def _target_only_context() -> LoopContext:
+def _target_only_context(*, reopen_start: int | None = None) -> LoopContext:
     base = _context()
     return LoopContext(
         episode=base.episode,
         task_text=base.task_text,
         frame_count=base.frame_count,
-        events=TargetOnlyEvents("right", 2, 6, 8),
+        events=TargetOnlyEvents("right", 2, 6, 8, reopen_start),
         semantic_frames=(
             SemanticFrame(
                 0,
@@ -428,6 +432,27 @@ def test_target_only_sam_tracks_target_and_leaves_receiver_channel_zero() -> Non
     assert not result.masks[1].any()
     with pytest.raises(KeyError, match="non-applicable"):
         _ = result.receiver
+
+
+def test_target_only_sam_keeps_visible_target_after_reopen() -> None:
+    backend = FakeSamBackend()
+    context = _target_only_context(reopen_start=15)
+
+    result = run_sam_stage(
+        context,
+        _target_only_plan(),
+        backend,
+        Path("/tmp/fake-resource"),
+        frame_shape=FRAME_SHAPE,
+        mask_config=MaskConfig(0, 0),
+    )
+    encoding = build_frame_encoding(result.masks, context.events)
+
+    assert result.target.output_window == FrameWindow(2, 19)
+    assert backend.tracking_windows == [(0, 19)]
+    assert result.target.visible_mask[15:].any()
+    assert (encoding[0, 9:15] == FrameEncoding.TARGET_GRASP_HOLD).all()
+    assert (encoding[0, 15:] == FrameEncoding.VISIBLE).all()
 
 
 def test_target_only_sam_propagates_the_qwen_qc_selected_candidate() -> None:

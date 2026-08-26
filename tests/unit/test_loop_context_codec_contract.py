@@ -48,8 +48,10 @@ VALID_CASES = (
     ("robotwin_loop_context_v1", "pick_place"),
     ("robotwin_loop_context_v2", "pick_place"),
     ("robotwin_loop_context_v3", "pick_place"),
+    ("robotwin_loop_context_v4", "pick_place"),
     ("robotwin_loop_context_v2", "target_only"),
     ("robotwin_loop_context_v3", "target_only"),
+    ("robotwin_loop_context_v4", "target_only"),
 )
 UNEXPECTED_EVENT_CASES = tuple(
     (*case, "t_move_start" if case[1] == "pick_place" else "t_remove_start")
@@ -64,6 +66,8 @@ BOOLEAN_EVENT_CASES = tuple(
 def _payload(format_version: str, mode: str) -> dict[str, Any]:
     is_pick_place = mode == "pick_place"
     events = dict(PICK_EVENTS if is_pick_place else TARGET_ONLY_EVENTS)
+    if format_version == "robotwin_loop_context_v4" and not is_pick_place:
+        events["t_reopen_start"] = 15
     if format_version == "robotwin_loop_context_v1":
         windows = (
             {
@@ -79,19 +83,26 @@ def _payload(format_version: str, mode: str) -> dict[str, Any]:
             }
         )
     elif is_pick_place:
+        target_end = (
+            11
+            if format_version in {"robotwin_loop_context_v3", "robotwin_loop_context_v4"}
+            else 8
+        )
         windows = {
             "operation": [2, 15],
-            "target_0": [2, 11 if format_version == "robotwin_loop_context_v3" else 8],
+            "target_0": [2, target_end],
             "receiver_0": [8, 15],
             "gripper": [2, 15],
         }
     else:
+        target_end = (
+            19
+            if format_version in {"robotwin_loop_context_v3", "robotwin_loop_context_v4"}
+            else 9
+        )
         windows = {
             "operation": [3, 19],
-            "target_0": [
-                3,
-                19 if format_version == "robotwin_loop_context_v3" else 9,
-            ],
+            "target_0": [3, target_end],
             "receiver_0": None,
             "gripper": [3, 19],
         }
@@ -170,7 +181,11 @@ def test_canonical_and_legacy_loaders_preserve_exact_context_parity(
 
     if mode == "pick_place":
         expected_events = ActiveGripperLoop("right", 2, 5, 8, 12, 15)
-        expected_target_end = 11 if format_version == "robotwin_loop_context_v3" else 8
+        expected_target_end = (
+            11
+            if format_version in {"robotwin_loop_context_v3", "robotwin_loop_context_v4"}
+            else 8
+        )
         expected_windows = {
             "operation": [2, 15],
             "target_0": [2, expected_target_end],
@@ -181,16 +196,23 @@ def test_canonical_and_legacy_loaders_preserve_exact_context_parity(
         expected_hold_window = (9, 11)
         expected_kind = "pick_place"
     else:
-        expected_events = TargetOnlyEvents("right", 3, 6, 9)
-        expected_target_end = 19 if format_version == "robotwin_loop_context_v3" else 9
+        reopen_start = 15 if format_version == "robotwin_loop_context_v4" else None
+        expected_events = TargetOnlyEvents("right", 3, 6, 9, reopen_start)
+        expected_target_end = (
+            19
+            if format_version in {"robotwin_loop_context_v3", "robotwin_loop_context_v4"}
+            else 9
+        )
         expected_windows = {
             "operation": [3, 19],
             "target_0": [3, expected_target_end],
             "receiver_0": None,
             "gripper": [3, 19],
         }
-        expected_event_keys = TARGET_ONLY_EVENT_KEYS
-        expected_hold_window = (10, 19)
+        expected_event_keys = TARGET_ONLY_EVENT_KEYS | (
+            {"t_reopen_start"} if reopen_start is not None else set()
+        )
+        expected_hold_window = (10, 14 if reopen_start is not None else 19)
         expected_kind = "close_hold"
 
     assert context.events == expected_events
@@ -274,7 +296,7 @@ def test_loader_rejects_unexpected_event_keys(
     tuple(case for case in VALID_CASES if case[0] != "robotwin_loop_context_v1"),
     ids=lambda case: "-".join(case) if isinstance(case, tuple) else str(case),
 )
-def test_v2_and_v3_reject_unexpected_window_keys(
+def test_versioned_context_rejects_unexpected_window_keys(
     tmp_path: Path,
     format_version: str,
     mode: str,
@@ -289,6 +311,34 @@ def test_v2_and_v3_reject_unexpected_window_keys(
             expected_episode_index=EPISODE_INDEX,
             expected_camera=CAMERA,
         )
+
+
+@pytest.mark.parametrize("serialized_reopen", (None, "omitted"))
+def test_v4_target_only_accepts_no_reopen(
+    tmp_path: Path,
+    serialized_reopen: int | str | None,
+) -> None:
+    payload = _payload("robotwin_loop_context_v4", "target_only")
+    if serialized_reopen == "omitted":
+        payload["events"].pop("t_reopen_start")
+    else:
+        payload["events"]["t_reopen_start"] = serialized_reopen
+    payload["windows"] = {
+        "operation": [3, 19],
+        "target_0": [3, 19],
+        "receiver_0": None,
+        "gripper": [3, 19],
+    }
+
+    context = load_authoritative_loop_context(
+        _write_payload(tmp_path, payload),
+        expected_task=TASK,
+        expected_episode_index=EPISODE_INDEX,
+        expected_camera=CAMERA,
+    )
+
+    assert context.events == TargetOnlyEvents("right", 3, 6, 9)
+    assert context.windows.operation.end == 19
 
 
 @pytest.mark.parametrize(

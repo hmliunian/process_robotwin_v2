@@ -231,10 +231,12 @@ click_bell
 press_stapler
 ```
 
-这三组都属于 Target-only 语义，但 action-site 类不是独立 movable root；下游 profile 必须分别
-声明 articulated-link 或 tool/contact outcome。`handover_mic`、`grab_roller`、`lift_pot` 等
-虽然有时只有一个场景物体，却是双臂执行，因此不进入本版；`move_stapler_pad`、
-`place_empty_cup` 等有 receiver 的任务也不进入本版。
+这三组都属于 Target-only coarse 语义。当前运行时合同固定为 8+3：5 个 movable task 和
+3 个 articulated task 使用普通 `grasp_manipulation` target-only；只有
+`click_alarmclock`、`click_bell`、`press_stapler` 使用 `contact_press`。articulated
+`task_kind` 继续保留 provenance，但在独立 A/B 完成前不自动切换 profile。
+`handover_mic`、`grab_roller`、`lift_pot` 等虽然有时只有一个场景物体，却是双臂执行，因此
+不进入本版；`move_stapler_pad`、`place_empty_cup` 等有 receiver 的任务也不进入本版。
 
 ### 8.2 抽样合同
 
@@ -291,3 +293,26 @@ cam_high depth MKV 各 220 个；selection/collection/per-task manifest 计数�
 manifest 文件记录、324.9 MiB，未发现 checksum、metadata、task 或 episode ID 错误。原有 8 类
 的整树 SHA-256 聚合值在增量发布前后保持不变。`datasets.md` 不把 mask 成功率写成数据抽取
 完成率；mask 结果应引用带 run id 的实验报告。
+
+### 8.5 Press 子集
+
+从上述已验收集合按 `task_kind=contact_action_site` 单独物化 3 个固定接触 task，共 60 条
+episode：`click_alarmclock`、`click_bell`、`press_stapler`。`open_laptop`、`open_microwave`、
+`turn_switch` 属于 articulated action-site，不进入这个 press 子集。输出目录为：
+
+```text
+/DATA/disk8/xuran/add_mask_robotwin/dataset/target_only_20_v2_contact_press
+```
+
+使用可复现 split 工具生成并校验：
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/split_target_only_extract.py
+PYTHONPATH=src .venv/bin/python scripts/process_dataset.py \
+  --data-path /DATA/disk8/xuran/add_mask_robotwin/dataset/target_only_20_v2_contact_press \
+  --target-only --task press_stapler \
+  --config configs/process_target_only_qwen38_api.yaml
+```
+
+split 工具不会修改原始 `target_only_20_v2`；如果目标目录已存在，会拒绝覆盖。每个 task
+保留原始全局 episode id、逐文件 SHA-256 和 `task_kind` provenance。

@@ -45,6 +45,16 @@ def test_target_only_encoding_holds_from_close_end_through_last_frame() -> None:
     assert encoding[0].tolist() == [0, 1, 1, 1, 1, 2, 2, 2]
 
 
+def test_target_only_encoding_stops_hold_before_reopen() -> None:
+    events = TargetOnlyEvents("left", 1, 2, 4, 7)
+    masks = _masks(9)
+
+    encoding = build_frame_encoding(masks, events)
+
+    assert target_hold_window(events, frame_count=9) == (5, 6)
+    assert encoding[0].tolist() == [1, 1, 1, 1, 1, 2, 2, 1, 1]
+
+
 def test_target_only_hold_window_can_be_empty_at_episode_end() -> None:
     events = TargetOnlyEvents("left", 1, 2, 4)
     assert events.target_hold_window(5) is None

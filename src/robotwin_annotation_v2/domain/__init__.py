@@ -6,7 +6,10 @@ from .annotation_spec import (
     AnnotationSpec,
     GripperBackend,
     ObjectRole,
+    TargetOnlyTaskKind,
+    TargetProfile,
     annotation_spec,
+    target_profile_for_task_kind,
 )
 
 __all__ = [
@@ -15,5 +18,8 @@ __all__ = [
     "AnnotationSpec",
     "GripperBackend",
     "ObjectRole",
+    "TargetOnlyTaskKind",
+    "TargetProfile",
     "annotation_spec",
+    "target_profile_for_task_kind",
 ]
