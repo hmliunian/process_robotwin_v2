@@ -83,10 +83,15 @@ class QwenStageResult:
 def _frame_label(context: LoopContext, frame_id: int) -> str:
     frame = next(item for item in context.semantic_frames if item.frame_id == frame_id)
     roles = ",".join(frame.eligible_roles)
-    seed = "yes" if frame.seed_eligible else "no"
+    if frame.seed_eligible:
+        role_field = f"seed_eligible_roles={roles}"
+        seed_fields = "seed_candidate=yes"
+    else:
+        role_field = f"context_only_roles={roles}"
+        seed_fields = "seed_candidate=no; forbidden_as_seed=yes"
     return (
         f"[frame_id={frame.frame_id}; purpose={frame.purpose.value}; "
-        f"eligible_roles={roles}; seed_candidate={seed}]"
+        f"{role_field}; {seed_fields}]"
     )
 
 

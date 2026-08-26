@@ -165,6 +165,9 @@ def test_qwen_request_interleaves_frame_label_and_image() -> None:
     assert "frame_id=0" in content[0]["text"]
     assert "frame_id=9" in content[2]["text"]
     assert "frame_id=15" in content[4]["text"]
+    assert "seed_eligible_roles=target,receiver; seed_candidate=yes" in content[0]["text"]
+    assert "context_only_roles=receiver" in content[4]["text"]
+    assert "seed_candidate=no; forbidden_as_seed=yes" in content[4]["text"]
     assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
     assert "{labeled_multimodal_frames}" not in request.rendered_prompt
     assert 'schema={"target": {}, "receiver": {}}' in request.rendered_prompt
