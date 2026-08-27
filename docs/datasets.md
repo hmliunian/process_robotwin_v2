@@ -10,7 +10,7 @@
 任务目录：
 
 ```text
-/home/xuran/add_mask_robotwin/dataset/pick_place_20/pick_and_place_real
+/home/xuran/add_mask_robotwin/dataset/pick_place_20/pick_and_place_real_v2
 ```
 
 转换只使用头部左相机
@@ -23,11 +23,11 @@
 uv sync --extra real-mcap
 .venv/bin/python scripts/convert_real_mcap_dataset.py \
   /DATA/disk8/xuran/add_mask_robotwin/dataset/pick_and_place_real \
-  /home/xuran/add_mask_robotwin/dataset/pick_place_20/pick_and_place_real \
+  /home/xuran/add_mask_robotwin/dataset/pick_place_20/pick_and_place_real_v2 \
   --texts configs/datasets/pick_and_place_real_texts.json
 ```
 
-转换器只物化人工复核为 `complete_pick_place` 的轨迹，并在
+转换器只物化人工复核为 `complete_pick_place` 的 29 条轨迹，并在
 `EXTRACT_MANIFEST.json` 的 `excluded_sources` 中保留排除原因；输出 episode ID 连续从 0
 开始，Parquet 帧数是视频帧数 authority。原始高频关节、EEF 和时间戳保存在 HDF5 sidecar，
 未经信任的 MCAP `task.action_text` 不会覆盖复核后的任务文本。

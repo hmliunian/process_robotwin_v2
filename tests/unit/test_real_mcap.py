@@ -24,13 +24,44 @@ def test_reviewed_text_manifest_selects_only_complete_pick_place() -> None:
     records = load_text_records(TEXT_MANIFEST)
 
     assert len(records) == 33
-    assert sum(record.quality_status == "complete_pick_place" for record in records) == 30
-    assert sum(record.quality_status == "incomplete_no_release" for record in records) == 1
+    assert sum(record.quality_status == "complete_pick_place" for record in records) == 29
+    assert sum(record.quality_status == "incomplete_no_release" for record in records) == 2
     assert sum(record.quality_status == "non_pick_place" for record in records) == 2
     assert all(
         record.receiver is not None
         for record in records
         if record.quality_status == "complete_pick_place"
+    )
+
+
+def test_reviewed_text_manifest_preserves_corrected_visual_roles() -> None:
+    records = {record.source_mcap: record for record in load_text_records(TEXT_MANIFEST)}
+
+    failed_grasp = records["28ec209220db49b245509e0e516a6600.mcap"]
+    assert failed_grasp.quality_status == "incomplete_no_release"
+    assert "never secures or transports" in failed_grasp.quality_reason
+    assert (
+        records["a2a81be2bd09e9b01068627644c09241.mcap"].target,
+        records["a2a81be2bd09e9b01068627644c09241.mcap"].receiver,
+    ) == (
+        "black rectangular pump bottle",
+        "top surface of white three-drawer cabinet",
+    )
+    assert (
+        records["f880addbeaf365882d3aa434115b373a.mcap"].target,
+        records["f880addbeaf365882d3aa434115b373a.mcap"].receiver,
+    ) == (
+        "small white rectangular pump bottle",
+        "top surface of right-hand dryer",
+    )
+    assert records["e8823d88445fd1d5606407de704f65f7.mcap"].target == (
+        "brown fabric oven mitt"
+    )
+    assert records["996b5e8bf7b2a00fface0e9402c79c9c.mcap"].receiver == (
+        "white sheet covering wooden seat"
+    )
+    assert records["39f6766a215e189986d74ee7dd731b90.mcap"].target == (
+        "small pink pump bottle"
     )
 
 
