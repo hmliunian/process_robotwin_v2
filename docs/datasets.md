@@ -21,16 +21,35 @@
 
 ```bash
 uv sync --extra real-mcap
-.venv/bin/python scripts/convert_real_mcap_dataset.py \
-  /DATA/disk8/xuran/add_mask_robotwin/dataset/pick_and_place_real \
-  /home/xuran/add_mask_robotwin/dataset/pick_place_20/pick_and_place_real_v2 \
-  --texts configs/datasets/pick_and_place_real_texts.json
+just convert-real INPUT_ROOT OUTPUT_ROOT
 ```
+
+`INPUT_ROOT` 是包含原始 `.mcap` 文件的目录；`OUTPUT_ROOT` 必须尚不存在。默认审核清单是
+`configs/datasets/pick_and_place_real_texts.json`，可用 `--texts MANIFEST` 覆盖；先验证一条时
+使用 `just convert-real INPUT_ROOT OUTPUT_ROOT --limit 1`。转换采用临时目录并在成功后原子发布，
+失败不会留下半成品输出。
 
 转换器只物化人工复核为 `complete_pick_place` 的 29 条轨迹，并在
 `EXTRACT_MANIFEST.json` 的 `excluded_sources` 中保留排除原因；输出 episode ID 连续从 0
 开始，Parquet 帧数是视频帧数 authority。原始高频关节、EEF 和时间戳保存在 HDF5 sidecar，
 未经信任的 MCAP `task.action_text` 不会覆盖复核后的任务文本。
+
+转换后可先对 episode 0 做 Qwen API + 单 GPU smoke run：
+
+```bash
+SAM_WORKER_GPUS=0 QWEN_MAX_IN_FLIGHT=1 \
+just run-parallel \
+  --data-path OUTPUT_ROOT \
+  --pick-place \
+  --config configs/process_pick_and_place_real_qwen38_api.yaml \
+  --gripper-backend sam \
+  --episode-ids 0 \
+  --ui plain
+```
+
+确认 mask、overlay 和 review sheets 后，再增加 `SAM_WORKER_GPUS` 并去掉 `--episode-ids 0`
+运行全量。`run-parallel` 要求 `SAM_WORKER_GPUS`；`QWEN_MAX_IN_FLIGHT` 默认是 `4`。它不检查
+或等待 GPU 空闲状态，启动前应先用 `just check-gpu` 确认设备分配。
 
 ## 1. 结论
 

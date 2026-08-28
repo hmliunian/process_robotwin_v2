@@ -495,6 +495,18 @@ depth。该入口自动复用健康 Qwen endpoint；若 endpoint 不可用，会
 --verbose
 ```
 
+API mode 的多 GPU 快捷入口是：
+
+```bash
+SAM_WORKER_GPUS=0,1,2,3 QWEN_MAX_IN_FLIGHT=4 \
+just run-parallel DATASET_ROOT [OUTPUT_ROOT] [PROCESS_ARGS...]
+```
+
+它复用 `just process` 的 launcher 和全部参数，只追加 `--sam-worker-gpus` 与
+`--qwen-max-in-flight`。`SAM_WORKER_GPUS` 无默认值且必须显式提供；
+`QWEN_MAX_IN_FLIGHT` 默认 `4`。底层 CLI/YAML 未经该快捷入口覆盖时仍以空 worker pool 和
+并发 `1` 为默认，因此普通 `just process` 保持串行。该入口不会改变 GPU 检查与调度合同。
+
 若第二个 positional token 以 `-` 开头，它会被当作 process 参数，输出根仍为
 `artifacts/runs`。
 

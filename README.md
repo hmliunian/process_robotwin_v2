@@ -57,6 +57,13 @@ just sam <run_id> 7152
 just run 7152
 just process ../dataset/move_pillbottle_pad_coverage20_original
 
+# Qwen API + multi-GPU SAM；SAM_WORKER_GPUS 必填，API 并发默认 4
+SAM_WORKER_GPUS=0,1,2,3 just run-parallel \
+  ../dataset/move_pillbottle_pad_coverage20_original
+
+# 将审核后的真实 pick-and-place MCAP 转成 RoboTwin 目录
+just convert-real <input_root> <new_output_root> --limit 1
+
 # 多 episode 顺序执行；一个 SAM3 adapter 在整个 batch 内常驻
 .venv/bin/python scripts/run_target_receiver.py sam-batch \
   --config configs/pilot_move_pillbottle_pad.yaml \
@@ -112,18 +119,26 @@ just process <dataset_root> --verbose
 `TERM=dumb` 环境会自动使用纯文本模式。完整机器可读结果仍以 run 目录中的
 `process_summary.json` 为准。
 
-Qwen API 配置可直接启用多 GPU SAM；以下命令在每张显式卡上常驻一个 SAM worker，并把所有
-worker 的远程 Qwen HTTP 请求限制为最多 4 个并发：
+`just run-parallel` 是 Qwen API + 多 GPU SAM 的快捷入口。`SAM_WORKER_GPUS` 必须显式设置为
+逗号分隔的 physical GPU ID；每张卡常驻一个 SAM worker。`QWEN_MAX_IN_FLIGHT` 可选，默认
+为 `4`，限制所有 worker 共享的远程 Qwen HTTP 并发数。其余参数与 `just process` 完全相同：
 
 ```bash
-just process <dataset_root> \
-  --sam-worker-gpus 0,1,2,3 \
-  --qwen-max-in-flight 4 \
+SAM_WORKER_GPUS=0,1,2,3 QWEN_MAX_IN_FLIGHT=4 \
+just run-parallel <dataset_root> \
   --urdf-egl-device-id 4
 ```
 
-不传 `--sam-worker-gpus` 时沿用 YAML；YAML 也未配置时保持单进程串行。该调度不查询或等待
-GPU 空闲显存，只校验重复 SAM GPU，以及 live URDF 中 SAM pool 与 EGL GPU 是否重叠。
+该快捷入口要求所选配置使用 `qwen.runtime=api`，且不会查询或等待 GPU 空闲显存；它只校验
+重复 SAM GPU，以及 live URDF 中 SAM pool 与 EGL GPU 是否重叠。需要直接控制 CLI 覆盖时，
+仍可使用 `just process ... --sam-worker-gpus ... --qwen-max-in-flight ...`；不传 worker pool 时
+沿用 YAML，YAML 也未配置则保持单进程串行。
+
+真实 pick-and-place MCAP 可通过 `just convert-real INPUT_ROOT OUTPUT_ROOT [OPTIONS...]` 转换。
+首次使用先安装 `uv sync --extra real-mcap`；`--texts` 默认是已审核的
+`configs/datasets/pick_and_place_real_texts.json`，`--limit N` 可用于 smoke conversion。转换器
+只选择 `complete_pick_place` 记录并拒绝覆盖已有输出目录。转换结果没有 depth，后续必须使用
+`--gripper-backend sam`。完整流程见 [docs/datasets.md](docs/datasets.md#0-真实-pp-mcap-转换)。
 
 完整文档从 [docs/README.md](docs/README.md) 开始；当前实现契约见
 [docs/architecture.md](docs/architecture.md)，coverage20 实验、参数依据和证据边界见
