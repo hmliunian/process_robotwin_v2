@@ -14,6 +14,7 @@ import io
 import json
 import multiprocessing as mp
 import re
+import signal
 import subprocess
 import sys
 import traceback
@@ -41,6 +42,12 @@ from robotwin_annotation_v2.urdf_gripper_publisher import (
     UrdfGripperPublishError,
     validate_derivation_source_episode,
 )
+
+
+def _exit_on_sigterm(signum: int, _frame: Any) -> None:
+    """Turn parent-requested termination into normal Python cleanup."""
+
+    raise SystemExit(128 + signum)
 
 
 class JsonProgressWriter(io.TextIOBase):
@@ -160,19 +167,9 @@ def release_sam_cuda_cache(gpus: Sequence[int]) -> dict[str, Any]:
     for gpu in dict.fromkeys(int(value) for value in gpus):
         if gpu < 0 or gpu >= device_count:
             continue
-        allocated_before = int(torch.cuda.memory_allocated(gpu))
-        reserved_before = int(torch.cuda.memory_reserved(gpu))
         with torch.cuda.device(gpu):
             torch.cuda.empty_cache()
-        report["gpus"].append(
-            {
-                "gpu": gpu,
-                "allocated_before_bytes": allocated_before,
-                "reserved_before_bytes": reserved_before,
-                "allocated_after_bytes": int(torch.cuda.memory_allocated(gpu)),
-                "reserved_after_bytes": int(torch.cuda.memory_reserved(gpu)),
-            }
-        )
+        report["gpus"].append({"gpu": gpu, "cache_cleared": True})
     return report
 
 
@@ -180,7 +177,7 @@ def select_urdf_egl_device(
     sam_gpus: Sequence[int],
     requested: int | None,
 ) -> int | None:
-    """Select a physical EGL GPU that does not host the live SAM worker."""
+    """Select the first physical EGL GPU outside the live SAM worker pool."""
 
     sam_devices = {int(value) for value in sam_gpus}
     if requested is not None:
@@ -188,7 +185,7 @@ def select_urdf_egl_device(
             raise ValueError("URDF EGL device id must be a non-negative integer")
         if requested in sam_devices:
             raise ValueError(
-                "streaming URDF requires an EGL GPU different from the SAM GPU"
+                "streaming URDF requires an EGL GPU different from all SAM worker GPUs"
             )
         return requested
 
@@ -196,7 +193,7 @@ def select_urdf_egl_device(
         completed = subprocess.run(
             [
                 "nvidia-smi",
-                "--query-gpu=index,memory.free",
+                "--query-gpu=index",
                 "--format=csv,noheader,nounits",
             ],
             check=True,
@@ -206,22 +203,17 @@ def select_urdf_egl_device(
     except (FileNotFoundError, subprocess.CalledProcessError):
         return None
 
-    candidates: list[tuple[int, int]] = []
+    candidates: list[int] = []
     for raw_line in completed.stdout.splitlines():
-        parts = [part.strip() for part in raw_line.split(",")]
-        if len(parts) != 2:
-            continue
         try:
-            device_id = int(parts[0])
-            free_mib = int(parts[1])
+            device_id = int(raw_line.strip())
         except ValueError:
             continue
         if device_id not in sam_devices:
-            candidates.append((free_mib, device_id))
+            candidates.append(device_id)
     if not candidates:
         return None
-    highest_free = max(value[0] for value in candidates)
-    return min(device_id for free_mib, device_id in candidates if free_mib == highest_free)
+    return min(candidates)
 
 
 class ProcessEventSender(ProcessUI):
@@ -388,6 +380,10 @@ def object_source_process_entry(
         lane_name="source" if incremental else None,
         episode_ids=episode_ids,
     )
+    previous_sigterm = signal.signal(
+        signal.SIGTERM,
+        _exit_on_sigterm,
+    )
     try:
         summary = DatasetPipeline(pipeline_config).run_sam(
             dataset_root=dataset_root,
@@ -413,6 +409,7 @@ def object_source_process_entry(
     else:
         connection.send(streaming.source_result(summary))
     finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
         sys.stdout = original_stdout
         sys.stderr = original_stderr
         worker_log.close()

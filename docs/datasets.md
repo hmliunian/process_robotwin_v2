@@ -4,6 +4,53 @@
 > close/open loop 的 `cam_high` pipeline；不代表所有 episode 都有完整 depth，也不代表
 > Qwen/SAM mask 一定通过。
 
+## 0. 真实 P&P MCAP 转换
+
+真实采集的 `/DATA/disk8/xuran/add_mask_robotwin/dataset/pick_and_place_real` 已转换为独立
+任务目录：
+
+```text
+/home/xuran/add_mask_robotwin/dataset/pick_place_20/pick_and_place_real_v2
+```
+
+转换只使用头部左相机
+`/camera/coracam_head_left/left_h264/video`，映射为 `cam_high`；腕部相机仅用于人工核对，
+不写入输出。数据没有 depth，因此该目录只适用于 `sam` 后端，不应传给 `urdf` 后端。
+
+可从仓库根目录复现转换（需要安装 `real-mcap` extra）：
+
+```bash
+uv sync --extra real-mcap
+just convert-real INPUT_ROOT OUTPUT_ROOT
+```
+
+`INPUT_ROOT` 是包含原始 `.mcap` 文件的目录；`OUTPUT_ROOT` 必须尚不存在。默认审核清单是
+`configs/datasets/pick_and_place_real_texts.json`，可用 `--texts MANIFEST` 覆盖；先验证一条时
+使用 `just convert-real INPUT_ROOT OUTPUT_ROOT --limit 1`。转换采用临时目录并在成功后原子发布，
+失败不会留下半成品输出。
+
+转换器只物化人工复核为 `complete_pick_place` 的 29 条轨迹，并在
+`EXTRACT_MANIFEST.json` 的 `excluded_sources` 中保留排除原因；输出 episode ID 连续从 0
+开始，Parquet 帧数是视频帧数 authority。原始高频关节、EEF 和时间戳保存在 HDF5 sidecar，
+未经信任的 MCAP `task.action_text` 不会覆盖复核后的任务文本。
+
+转换后可先对 episode 0 做 Qwen API + 单 GPU smoke run：
+
+```bash
+SAM_WORKER_GPUS=0 QWEN_MAX_IN_FLIGHT=1 \
+just run-parallel \
+  --data-path OUTPUT_ROOT \
+  --pick-place \
+  --config configs/process_pick_and_place_real_qwen38_api.yaml \
+  --gripper-backend sam \
+  --episode-ids 0 \
+  --ui plain
+```
+
+确认 mask、overlay 和 review sheets 后，再增加 `SAM_WORKER_GPUS` 并去掉 `--episode-ids 0`
+运行全量。`run-parallel` 要求 `SAM_WORKER_GPUS`；`QWEN_MAX_IN_FLIGHT` 默认是 `4`。它不检查
+或等待 GPU 空闲状态，启动前应先用 `just check-gpu` 确认设备分配。
+
 ## 1. 结论
 
 RoboTwin 2.0 中有 9 类任务可直接套用当前角色/事件模型，共 4,950 个 episode。每类 550 条：

@@ -114,6 +114,114 @@ class SamWorkflowHooks[BackendT: SamBackend, SamExecutionT, GripperExecutionT]:
 
 
 @dataclass(frozen=True)
+class SamEpisodeResult:
+    """Small, process-safe result of one complete SAM-backed episode."""
+
+    episode_id: int
+    status: str
+    error: str | None = None
+    fatal_cuda: bool = False
+
+    def to_record(self) -> dict[str, Any]:
+        record: dict[str, Any] = {"episode": self.episode_id, "status": self.status}
+        if self.error is not None:
+            record["error"] = self.error
+        return record
+
+
+def execute_sam_episode[
+    BackendT: SamBackend,
+    SamExecutionT,
+    GripperExecutionT,
+](
+    runtime: SamRuntime[BackendT, SamExecutionT, GripperExecutionT],
+    *,
+    capture_stage_output: CaptureStageOutput,
+    dynamic: PipelineConfig,
+    episode_id: int,
+    run_id: str,
+    backend: BackendT,
+    source_only: bool,
+    position: int,
+    total: int,
+    report_lifecycle: bool,
+    reporter: ProcessUI | None,
+) -> SamEpisodeResult:
+    """Execute Qwen and SAM stages for one episode using one resident backend."""
+
+    current_stage: str | None = None
+    if reporter is not None and report_lifecycle:
+        reporter.episode_started(episode_id, position=position, total=total)
+    try:
+        current_stage = "qwen"
+        if reporter is not None:
+            reporter.stage_started(episode_id, current_stage)
+        with capture_stage_output(reporter):
+            runtime.run_qwen(dynamic, episode_id, run_id)
+        if reporter is not None:
+            reporter.stage_finished(episode_id, current_stage)
+
+        current_stage = "object_sam"
+        if reporter is not None:
+            reporter.stage_started(episode_id, current_stage)
+        sam_execution = runtime.execute_sam_episode(dynamic, episode_id, run_id, backend)
+        with capture_stage_output(reporter):
+            sam_complete = runtime.emit_sam_result(run_id, sam_execution)
+        if not sam_complete:
+            status = "sam_incomplete"
+        elif source_only:
+            status = "completed"
+        else:
+            if reporter is not None:
+                reporter.stage_finished(episode_id, current_stage)
+            current_stage = "gripper_sam"
+            if reporter is not None:
+                reporter.stage_started(episode_id, current_stage)
+            gripper_execution = runtime.execute_gripper_episode(
+                dynamic,
+                episode_id,
+                run_id,
+                backend,
+            )
+            with capture_stage_output(reporter):
+                gripper_complete = runtime.emit_gripper_result(run_id, gripper_execution)
+            status = "completed" if gripper_complete else "gripper_incomplete"
+        if reporter is not None:
+            reporter.stage_finished(episode_id, current_stage, status=status)
+            if report_lifecycle:
+                reporter.episode_finished(episode_id, status=status)
+        return SamEpisodeResult(episode_id, status)
+    except SystemExit as exc:
+        error = f"stage exited with code {exc.code}"
+    except runtime.execution_errors as exc:
+        error = str(exc)
+        fatal_cuda = runtime.fatal_cuda_error(exc)
+        if reporter is not None:
+            if current_stage is not None:
+                reporter.stage_finished(
+                    episode_id,
+                    current_stage,
+                    status="failed",
+                    detail=error,
+                )
+            if report_lifecycle:
+                reporter.episode_finished(episode_id, status="failed", detail=error)
+        return SamEpisodeResult(episode_id, "failed", error, fatal_cuda)
+
+    if reporter is not None:
+        if current_stage is not None:
+            reporter.stage_finished(
+                episode_id,
+                current_stage,
+                status="failed",
+                detail=error,
+            )
+        if report_lifecycle:
+            reporter.episode_finished(episode_id, status="failed", detail=error)
+    return SamEpisodeResult(episode_id, "failed", error)
+
+
+@dataclass(frozen=True)
 class SamWorkflow[BackendT: SamBackend, SamExecutionT, GripperExecutionT]:
     """Coordinate one complete SAM-backed dataset run."""
 
@@ -227,7 +335,7 @@ class SamWorkflow[BackendT: SamBackend, SamExecutionT, GripperExecutionT]:
                     task=task,
                     camera=camera,
                     episode_index=episode_id,
-                    status=status,
+                    status="completed",
                     expected_dataset_root=dataset_root,
                 )
             if episode_terminal_callback is not None:
@@ -279,178 +387,105 @@ class SamWorkflow[BackendT: SamBackend, SamExecutionT, GripperExecutionT]:
 
         factory = runtime.backend_factory if backend_factory is None else backend_factory
         backend: BackendT | None = None
-        fatal_error: BaseException | None = None
-        try:
-            if pending:
+        fatal_error: str | None = None
+        parallel_used = bool(
+            pending and dynamic.parallel.enabled and backend_factory is None
+        )
+        if parallel_used:
+            from .parallel_sam_runtime import run_parallel_sam_episodes
+
+            if reporter is not None:
+                reporter.phase_started(
+                    "sam_worker_pool",
+                    total=len(dynamic.parallel.sam_worker_gpus),
+                )
+            try:
+                parallel_outcomes = run_parallel_sam_episodes(
+                    dynamic,
+                    run_id=selected_run_id,
+                    episode_ids=tuple(pending),
+                    source_only=source_only,
+                    qwen_max_in_flight=dynamic.parallel.qwen_max_in_flight,
+                    outcome_callback=lambda result: episode_terminal(
+                        result.episode_id,
+                        result.status,
+                    ),
+                    reporter=reporter,
+                    report_lifecycle=report_lifecycle,
+                )
+            except BaseException as exc:
                 if reporter is not None:
-                    reporter.phase_started("sam_backend_load")
-                try:
-                    backend = factory(
-                        checkpoint_path=dynamic.sam3.checkpoint,
-                        gpus=dynamic.sam3.gpus,
+                    reporter.phase_finished(
+                        "sam_worker_pool",
+                        status="failed",
+                        detail=f"{type(exc).__name__}: {exc}",
                     )
-                except Exception as exc:
+                raise
+            if reporter is not None:
+                reporter.phase_finished(
+                    "sam_worker_pool",
+                    detail=(
+                        f"workers={len(dynamic.parallel.sam_worker_gpus)} "
+                        f"episodes={len(parallel_outcomes)}"
+                    ),
+                )
+            for outcome in parallel_outcomes:
+                record: dict[str, Any] = {
+                    "episode": outcome.episode_id,
+                    "status": outcome.status,
+                    "attempt": outcome.attempt,
+                }
+                if outcome.worker_id is not None:
+                    record["worker_id"] = outcome.worker_id
+                if outcome.gpu_id is not None:
+                    record["gpu"] = outcome.gpu_id
+                if outcome.error is not None:
+                    record["error"] = outcome.error
+                if outcome.fatal_cuda:
+                    record["fatal_cuda"] = True
+                records.append(record)
+        else:
+            try:
+                if pending:
                     if reporter is not None:
-                        reporter.phase_finished(
-                            "sam_backend_load",
-                            status="failed",
-                            detail=f"{type(exc).__name__}: {exc}",
-                        )
-                    raise
-                if reporter is not None:
-                    reporter.phase_finished("sam_backend_load")
-                for episode_id in pending:
-                    position = selected_ids.index(episode_id) + 1
-                    current_stage: str | None = None
-                    if reporter is not None and report_lifecycle:
-                        reporter.episode_started(
-                            episode_id,
-                            position=position,
-                            total=len(selected_ids),
-                        )
+                        reporter.phase_started("sam_backend_load")
                     try:
-                        current_stage = "qwen"
-                        if reporter is not None:
-                            reporter.stage_started(episode_id, current_stage)
-                        with self.hooks.capture_stage_output(reporter):
-                            runtime.run_qwen(dynamic, episode_id, selected_run_id)
-                        if reporter is not None:
-                            reporter.stage_finished(episode_id, current_stage)
-
-                        current_stage = "object_sam"
-                        if reporter is not None:
-                            reporter.stage_started(episode_id, current_stage)
-                        sam_execution = runtime.execute_sam_episode(
-                            dynamic,
-                            episode_id,
-                            selected_run_id,
-                            backend,
+                        backend = factory(
+                            checkpoint_path=dynamic.sam3.checkpoint,
+                            gpus=dynamic.sam3.gpus,
                         )
-                        with self.hooks.capture_stage_output(reporter):
-                            sam_complete = runtime.emit_sam_result(
-                                selected_run_id,
-                                sam_execution,
+                    except Exception as exc:
+                        if reporter is not None:
+                            reporter.phase_finished(
+                                "sam_backend_load",
+                                status="failed",
+                                detail=f"{type(exc).__name__}: {exc}",
                             )
-                        if not sam_complete:
-                            records.append(
-                                {"episode": episode_id, "status": "sam_incomplete"}
-                            )
-                            episode_terminal(episode_id, "sam_incomplete")
-                            if reporter is not None:
-                                reporter.stage_finished(
-                                    episode_id,
-                                    current_stage,
-                                    status="sam_incomplete",
-                                )
-                                if report_lifecycle:
-                                    reporter.episode_finished(
-                                        episode_id,
-                                        status="sam_incomplete",
-                                    )
-                            current_stage = None
-                            continue
-                        if reporter is not None:
-                            reporter.stage_finished(episode_id, current_stage)
-                        if source_only:
-                            records.append(
-                                {"episode": episode_id, "status": "completed"}
-                            )
-                            episode_terminal(episode_id, "completed")
-                            if reporter is not None and report_lifecycle:
-                                reporter.episode_finished(
-                                    episode_id,
-                                    status="completed",
-                                )
-                            current_stage = None
-                            continue
-
-                        current_stage = "gripper_sam"
-                        if reporter is not None:
-                            reporter.stage_started(episode_id, current_stage)
-                        gripper_execution = runtime.execute_gripper_episode(
-                            dynamic,
-                            episode_id,
-                            selected_run_id,
-                            backend,
+                        raise
+                    if reporter is not None:
+                        reporter.phase_finished("sam_backend_load")
+                    for episode_id in pending:
+                        result = execute_sam_episode(
+                            runtime,
+                            capture_stage_output=self.hooks.capture_stage_output,
+                            dynamic=dynamic,
+                            episode_id=episode_id,
+                            run_id=selected_run_id,
+                            backend=backend,
+                            source_only=source_only,
+                            position=selected_ids.index(episode_id) + 1,
+                            total=len(selected_ids),
+                            report_lifecycle=report_lifecycle,
+                            reporter=reporter,
                         )
-                        with self.hooks.capture_stage_output(reporter):
-                            gripper_complete = runtime.emit_gripper_result(
-                                selected_run_id,
-                                gripper_execution,
-                            )
-                        episode_status = (
-                            "completed" if gripper_complete else "gripper_incomplete"
-                        )
-                        records.append(
-                            {"episode": episode_id, "status": episode_status}
-                        )
-                        episode_terminal(episode_id, episode_status)
-                        if reporter is not None:
-                            reporter.stage_finished(
-                                episode_id,
-                                current_stage,
-                                status=episode_status,
-                            )
-                            if report_lifecycle:
-                                reporter.episode_finished(
-                                    episode_id,
-                                    status=episode_status,
-                                )
-                        current_stage = None
-                    except SystemExit as exc:
-                        error = f"stage exited with code {exc.code}"
-                        records.append(
-                            {
-                                "episode": episode_id,
-                                "status": "failed",
-                                "error": error,
-                            }
-                        )
-                        episode_terminal(episode_id, "failed")
-                        if reporter is not None:
-                            if current_stage is not None:
-                                reporter.stage_finished(
-                                    episode_id,
-                                    current_stage,
-                                    status="failed",
-                                    detail=error,
-                                )
-                            if report_lifecycle:
-                                reporter.episode_finished(
-                                    episode_id,
-                                    status="failed",
-                                    detail=error,
-                                )
-                    except runtime.execution_errors as exc:
-                        error = str(exc)
-                        records.append(
-                            {
-                                "episode": episode_id,
-                                "status": "failed",
-                                "error": error,
-                            }
-                        )
-                        episode_terminal(episode_id, "failed")
-                        if reporter is not None:
-                            if current_stage is not None:
-                                reporter.stage_finished(
-                                    episode_id,
-                                    current_stage,
-                                    status="failed",
-                                    detail=error,
-                                )
-                            if report_lifecycle:
-                                reporter.episode_finished(
-                                    episode_id,
-                                    status="failed",
-                                    detail=error,
-                                )
-                        if runtime.fatal_cuda_error(exc):
-                            fatal_error = exc
+                        records.append(result.to_record())
+                        episode_terminal(episode_id, result.status)
+                        if result.fatal_cuda:
+                            fatal_error = result.error or "fatal CUDA error"
                             break
-        finally:
-            if backend is not None:
-                backend.shutdown()
+            finally:
+                if backend is not None:
+                    backend.shutdown()
 
         if fatal_error is not None:
             recorded_ids = {
@@ -472,7 +507,7 @@ class SamWorkflow[BackendT: SamBackend, SamExecutionT, GripperExecutionT]:
                         reporter.episode_finished(
                             episode_id,
                             status="not_run_after_fatal_cuda",
-                            detail=str(fatal_error),
+                            detail=fatal_error,
                         )
 
         render_report: dict[str, Any] | None = None
@@ -524,11 +559,23 @@ class SamWorkflow[BackendT: SamBackend, SamExecutionT, GripperExecutionT]:
             "sam_incomplete",
             "gripper_incomplete",
             "not_run_after_fatal_cuda",
+            "not_run_no_healthy_sam_worker",
             "render_failed",
         }
         passed = fatal_error is None and not any(
             record.get("status") in failure_statuses for record in records
         )
+        backend_record: dict[str, Any] = {
+            "object_masks": "sam",
+            "gripper": None if source_only else "sam",
+        }
+        if dynamic.parallel.enabled:
+            backend_record["parallel_sam"] = {
+                "worker_gpus": list(dynamic.parallel.sam_worker_gpus),
+                "worker_count": len(dynamic.parallel.sam_worker_gpus),
+                "qwen_max_in_flight": dynamic.parallel.qwen_max_in_flight,
+                "used": parallel_used,
+            }
         summary_model = ProcessSummary(
             format_version=PROCESS_SUMMARY_FORMAT_VERSION,
             annotation_mode=self.config.annotation.mode.value,
@@ -546,11 +593,8 @@ class SamWorkflow[BackendT: SamBackend, SamExecutionT, GripperExecutionT]:
             qwen_health=health,
             records=tuple(EpisodeRecord.from_payload(record) for record in records),
             render=render_report,
-            fatal_error=None if fatal_error is None else str(fatal_error),
-            backend={
-                "object_masks": "sam",
-                "gripper": None if source_only else "sam",
-            },
+            fatal_error=fatal_error,
+            backend=backend_record,
             passed=passed,
             stage_mode="object_source_only" if source_only else "full_sam",
         )
@@ -588,6 +632,19 @@ def load_sam_runtime() -> SamRuntime[SamBackend, Any, Any]:
     episode_runtime = importlib.import_module(
         "robotwin_annotation_v2.application.episode_pipeline"
     )
+
+    def run_qwen_without_health(
+        config: PipelineConfig,
+        episode_id: int,
+        run_id: str | None,
+    ) -> None:
+        episode_runtime.run_qwen(
+            config,
+            episode_id,
+            run_id,
+            check_health=False,
+        )
+
     return SamRuntime(
         qwen_client_factory=OpenAICompatibleQwenClient.from_config,
         backend_factory=Sam3Adapter,
@@ -599,7 +656,7 @@ def load_sam_runtime() -> SamRuntime[SamBackend, Any, Any]:
         fatal_cuda_error=episode_runtime._fatal_cuda_error,
         gripper_episode_complete=episode_runtime._gripper_episode_complete,
         sam_episode_complete=episode_runtime._sam_episode_complete,
-        run_qwen=episode_runtime.run_qwen,
+        run_qwen=run_qwen_without_health,
     )
 
 

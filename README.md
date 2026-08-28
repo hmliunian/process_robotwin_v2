@@ -57,6 +57,13 @@ just sam <run_id> 7152
 just run 7152
 just process ../dataset/move_pillbottle_pad_coverage20_original
 
+# Qwen API + multi-GPU SAM；SAM_WORKER_GPUS 必填，API 并发默认 4
+SAM_WORKER_GPUS=0,1,2,3 just run-parallel \
+  ../dataset/move_pillbottle_pad_coverage20_original
+
+# 将审核后的真实 pick-and-place MCAP 转成 RoboTwin 目录
+just convert-real <input_root> <new_output_root> --limit 1
+
 # 多 episode 顺序执行；一个 SAM3 adapter 在整个 batch 内常驻
 .venv/bin/python scripts/run_target_receiver.py sam-batch \
   --config configs/pilot_move_pillbottle_pad.yaml \
@@ -80,10 +87,11 @@ episode 默认跳过，CUDA 级故障会立即终止 worker。`run` 会按 qwen 
 
 `just process <dataset_root>` 是推荐的一键入口：自动扫描
 `data/chunk-*/episode_*.parquet`，核对 video/sidecar，处理全部完整 episode，最后生成
-四通道 overlay 视频以及 target/receiver/gripper 的 early/late review sheets。它会先探测
-配置中的 Qwen endpoint；已有健康服务时直接复用且不关闭，否则排除 SAM/显式 EGL GPU，
-选择至少有 60,000 MiB 空闲显存的最空闲 GPU 启动服务。由本次命令启动的 Qwen 会在
-process 成功、失败或被中断后自动关闭，加载日志保存在 `artifacts/qwen-services/`。
+四通道 overlay 视频以及 target/receiver/gripper 的 early/late review sheets。配置为
+`qwen.runtime=api` 时，它只探测远程 endpoint，失败即退出，绝不启动本地模型；只有
+`qwen.runtime=local` 才会复用已有服务，或排除 SAM/显式 EGL GPU 后选择合格 GPU 启动服务。
+由本次命令启动的本地 Qwen 会在 process 成功、失败或被中断后自动关闭，加载日志保存在
+`artifacts/qwen-services/`。
 
 默认 API 配置优先读取环境变量 `QWEN_API_KEY`；未设置时，`just process` 会读取被 Git
 忽略的 `secrets/qwen_api_key.txt`。可复制 `secrets/qwen_api_key.txt.example` 后填入单行
@@ -110,6 +118,27 @@ just process <dataset_root> --verbose
 `--output-format` 是 `--ui` 的等价别名；设置 `NO_COLOR` 会关闭 Rich 颜色，`CI` 或
 `TERM=dumb` 环境会自动使用纯文本模式。完整机器可读结果仍以 run 目录中的
 `process_summary.json` 为准。
+
+`just run-parallel` 是 Qwen API + 多 GPU SAM 的快捷入口。`SAM_WORKER_GPUS` 必须显式设置为
+逗号分隔的 physical GPU ID；每张卡常驻一个 SAM worker。`QWEN_MAX_IN_FLIGHT` 可选，默认
+为 `4`，限制所有 worker 共享的远程 Qwen HTTP 并发数。其余参数与 `just process` 完全相同：
+
+```bash
+SAM_WORKER_GPUS=0,1,2,3 QWEN_MAX_IN_FLIGHT=4 \
+just run-parallel <dataset_root> \
+  --urdf-egl-device-id 4
+```
+
+该快捷入口要求所选配置使用 `qwen.runtime=api`，且不会查询或等待 GPU 空闲显存；它只校验
+重复 SAM GPU，以及 live URDF 中 SAM pool 与 EGL GPU 是否重叠。需要直接控制 CLI 覆盖时，
+仍可使用 `just process ... --sam-worker-gpus ... --qwen-max-in-flight ...`；不传 worker pool 时
+沿用 YAML，YAML 也未配置则保持单进程串行。
+
+真实 pick-and-place MCAP 可通过 `just convert-real INPUT_ROOT OUTPUT_ROOT [OPTIONS...]` 转换。
+首次使用先安装 `uv sync --extra real-mcap`；`--texts` 默认是已审核的
+`configs/datasets/pick_and_place_real_texts.json`，`--limit N` 可用于 smoke conversion。转换器
+只选择 `complete_pick_place` 记录并拒绝覆盖已有输出目录。转换结果没有 depth，后续必须使用
+`--gripper-backend sam`。完整流程见 [docs/datasets.md](docs/datasets.md#0-真实-pp-mcap-转换)。
 
 完整文档从 [docs/README.md](docs/README.md) 开始；当前实现契约见
 [docs/architecture.md](docs/architecture.md)，coverage20 实验、参数依据和证据边界见

@@ -165,6 +165,9 @@ def test_qwen_request_interleaves_frame_label_and_image() -> None:
     assert "frame_id=0" in content[0]["text"]
     assert "frame_id=9" in content[2]["text"]
     assert "frame_id=15" in content[4]["text"]
+    assert "seed_eligible_roles=target,receiver; seed_candidate=yes" in content[0]["text"]
+    assert "context_only_roles=receiver" in content[4]["text"]
+    assert "seed_candidate=no; forbidden_as_seed=yes" in content[4]["text"]
     assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
     assert "{labeled_multimodal_frames}" not in request.rendered_prompt
     assert 'schema={"target": {}, "receiver": {}}' in request.rendered_prompt
@@ -189,6 +192,32 @@ def test_semantic_prompt_defines_receiver_by_direct_contact() -> None:
     assert "也不得因此返回 no_clear_seed" in prompt_text
     assert "允许在\n   shape_category_query 中给出一个稳定可见的“颜色 + 形状”别名" in prompt_text
     assert "例如 teal white bottle" in prompt_text
+
+
+def test_open_set_semantic_prompt_requires_category_query_for_ok_roles() -> None:
+    template = (
+        PROJECT_ROOT / "configs/prompts/target_receiver_semantic_open_set.txt"
+    ).read_text(encoding="utf-8")
+
+    request = build_qwen_request(_context(), _frames(), template)
+    prompt_text = " ".join(request.rendered_prompt.split())
+
+    assert (
+        '对每个角色，当 status="ok" 时，category_query 必须是非空字符串，且 '
+        "recommended_order 必须包含 category_query。"
+    ) in prompt_text
+    assert (
+        '"category_query": "required 1-4 lowercase English words for ok; '
+        'null only for no_clear_seed"'
+    ) in prompt_text
+    assert (
+        '对每个角色，当 status="ok" 时，seed_frame_id 必须来自该角色标记为 '
+        "seed_candidate=yes 的候选；"
+    ) in prompt_text
+    assert (
+        '"seed_frame_id": "integer from this role\'s seed_candidate=yes frames for ok; '
+        'null only for no_clear_seed"'
+    ) in prompt_text
 
 
 def test_parse_semantic_plan_uses_first_qwen_recommendation() -> None:

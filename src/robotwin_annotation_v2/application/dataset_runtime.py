@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -40,7 +41,12 @@ from robotwin_annotation_v2.application.urdf_workflow import (
     UrdfWorkflow,
     UrdfWorkflowHooks,
 )
-from robotwin_annotation_v2.config import PipelineConfig, load_config
+from robotwin_annotation_v2.config import (
+    ParallelConfig,
+    PipelineConfig,
+    load_config,
+    parse_gpu_list,
+)
 from robotwin_annotation_v2.domain import (
     AnnotationMode,
     GripperBackend,
@@ -461,6 +467,19 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--run-id")
     parser.add_argument("--episode-ids", type=int, nargs="*")
     parser.add_argument(
+        "--sam-worker-gpus",
+        type=parse_gpu_list,
+        help=(
+            "Comma-separated physical GPU ids for one persistent SAM worker each; "
+            "an empty value disables a YAML-configured pool"
+        ),
+    )
+    parser.add_argument(
+        "--qwen-max-in-flight",
+        type=_positive_cli_integer,
+        help="Maximum concurrent remote Qwen HTTP requests across SAM workers",
+    )
+    parser.add_argument(
         "--gripper-backend",
         choices=GRIPPER_BACKENDS,
         default="urdf",
@@ -488,7 +507,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=int,
         help=(
             "Physical GPU for EGL rendering; live URDF mode otherwise selects the "
-            "freest GPU not used by SAM"
+            "first GPU outside the SAM worker pool"
         ),
     )
     parser.add_argument(
@@ -526,6 +545,40 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _positive_cli_integer(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("value must be a positive integer") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("value must be a positive integer")
+    return parsed
+
+
+def _apply_parallel_cli_overrides(
+    config: PipelineConfig,
+    args: argparse.Namespace,
+) -> PipelineConfig:
+    """Apply explicit CLI parallelism without replacing YAML defaults."""
+
+    if args.sam_worker_gpus is None and args.qwen_max_in_flight is None:
+        return config
+    parallel = replace(
+        config.parallel,
+        sam_worker_gpus=(
+            config.parallel.sam_worker_gpus
+            if args.sam_worker_gpus is None
+            else args.sam_worker_gpus
+        ),
+        qwen_max_in_flight=(
+            config.parallel.qwen_max_in_flight
+            if args.qwen_max_in_flight is None
+            else args.qwen_max_in_flight
+        ),
+    )
+    return replace(config, parallel=parallel)
+
+
 def _optional_cli_path(value: str | None) -> Path | None:
     if value is None or value.strip() in {"", "-"}:
         return None
@@ -540,6 +593,7 @@ def _path_target_args(
     task: str,
     camera: str,
     run_id: str | None,
+    parallel_defaults: ParallelConfig | None,
 ) -> argparse.Namespace:
     values = vars(args) | {
         "config": config,
@@ -549,6 +603,7 @@ def _path_target_args(
         "camera": camera,
         "path_mode": None,
         "run_id": run_id,
+        "path_parallel_defaults": parallel_defaults,
     }
     return argparse.Namespace(**values)
 
@@ -591,14 +646,18 @@ def _run_path_input(args: argparse.Namespace, reporter: ProcessUI) -> dict[str, 
         )
     if not resolved.is_collection:
         target = resolved.targets[0]
+        target_config = _path_profile_config(profile, target)
         return _run_from_args(
             _path_target_args(
                 args,
-                config=_path_profile_config(profile, target),
+                config=target_config,
                 dataset_root=target.root,
                 task=target.task,
                 camera=target.camera,
                 run_id=args.run_id,
+                parallel_defaults=(
+                    None if target_config == profile.config_path else profile.parallel
+                ),
             ),
             reporter,
         )
@@ -607,15 +666,19 @@ def _run_path_input(args: argparse.Namespace, reporter: ProcessUI) -> dict[str, 
     records: list[dict[str, Any]] = []
     for target in resolved.targets:
         task_run_id = _validate_run_id(f"{collection_run_id}-{target.task}")
+        target_config = _path_profile_config(profile, target)
         try:
             summary = _run_from_args(
                 _path_target_args(
                     args,
-                    config=_path_profile_config(profile, target),
+                    config=target_config,
                     dataset_root=target.root,
                     task=target.task,
                     camera=target.camera,
                     run_id=task_run_id,
+                    parallel_defaults=(
+                        None if target_config == profile.config_path else profile.parallel
+                    ),
                 ),
                 reporter,
             )
@@ -669,6 +732,10 @@ def _run_from_args(
     if args.path_mode is not None:
         raise ValueError("--target-only/--pick-place require --data-path")
     config = load_config(args.config)
+    parallel_defaults = getattr(args, "path_parallel_defaults", None)
+    if parallel_defaults is not None:
+        config = replace(config, parallel=parallel_defaults)
+    config = _apply_parallel_cli_overrides(config, args)
     output_root = config.output_root if args.output_dir is None else args.output_dir
     source_run_dir = _optional_cli_path(args.source_run_dir)
     urdf_path = _optional_cli_path(args.urdf_path)

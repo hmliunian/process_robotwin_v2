@@ -55,6 +55,18 @@ just process DATASET_ROOT [OUTPUT_ROOT]
 just process DATASET_ROOT [OUTPUT_ROOT] --gripper-backend sam
 ```
 
+Qwen API 配置下使用多 GPU SAM worker：
+
+```bash
+SAM_WORKER_GPUS=0,1,2,3 QWEN_MAX_IN_FLIGHT=4 \
+just run-parallel DATASET_ROOT [OUTPUT_ROOT] --gripper-backend sam
+```
+
+`SAM_WORKER_GPUS` 必填；`QWEN_MAX_IN_FLIGHT` 默认 `4`。其余参数与 `just process` 相同，
+调度器不会自动等待空闲 GPU。真实 pick-and-place MCAP 使用
+`just convert-real INPUT_ROOT OUTPUT_ROOT [--limit N]` 转换；安装依赖、无 depth 限制和完整
+处理示例见 [datasets.md](datasets.md#0-真实-pp-mcap-转换)。
+
 默认 URDF 模式使用仓库内置的
 `configs/assets/aloha-agilex/arx5_description_isaac_gripper.urdf`，先将对象结果冻结到：
 

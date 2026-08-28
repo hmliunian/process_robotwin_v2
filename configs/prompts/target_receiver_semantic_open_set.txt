@@ -74,6 +74,12 @@ seed 中二者不需要已经接触；只要该对象在任一允许候选中清
     category_query、color_category_query 或 shape_category_query。shape_category_query 若无法
     给出带类别名的形状短语，可使用 white bar、brown platform 等具体可见形体，或填写 null；
     不得与 general_fallback_query 重复。
+13. 对每个角色，当 status="ok" 时，category_query 必须是非空字符串，且 recommended_order
+    必须包含 category_query。只有 status="no_clear_seed" 时 category_query 才允许为 null；
+    即使类别较宽泛，也必须从任务文本和图像中选择最接近可见完整物体的常见 head noun。
+14. 对每个角色，当 status="ok" 时，seed_frame_id 必须来自该角色标记为 seed_candidate=yes
+    的候选；任何 seed_candidate=no 的帧（包括 place_context）只能辅助判断身份，绝不能作为
+    seed_frame_id 输出。
 
 只返回一个严格符合下列结构的 JSON 对象，不要输出 Markdown 或额外说明；不得添加本次不需要的角色：
 {response_schema}

@@ -308,6 +308,35 @@ target 的严格 temporal QC 只覆盖普通编码段（截至 close 完成）�
 发生合法的大幅位移，因此 hold 段不参与 quarantine 判定。hold 像素仍照常发布，并在
 `frame_provenance.json` 的 target channel 中单独记录窗口覆盖率。
 
+### 5.4 API 模式的多 GPU SAM worker pool
+
+完整 dataset workflow 可以显式启用多进程 SAM。该模式只允许 `qwen.runtime=api`；远程 Qwen
+不占用本机 GPU，每个配置的 physical GPU 启动一个 `spawn` 常驻进程，并在该进程内只加载一次
+单卡 `Sam3Adapter`：
+
+```yaml
+parallel:
+  sam_worker_gpus: [0, 1, 2, 3]
+  qwen_max_in_flight: 4
+```
+
+`parallel` 缺失或 `sam_worker_gpus: []` 时保持原串行路径，`sam3.gpus` 仍是串行 backend 的
+设备配置，不兼作并行调度列表。CLI 可用 `--sam-worker-gpus 0,1,2,3` 和
+`--qwen-max-in-flight 4` 覆盖 YAML。
+
+父进程先做一次 Qwen health；每个 worker 独立完成 backend-ready 握手后立即进入调度，不等待
+其余 worker 的全池 barrier。episode 按当前空闲 worker 动态派发。语义规划、object QC、bbox
+fallback 和 SAM gripper QC 的所有 HTTP 请求共用
+一个跨进程上限；令牌由 OS 文件锁实现，因此 worker 被硬终止时不会泄漏并发配额。普通 episode
+失败不淘汰 worker；意外退出会重建同一 GPU worker，并最多重试该 episode 一次；fatal CUDA
+只隔离故障 GPU，其他 GPU 继续处理。backend 启动和单 episode 分别有 600 秒、3600 秒
+watchdog；超时按意外退出处理，避免存活但无响应的 worker 永久阻塞调度。终态 callback 按实际
+完成顺序触发，便于 live URDF 提前消费，而 summary records 按原请求顺序稳定写入。
+
+父进程独占 UI、completion receipt 和 `process_summary.json`；worker 只写各自 episode artifacts
+和独立日志。调度器不读取显存占用、不等待 GPU 空闲，也不因其他进程占用而自动换卡；它只拒绝
+本次配置中的重复 SAM GPU，以及 live streaming 时 SAM pool 与 EGL GPU 的重叠。
+
 ## 6. Gripper backend
 
 ### 6.1 公共语义
@@ -418,9 +447,10 @@ depth-complete episode discovery
   -> canonical publisher + shared renderer
 ```
 
-默认会尝试 streaming；streaming 时 EGL 必须使用与 SAM 不同的 physical GPU，显式选择同一
-GPU 会拒绝，自动选择不到独立设备则退回串行。串行路径在 EGL 启动前释放 SAM，因此可共享
-physical GPU。`--urdf-pipeline-buffer-size` 限制 source-ready episode queue，
+默认会尝试 streaming；streaming 时 EGL 必须使用与全部 SAM worker 不同的 physical GPU，
+显式选择重叠设备会拒绝。未显式指定时只枚举 GPU index，并稳定选择编号最小的非 SAM GPU；
+不会读取显存或利用率。枚举不到独立设备则退回串行。串行路径在 EGL 启动前释放 SAM，因此可
+共享 physical GPU。`--urdf-pipeline-buffer-size` 限制 source-ready episode queue，
 `--no-urdf-pipeline` 强制串行。streaming source 在推理前写 immutable run contract，并在每个
 完整 episode 后原子写 completion receipt；URDF worker 只消费 receipt 校验通过的 episode。
 
@@ -457,11 +487,25 @@ depth。该入口自动复用健康 Qwen endpoint；若 endpoint 不可用，会
 --camera NAME
 --run-id ID
 --episode-ids ID...
+--sam-worker-gpus GPU[,GPU...]  # API mode；每张卡一个常驻 SAM worker
+--qwen-max-in-flight N          # 全部 worker 的远程 Qwen HTTP 并发上限
 --force                    # 仅 SAM
 --skip-render
 --ui {auto,rich,plain,json}
 --verbose
 ```
+
+API mode 的多 GPU 快捷入口是：
+
+```bash
+SAM_WORKER_GPUS=0,1,2,3 QWEN_MAX_IN_FLIGHT=4 \
+just run-parallel DATASET_ROOT [OUTPUT_ROOT] [PROCESS_ARGS...]
+```
+
+它复用 `just process` 的 launcher 和全部参数，只追加 `--sam-worker-gpus` 与
+`--qwen-max-in-flight`。`SAM_WORKER_GPUS` 无默认值且必须显式提供；
+`QWEN_MAX_IN_FLIGHT` 默认 `4`。底层 CLI/YAML 未经该快捷入口覆盖时仍以空 worker pool 和
+并发 `1` 为默认，因此普通 `just process` 保持串行。该入口不会改变 GPU 检查与调度合同。
 
 若第二个 positional token 以 `-` 开头，它会被当作 process 参数，输出根仍为
 `artifacts/runs`。
@@ -513,7 +557,7 @@ URDF-only 参数：
 --urdf-mesh-root
 --urdf-depth-tolerance-mm
 --urdf-fit-config-json
---urdf-egl-device-id GPU       # physical EGL GPU；streaming 时必须与 SAM GPU 不同
+--urdf-egl-device-id GPU       # physical EGL GPU；streaming 时必须与全部 SAM worker 不同
 --urdf-pipeline-buffer-size N  # live streaming source-ready queue，默认 2
 --no-urdf-pipeline             # live 模式强制串行 Source -> URDF
 --allow-partial-source
@@ -546,8 +590,8 @@ just sam RUN_ID EPISODE_ID
 `run` 子命令按 `qwen -> sam -> gripper` 运行单 episode。`gripper` 前置要求同一 run 的
 mode-required object SAM 已完成且 QC passed。
 
-配置里的 `sam3.gpus` 使用物理 GPU index 时，不要同时用 `CUDA_VISIBLE_DEVICES` 把同一设备
-重新映射为 logical 0。
+配置里的 `sam3.gpus` 和 `parallel.sam_worker_gpus` 使用物理 GPU index 时，不要同时用
+`CUDA_VISIBLE_DEVICES` 把同一设备重新映射为 logical 0。
 
 ### 7.3 依赖
 

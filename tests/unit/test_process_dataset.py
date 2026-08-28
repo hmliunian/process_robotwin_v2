@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -12,6 +13,7 @@ import pytest
 
 import scripts.process_dataset as legacy_process_cli
 from robotwin_annotation_v2.application import dataset_runtime as process_module
+from robotwin_annotation_v2.application import parallel_sam_runtime as parallel_runtime_module
 from robotwin_annotation_v2.application import urdf_batch as urdf_module
 from robotwin_annotation_v2.application.dataset_runtime import (
     select_urdf_source_episodes,
@@ -21,7 +23,9 @@ from robotwin_annotation_v2.application.discovery import (
     build_dynamic_manifest,
     discover_episodes,
 )
-from robotwin_annotation_v2.config import AnnotationConfig
+from robotwin_annotation_v2.application.parallel_sam_protocol import SamWorkerOutcome
+from robotwin_annotation_v2.application.sam_workflow import SamEpisodeResult
+from robotwin_annotation_v2.config import AnnotationConfig, ParallelConfig
 from robotwin_annotation_v2.domain import TargetOnlyTaskKind, TargetProfile
 
 
@@ -308,6 +312,7 @@ def _cli_config(
             camera="cam_high",
         ),
         sam3=SimpleNamespace(gpus=(2,)),
+        parallel=ParallelConfig(),
     )
 
 
@@ -580,6 +585,83 @@ def test_process_dataset_target_receiver_only_skips_gripper_and_uses_sam_resume(
     assert summary["stage_mode"] == "object_source_only"
 
 
+def test_parallel_sam_summary_records_pool_and_unhealthy_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dataset = tmp_path / "dataset"
+    _touch_episode(dataset, 7)
+    monkeypatch.setattr(
+        process_module,
+        "_measure_episode",
+        lambda _episode: (6, (2, 3), 0),
+    )
+    config = replace(
+        process_module.load_config(Path("configs/process_qwen38_api.yaml")),
+        parallel=ParallelConfig(sam_worker_gpus=(1, 4), qwen_max_in_flight=2),
+    )
+    runtime = SimpleNamespace(
+        qwen_client_factory=lambda **_kwargs: SimpleNamespace(
+            health=lambda: {"status": "ok"}
+        ),
+        backend_factory=lambda **_kwargs: pytest.fail("parent must not load SAM"),
+        execution_errors=(RuntimeError,),
+        emit_gripper_result=lambda *_args: True,
+        emit_sam_result=lambda *_args: True,
+        execute_gripper_episode=lambda *_args: object(),
+        execute_sam_episode=lambda *_args: object(),
+        fatal_cuda_error=lambda _exc: False,
+        gripper_episode_complete=lambda *_args: False,
+        sam_episode_complete=lambda *_args: False,
+        run_qwen=lambda *_args: None,
+    )
+    monkeypatch.setattr(process_module, "_load_sam_runtime", lambda: runtime)
+
+    def fake_parallel(*_args: Any, **kwargs: Any) -> tuple[SamWorkerOutcome, ...]:
+        result = SamWorkerOutcome(
+            None,
+            None,
+            7,
+            1,
+            "not_run_no_healthy_sam_worker",
+            "no healthy SAM worker remains",
+        )
+        kwargs["outcome_callback"](
+            SamEpisodeResult(result.episode_id, result.status, result.error)
+        )
+        return (result,)
+
+    monkeypatch.setattr(parallel_runtime_module, "run_parallel_sam_episodes", fake_parallel)
+
+    summary = process_module.process_dataset(
+        config,
+        dataset_root=dataset,
+        task="task",
+        camera="cam_high",
+        output_root=tmp_path / "output",
+        run_id="parallel-summary",
+        episode_ids=(7,),
+        skip_render=True,
+        object_source_only=True,
+    )
+
+    assert summary["passed"] is False
+    assert summary["records"] == [
+        {
+            "episode": 7,
+            "status": "not_run_no_healthy_sam_worker",
+            "attempt": 1,
+            "error": "no healthy SAM worker remains",
+        }
+    ]
+    assert summary["backend"]["parallel_sam"] == {
+        "worker_gpus": [1, 4],
+        "worker_count": 2,
+        "qwen_max_in_flight": 2,
+        "used": True,
+    }
+
+
 def test_process_dataset_rejects_deprecated_alias_conflict_before_runtime_load(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -746,6 +828,33 @@ def test_parse_args_defaults_to_urdf_and_preserves_just_sentinel_paths() -> None
     assert args.urdf_egl_device_id is None
     assert args.urdf_pipeline_buffer_size == 2
     assert args.no_urdf_pipeline is False
+    assert args.sam_worker_gpus is None
+    assert args.qwen_max_in_flight is None
+
+
+def test_parse_args_accepts_parallel_sam_controls() -> None:
+    args = process_module._parse_args(
+        ["--sam-worker-gpus", "1, 4,7", "--qwen-max-in-flight", "3"]
+    )
+
+    assert args.sam_worker_gpus == (1, 4, 7)
+    assert args.qwen_max_in_flight == 3
+    assert process_module._parse_args(["--sam-worker-gpus", ""]).sam_worker_gpus == ()
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        ("--sam-worker-gpus", "1,1"),
+        ("--sam-worker-gpus", "-1"),
+        ("--qwen-max-in-flight", "0"),
+    ),
+)
+def test_parse_args_rejects_invalid_parallel_sam_controls(
+    arguments: tuple[str, str],
+) -> None:
+    with pytest.raises(SystemExit):
+        process_module._parse_args(arguments)
 
 
 def test_parse_args_accepts_urdf_pipeline_controls() -> None:
@@ -975,15 +1084,19 @@ def test_path_only_collection_runs_each_task_and_writes_summary(
         "resolve_dataset_input",
         lambda *_args, **_kwargs: resolved,
     )
-    config = _cli_config(
-        tmp_path,
-        mode=process_module.AnnotationMode.TARGET_ONLY,
-        runtime="api",
+    real_load_config = process_module.load_config
+    config = replace(
+        real_load_config(Path("configs/process_target_only_qwen38_api.yaml")),
+        config_path=tmp_path / "collection-profile.yaml",
+        output_root=tmp_path / "configured-output",
+        parallel=ParallelConfig(sam_worker_gpus=(1, 4), qwen_max_in_flight=2),
     )
 
     def fake_load_config(path: Path) -> Any:
         config_paths.append(path)
-        return config
+        if path == config.config_path:
+            return config
+        return real_load_config(path)
 
     monkeypatch.setattr(process_module, "load_config", fake_load_config)
 
@@ -1021,6 +1134,10 @@ def test_path_only_collection_runs_each_task_and_writes_summary(
         config.config_path,
         config.config_path,
         process_module.CONTACT_PRESS_CONFIGS["api"],
+    ]
+    assert [call["pipeline_config"].parallel for call in calls] == [
+        config.parallel,
+        config.parallel,
     ]
     assert summary["passed"] is True
     assert Path(summary["artifact"]).is_file()
@@ -1103,6 +1220,48 @@ def test_cli_uses_config_output_root_without_explicit_override(
     )
 
     assert calls["output_root"] == config.output_root
+
+
+def test_cli_parallel_overrides_reach_sam_runner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = process_module.load_config(
+        Path("configs/process_qwen38_api.yaml")
+    )
+    config = replace(
+        base,
+        output_root=tmp_path / "configured-output",
+        parallel=ParallelConfig(sam_worker_gpus=(8,), qwen_max_in_flight=5),
+    )
+    calls: dict[str, Any] = {}
+
+    def fake_process(received_config: Any, **_kwargs: Any) -> dict[str, Any]:
+        calls["config"] = received_config
+        return {"passed": True}
+
+    monkeypatch.setattr(process_module, "load_config", lambda _path: config)
+    monkeypatch.setattr(process_module, "process_dataset", fake_process)
+    args = process_module._parse_args(
+        [
+            "--gripper-backend",
+            "sam",
+            "--sam-worker-gpus",
+            "1,4",
+            "--qwen-max-in-flight",
+            "2",
+        ]
+    )
+
+    process_module._run_from_args(
+        args,
+        process_module.ProcessUI(emit_json_summary=False, verbose=False),
+    )
+
+    assert calls["config"].parallel == ParallelConfig(
+        sam_worker_gpus=(1, 4),
+        qwen_max_in_flight=2,
+    )
 
 
 def test_main_live_urdf_cli_uses_bundled_asset_and_not_derived_entrypoint(
@@ -1223,10 +1382,7 @@ def test_live_urdf_pipeline_runs_target_receiver_source_before_derived_urdf(
         "gpus": [
             {
                 "gpu": 2,
-                "allocated_before_bytes": 10,
-                "reserved_before_bytes": 20,
-                "allocated_after_bytes": 0,
-                "reserved_after_bytes": 0,
+                "cache_cleared": True,
             }
         ],
     }
@@ -1277,10 +1433,13 @@ def test_live_urdf_pipeline_streams_by_default_and_reuses_backend_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = _cli_config(tmp_path)
+    config.parallel = ParallelConfig(sam_worker_gpus=(0, 2, 5), qwen_max_in_flight=2)
     dataset = tmp_path / "dataset"
     _touch_episode(dataset, 7)
     streamed: dict[str, Any] = {}
     canonical: dict[str, Any] = {}
+    selected_gpus: list[tuple[int, ...]] = []
+    released_gpus: list[tuple[int, ...]] = []
     prepared = {"status": "complete", "episodes": []}
 
     def fake_stream(*_args: Any, **kwargs: Any) -> tuple[Any, Any, Any]:
@@ -1291,14 +1450,19 @@ def test_live_urdf_pipeline_streams_by_default_and_reuses_backend_result(
         canonical.update(kwargs)
         return {"passed": True, "gripper_backend": "urdf"}
 
-    monkeypatch.setattr(process_module, "_select_urdf_egl_device", lambda *_args: 3)
+    def select_egl(gpus: Any, _requested: Any) -> int:
+        selected_gpus.append(tuple(gpus))
+        return 3
+
+    monkeypatch.setattr(process_module, "_select_urdf_egl_device", select_egl)
     monkeypatch.setattr(
         process_module, "_run_streaming_source_urdf_workers", fake_stream
     )
     monkeypatch.setattr(
         process_module,
         "_release_sam_cuda_cache",
-        lambda _gpus: {"gc_collected": 0, "cuda_available": True, "gpus": []},
+        lambda gpus: released_gpus.append(tuple(gpus))
+        or {"gc_collected": 0, "cuda_available": True, "gpus": []},
     )
     monkeypatch.setattr(process_module, "process_urdf_source_run", fake_canonical)
 
@@ -1321,6 +1485,8 @@ def test_live_urdf_pipeline_streams_by_default_and_reuses_backend_result(
     assert canonical["prepared_backend_error"] is None
     assert canonical["report_lifecycle"] is False
     assert canonical["egl_device_id"] == 3
+    assert selected_gpus == [(0, 2, 5)]
+    assert released_gpus == [(0, 2, 5)]
     assert summary["passed"] is True
 
 

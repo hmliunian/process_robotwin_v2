@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import base64
+import fcntl
 import io
 import json
 import math
 import os
+import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
 import numpy as np
@@ -20,6 +25,76 @@ if TYPE_CHECKING:
     from robotwin_annotation_v2.config import QwenConfig
 
 NDArray = np.ndarray[Any, Any]
+
+
+class RequestGate(Protocol):
+    def acquire(self, blocking: bool = True, timeout: float | None = None) -> bool: ...
+
+    def release(self) -> None: ...
+
+
+@dataclass(slots=True)
+class FileRequestGate:
+    """Cross-process request tokens whose locks are released by the kernel on exit."""
+
+    token_paths: tuple[Path, ...]
+    poll_interval_seconds: float = 0.02
+    _handle: io.BufferedRandom | None = field(default=None, init=False, repr=False)
+
+    @classmethod
+    def create(cls, directory: Path, *, capacity: int) -> FileRequestGate:
+        if capacity < 1:
+            raise ValueError("request gate capacity must be positive")
+        directory.mkdir(parents=True, exist_ok=True)
+        token_paths = tuple(directory / f"token-{index}.lock" for index in range(capacity))
+        for path in token_paths:
+            path.touch(exist_ok=True)
+        return cls(token_paths)
+
+    def acquire(self, blocking: bool = True, timeout: float | None = None) -> bool:
+        if self._handle is not None:
+            raise RuntimeError("Qwen request gate is already acquired")
+        if timeout is not None and timeout < 0:
+            raise ValueError("request gate timeout must be non-negative")
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            for path in self.token_paths:
+                handle = path.open("a+b")
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    handle.close()
+                else:
+                    self._handle = handle
+                    return True
+            if not blocking or (deadline is not None and time.monotonic() >= deadline):
+                return False
+            remaining = (
+                self.poll_interval_seconds
+                if deadline is None
+                else min(self.poll_interval_seconds, max(0.0, deadline - time.monotonic()))
+            )
+            time.sleep(remaining)
+
+    def release(self) -> None:
+        handle = self._handle
+        if handle is None:
+            raise RuntimeError("Qwen request gate is not acquired")
+        self._handle = None
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+
+
+_REQUEST_GATE: RequestGate | None = None
+
+
+def install_qwen_request_gate(gate: RequestGate | None) -> None:
+    """Install a process-local concurrency gate for all Qwen HTTP requests."""
+
+    global _REQUEST_GATE
+    _REQUEST_GATE = gate
 
 
 class QwenServiceError(RuntimeError):
@@ -125,13 +200,33 @@ class OpenAICompatibleQwenClient:
             headers["Authorization"] = f"Bearer {api_key}"
         return headers
 
+    @contextmanager
+    def _request_permit(self) -> Iterator[None]:
+        gate = _REQUEST_GATE
+        if gate is None:
+            yield
+            return
+        if not gate.acquire(timeout=self.timeout_seconds):
+            raise QwenServiceError("timed out waiting for a Qwen API concurrency permit")
+        try:
+            yield
+        finally:
+            gate.release()
+
     def _read_json(self, request: urllib.request.Request) -> dict[str, Any]:
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                payload = json.load(response)
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")[:1000]
-            raise QwenServiceError(f"Qwen service returned HTTP {exc.code}: {detail}") from exc
+            with self._request_permit():
+                try:
+                    with urllib.request.urlopen(
+                        request,
+                        timeout=self.timeout_seconds,
+                    ) as response:
+                        payload = json.load(response)
+                except urllib.error.HTTPError as exc:
+                    detail = exc.read().decode("utf-8", errors="replace")[:1000]
+                    raise QwenServiceError(
+                        f"Qwen service returned HTTP {exc.code}: {detail}"
+                    ) from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise QwenServiceError(f"Qwen service request failed: {exc}") from exc
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
