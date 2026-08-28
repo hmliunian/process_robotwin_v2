@@ -83,10 +83,15 @@ class QwenStageResult:
 def _frame_label(context: LoopContext, frame_id: int) -> str:
     frame = next(item for item in context.semantic_frames if item.frame_id == frame_id)
     roles = ",".join(frame.eligible_roles)
-    seed = "yes" if frame.seed_eligible else "no"
+    if frame.seed_eligible:
+        role_field = f"seed_eligible_roles={roles}"
+        seed_fields = "seed_candidate=yes"
+    else:
+        role_field = f"context_only_roles={roles}"
+        seed_fields = "seed_candidate=no; forbidden_as_seed=yes"
     return (
         f"[frame_id={frame.frame_id}; purpose={frame.purpose.value}; "
-        f"eligible_roles={roles}; seed_candidate={seed}]"
+        f"{role_field}; {seed_fields}]"
     )
 
 
@@ -158,8 +163,14 @@ def build_qwen_request(
 def _response_schema(context: LoopContext) -> str:
     role_schema = {
         "status": "ok | no_clear_seed",
-        "seed_frame_id": "integer | null",
-        "category_query": "1-4 lowercase English words | null",
+        "seed_frame_id": (
+            "integer from this role's seed_candidate=yes frames for ok; "
+            "null only for no_clear_seed"
+        ),
+        "category_query": (
+            "required 1-4 lowercase English words for ok; "
+            "null only for no_clear_seed"
+        ),
         "color_category_query": "1-4 lowercase English words | null",
         "shape_category_query": "1-4 lowercase English words | null",
         "general_fallback_query": "1-4 lowercase English words | null",

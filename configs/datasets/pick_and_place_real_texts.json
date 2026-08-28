@@ -1,0 +1,308 @@
+{
+  "format_version": "real_pnp_texts_v1",
+  "camera_for_annotation": "coracam_head_left",
+  "review_views": [
+    "coracam_head_left",
+    "coracam_right_arm_left"
+  ],
+  "selection_policy": "Only complete visual pick-and-place trajectories are materialized.",
+  "records": [
+    {
+      "source_mcap": "e909c0f904c78295b8a7db9b73a72cad.mcap",
+      "task_text": "Pick up the white rectangular electronic device and place it on the gray wood-grain tabletop.",
+      "task_text_zh": "拿起白色长方形电子设备，放到灰色木纹桌面上。",
+      "target": "white rectangular electronic device",
+      "receiver": "gray wood-grain tabletop",
+      "quality_status": "complete_pick_place",
+      "quality_reason": "A complete open-close-transport-reopen sequence is visible."
+    },
+    {
+      "source_mcap": "c613a30c074763abf7f7bcd2ddfc7982.mcap",
+      "task_text": "Pick up the white rectangular electronic device and place it on the gray wood-grain tabletop.",
+      "task_text_zh": "拿起白色长方形电子设备，放到灰色木纹桌面上。",
+      "target": "white rectangular electronic device",
+      "receiver": "gray wood-grain tabletop",
+      "quality_status": "complete_pick_place",
+      "quality_reason": "A complete open-close-transport-reopen sequence is visible."
+    },
+    {
+      "source_mcap": "443171ab7d0638dfbfb5980b4e084c31.mcap",
+      "task_text": "Pick up the white rectangular electronic device and place it on the gray wood-grain tabletop.",
+      "task_text_zh": "拿起白色长方形电子设备，放到灰色木纹桌面上。",
+      "target": "white rectangular electronic device",
+      "receiver": "gray wood-grain tabletop",
+      "quality_status": "complete_pick_place",
+      "quality_reason": "A complete open-close-transport-reopen sequence is visible."
+    },
+    {
+      "source_mcap": "069a84dec8b7fda879e220d8e682d8ca.mcap",
+      "task_text": "Pick up the brown teddy bear with a yellow scarf and place it on the wooden tabletop.",
+      "task_text_zh": "拿起戴黄色围巾的棕色毛绒熊，放到木桌面上。",
+      "target": "brown teddy bear with yellow scarf",
+      "receiver": "wooden tabletop",
+      "quality_status": "incomplete_no_release",
+      "quality_reason": "The intended task is P&P, but no stable release occurs before the recording ends."
+    },
+    {
+      "source_mcap": "73dbc0b09bc85324fba0c1068726a782.mcap",
+      "task_text": "Pick up the brown teddy bear with a yellow scarf and place it on the wooden tabletop.",
+      "task_text_zh": "拿起戴黄色围巾的棕色毛绒熊，放到木桌面上。",
+      "target": "brown teddy bear with yellow scarf",
+      "receiver": "wooden tabletop",
+      "quality_status": "complete_pick_place",
+      "quality_reason": "A complete open-close-transport-reopen sequence is visible."
+    },
+    {
+      "source_mcap": "e81027e32324828aebe736c74092a0b0.mcap",
+      "task_text": "Pick up the brown teddy bear with a yellow scarf and place it on the wooden tabletop.",
+      "task_text_zh": "拿起戴黄色围巾的棕色毛绒熊，放到木桌面上。",
+      "target": "brown teddy bear with yellow scarf",
+      "receiver": "wooden tabletop",
+      "quality_status": "complete_pick_place",
+      "quality_reason": "A complete open-close-transport-reopen sequence is visible."
+    },
+    {
+      "source_mcap": "8f87d1c78f65a489c214b267fafd6f2e.mcap",
+      "task_text": "Pick up the brown teddy bear with a yellow scarf and place it on the wooden tabletop.",
+      "task_text_zh": "拿起戴黄色围巾的棕色毛绒熊，放到木桌面上。",
+      "target": "brown teddy bear with yellow scarf",
+      "receiver": "wooden tabletop",
+      "quality_status": "complete_pick_place",
+      "quality_reason": "A complete open-close-transport-reopen sequence is visible."
+    },
+    {
+      "source_mcap": "34838e6db982eeedd12a76927fefd063.mcap",
+      "task_text": "Open the white cabinet door.",
+      "task_text_zh": "打开白色柜门。",
+      "target": "white cabinet door",
+      "receiver": null,
+      "quality_status": "non_pick_place",
+      "quality_reason": "The robot manipulates an articulated cabinet door; no movable target-to-receiver placement occurs."
+    },
+    {
+      "source_mcap": "1c74ec4237245964f282f0062634aff2.mcap",
+      "task_text": "Open the white cabinet door.",
+      "task_text_zh": "打开白色柜门。",
+      "target": "white cabinet door",
+      "receiver": null,
+      "quality_status": "non_pick_place",
+      "quality_reason": "The robot manipulates an articulated cabinet door; no movable target-to-receiver placement occurs."
+    },
+    {
+      "source_mcap": "a2a81be2bd09e9b01068627644c09241.mcap",
+      "task_text": "Pick up the black rectangular pump bottle and place it on the top surface of the white three-drawer cabinet.",
+      "task_text_zh": "拿起黑色长方形按压泵瓶，放到白色三抽屉柜顶面上。",
+      "target": "black rectangular pump bottle",
+      "receiver": "top surface of white three-drawer cabinet",
+      "quality_status": "complete_pick_place",
+      "quality_reason": "A complete open-close-transport-reopen sequence is visible."
+    },
+    {
+      "source_mcap": "df58c5d7a79dde7f8e8ddbfef9bb3a3e.mcap",
+      "task_text": "Pick up the black rectangular pump bottle and place it on the top surface of the white three-drawer cabinet.",
+      "task_text_zh": "拿起黑色长方形按压泵瓶，放到白色三抽屉柜顶面上。",
+      "target": "black rectangular pump bottle",
+      "receiver": "top surface of white three-drawer cabinet",
+      "quality_status": "complete_pick_place",
+      "quality_reason": "A complete open-close-transport-reopen sequence is visible."
+    },
+    {
+      "source_mcap": "28ec209220db49b245509e0e516a6600.mcap",
+      "task_text": "Pick up the black rectangular pump bottle and place it on the top surface of the white three-drawer cabinet.",
+      "task_text_zh": "拿起黑色长方形按压泵瓶，放到白色三抽屉柜顶面上。",
+      "target": "black rectangular pump bottle",
+      "receiver": "top surface of white three-drawer cabinet",
+      "quality_status": "incomplete_no_release",
+      "quality_reason": "The intended task is P&P, but the grasp attempt never secures or transports the bottle; no placement or release occurs."
+    },
+    {
+      "source_mcap": "c8485bde939c160e4c004c40dc2f666f.mcap",
+      "task_text": "Pick up the black rectangular pump bottle and place it on the top surface of the white three-drawer cabinet.",
+      "task_text_zh": "拿起黑色长方形按压泵瓶，放到白色三抽屉柜顶面上。",
+      "target": "black rectangular pump bottle",
+      "receiver": "top surface of white three-drawer cabinet",
+      "quality_status": "complete_pick_place",
+      "quality_reason": "A complete open-close-transport-reopen sequence is visible."
+    },
+    {
+      "source_mcap": "afa501ea4b9b8a197d853f6424532a68.mcap",
+      "task_text": "Pick up the pink plush cushion and place it on the white countertop.",
+      "task_text_zh": "拿起粉色毛绒软垫，放到白色台面上。",
+      "target": "pink plush cushion",
+      "receiver": "white countertop",
+      "quality_status": "complete_pick_place",
+      "quality_reason": "A complete open-close-transport-reopen sequence is visible."
+    },
+    {
+      "source_mcap": "c4160652a4634ead51277ab48a6d5a87.mcap",
+      "task_text": "Pick up the pink plush cushion and place it on the white countertop.",
+      "task_text_zh": "拿起粉色毛绒软垫，放到白色台面上。",
+      "target": "pink plush cushion",
+      "receiver": "white countertop",
+      "quality_status": "complete_pick_place",
+      "quality_reason": "A complete open-close-transport-reopen sequence is visible."
+    },
+    {
+      "source_mcap": "012f72c49ed62f1247471492400ff5fc.mcap",
+      "task_text": "Pick up the pink plush cushion and place it on the white countertop.",
+      "task_text_zh": "拿起粉色毛绒软垫，放到白色台面上。",
+      "target": "pink plush cushion",
+      "receiver": "white countertop",
+      "quality_status": "complete_pick_place",
+      "quality_reason": "A complete open-close-transport-reopen sequence is visible."
+    },
+    {
+      "source_mcap": "f880addbeaf365882d3aa434115b373a.mcap",
+      "task_text": "Pick up the small white rectangular pump bottle and place it on the top surface of the right-hand dryer.",
+      "task_text_zh": "拿起白色小型长方形按压泵瓶，放到右侧烘干机顶面上。",
+      "target": "small white rectangular pump bottle",
+      "receiver": "top surface of right-hand dryer",
+      "quality_status": "complete_pick_place",
+      "quality_reason": "A complete open-close-transport-reopen sequence is visible."
+    },
+    {
+      "source_mcap": "57d79b039d9a89729b818bc22cee87ce.mcap",
+      "task_text": "Pick up the small white rectangular pump bottle and place it on the top surface of the right-hand dryer.",
+      "task_text_zh": "拿起白色小型长方形按压泵瓶，放到右侧烘干机顶面上。",
+      "target": "small white rectangular pump bottle",
+      "receiver": "top surface of right-hand dryer",
+      "quality_status": "complete_pick_place",
+      "quality_reason": "A complete open-close-transport-reopen sequence is visible."
+    },
+    {
+      "source_mcap": "bf0c9e420d24e63c451d090be078f0e0.mcap",
+      "task_text": "Pick up the small white rectangular pump bottle and place it on the top surface of the right-hand dryer.",
+      "task_text_zh": "拿起白色小型长方形按压泵瓶，放到右侧烘干机顶面上。",
+      "target": "small white rectangular pump bottle",
+      "receiver": "top surface of right-hand dryer",
+      "quality_status": "complete_pick_place",
+      "quality_reason": "A complete open-close-transport-reopen sequence is visible."
+    },
+    {
+      "source_mcap": "5d5191f72306e0cdaa00734a1f876290.mcap",
+      "task_text": "Pick up the orange spirit level and place it on the gray bed.",
+      "task_text_zh": "拿起橙色水平尺，放到灰色床面上。",
+      "target": "orange spirit level",
+      "receiver": "gray bed",
+      "quality_status": "complete_pick_place",
+      "quality_reason": "A complete open-close-transport-reopen sequence is visible."
+    },
+    {
+      "source_mcap": "eb45754ed625c4648ac4a174eaa75c63.mcap",
+      "task_text": "Pick up the orange spirit level and place it on the gray bed.",
+      "task_text_zh": "拿起橙色水平尺，放到灰色床面上。",
+      "target": "orange spirit level",
+      "receiver": "gray bed",
+      "quality_status": "complete_pick_place",
+      "quality_reason": "A complete open-close-transport-reopen sequence is visible."
+    },
+    {
+      "source_mcap": "a3b6e42845af0d3c7abf923d9c967c02.mcap",
+      "task_text": "Pick up the orange spirit level and place it on the gray bed.",
+      "task_text_zh": "拿起橙色水平尺，放到灰色床面上。",
+      "target": "orange spirit level",
+      "receiver": "gray bed",
+      "quality_status": "complete_pick_place",
+      "quality_reason": "A complete open-close-transport-reopen sequence is visible."
+    },
+    {
+      "source_mcap": "b66c3b6e7c9818711a8990956abadacb.mcap",
+      "task_text": "Pick up the orange spirit level and place it on the gray bed.",
+      "task_text_zh": "拿起橙色水平尺，放到灰色床面上。",
+      "target": "orange spirit level",
+      "receiver": "gray bed",
+      "quality_status": "complete_pick_place",
+      "quality_reason": "A complete open-close-transport-reopen sequence is visible."
+    },
+    {
+      "source_mcap": "5c9b6afe887ccdeafba652f38ae7361c.mcap",
+      "task_text": "Pick up the orange oven mitt and place it on the blue-and-white ceramic plate.",
+      "task_text_zh": "拿起橙色隔热手套，放到蓝白花纹陶瓷盘上。",
+      "target": "orange oven mitt",
+      "receiver": "blue-and-white ceramic plate",
+      "quality_status": "complete_pick_place",
+      "quality_reason": "A complete open-close-transport-reopen sequence is visible."
+    },
+    {
+      "source_mcap": "e8823d88445fd1d5606407de704f65f7.mcap",
+      "task_text": "Pick up the brown fabric oven mitt and place it on the blue-and-white ceramic plate.",
+      "task_text_zh": "拿起棕色布质隔热手套，放到蓝白花纹陶瓷盘上。",
+      "target": "brown fabric oven mitt",
+      "receiver": "blue-and-white ceramic plate",
+      "quality_status": "complete_pick_place",
+      "quality_reason": "A complete open-close-transport-reopen sequence is visible."
+    },
+    {
+      "source_mcap": "339356f512d5d42bb57b3a091f5456fe.mcap",
+      "task_text": "Pick up the brown fabric oven mitt and place it on the blue-and-white ceramic plate.",
+      "task_text_zh": "拿起棕色布质隔热手套，放到蓝白花纹陶瓷盘上。",
+      "target": "brown fabric oven mitt",
+      "receiver": "blue-and-white ceramic plate",
+      "quality_status": "complete_pick_place",
+      "quality_reason": "A complete open-close-transport-reopen sequence is visible."
+    },
+    {
+      "source_mcap": "53fd2d96dc42d22cf91069bb9e1c4603.mcap",
+      "task_text": "Pick up the light green fabric tote bag and place it on the brown wooden seat.",
+      "task_text_zh": "拿起浅绿色布质手提袋，放到棕色木座面上。",
+      "target": "light green fabric tote bag",
+      "receiver": "brown wooden seat",
+      "quality_status": "complete_pick_place",
+      "quality_reason": "A complete open-close-transport-reopen sequence is visible."
+    },
+    {
+      "source_mcap": "996b5e8bf7b2a00fface0e9402c79c9c.mcap",
+      "task_text": "Pick up the light green fabric tote bag and place it on the white sheet covering the wooden seat.",
+      "task_text_zh": "拿起浅绿色布质手提袋，放到覆盖木座面的白色布单上。",
+      "target": "light green fabric tote bag",
+      "receiver": "white sheet covering wooden seat",
+      "quality_status": "complete_pick_place",
+      "quality_reason": "A complete open-close-transport-reopen sequence is visible."
+    },
+    {
+      "source_mcap": "9027ee909c3eb33d734078548fe4d0ab.mcap",
+      "task_text": "Pick up the small silver-gray patterned bowl and place it on the glossy top surface of the white drawer cabinet.",
+      "task_text_zh": "拿起银灰色小花纹碗，放到白色抽屉柜的亮面顶板上。",
+      "target": "small silver-gray patterned bowl",
+      "receiver": "glossy top surface of white drawer cabinet",
+      "quality_status": "complete_pick_place",
+      "quality_reason": "A complete open-close-transport-reopen sequence is visible."
+    },
+    {
+      "source_mcap": "39f6766a215e189986d74ee7dd731b90.mcap",
+      "task_text": "Pick up the small pink pump bottle and place it on the glossy top surface of the white drawer cabinet.",
+      "task_text_zh": "拿起粉色小按压泵瓶，放到白色抽屉柜的亮面顶板上。",
+      "target": "small pink pump bottle",
+      "receiver": "glossy top surface of white drawer cabinet",
+      "quality_status": "complete_pick_place",
+      "quality_reason": "A complete open-close-transport-reopen sequence is visible."
+    },
+    {
+      "source_mcap": "ba1e33ea51a9b47aac4c939ce11a7927.mcap",
+      "task_text": "Pick up the small pink pump bottle and place it on the glossy top surface of the white drawer cabinet.",
+      "task_text_zh": "拿起粉色小按压泵瓶，放到白色抽屉柜的亮面顶板上。",
+      "target": "small pink pump bottle",
+      "receiver": "glossy top surface of white drawer cabinet",
+      "quality_status": "complete_pick_place",
+      "quality_reason": "A complete open-close-transport-reopen sequence is visible."
+    },
+    {
+      "source_mcap": "8bf6d9b3328a6127e2a1f5c1d26e05c3.mcap",
+      "task_text": "Pick up the small pink pump bottle and place it on the glossy top surface of the white drawer cabinet.",
+      "task_text_zh": "拿起粉色小按压泵瓶，放到白色抽屉柜的亮面顶板上。",
+      "target": "small pink pump bottle",
+      "receiver": "glossy top surface of white drawer cabinet",
+      "quality_status": "complete_pick_place",
+      "quality_reason": "A complete open-close-transport-reopen sequence is visible."
+    },
+    {
+      "source_mcap": "614e25daafd5bee3e546937b36c5fe89.mcap",
+      "task_text": "Pick up the small pink pump bottle and place it on the glossy top surface of the white drawer cabinet.",
+      "task_text_zh": "拿起粉色小按压泵瓶，放到白色抽屉柜的亮面顶板上。",
+      "target": "small pink pump bottle",
+      "receiver": "glossy top surface of white drawer cabinet",
+      "quality_status": "complete_pick_place",
+      "quality_reason": "A complete open-close-transport-reopen sequence is visible."
+    }
+  ]
+}

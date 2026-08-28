@@ -1,0 +1,1060 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Pick & Place Mask · 结果汇报</title>
+  <style>
+    :root {
+      --bg: #07101f;
+      --bg-soft: #0b1729;
+      --panel: #101e32;
+      --panel-2: #14253d;
+      --line: #2a3d58;
+      --line-soft: rgba(148, 163, 184, .18);
+      --text: #eef4fb;
+      --muted: #94a8c3;
+      --muted-2: #6f84a1;
+      --green: #24b45c;
+      --blue: #2374e0;
+      --yellow: #f4d83c;
+      --red: #e84337;
+      --orange: #f39b45;
+      --cyan: #46c9d7;
+      --radius: 18px;
+      --shadow: 0 24px 70px rgba(0, 0, 0, .24);
+      --content: 1460px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 85% -10%, rgba(35, 116, 224, .16), transparent 28rem),
+        radial-gradient(circle at 8% 8%, rgba(36, 180, 92, .10), transparent 24rem),
+        var(--bg);
+      color: var(--text);
+      font-family: Inter, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+      line-height: 1.55;
+    }
+
+    a { color: inherit; }
+    button, input, select { font: inherit; }
+    button { color: inherit; }
+    code, pre { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      height: 62px;
+      border-bottom: 1px solid rgba(148, 163, 184, .16);
+      background: rgba(7, 16, 31, .88);
+      backdrop-filter: blur(18px);
+    }
+
+    .topbar-inner {
+      width: min(var(--content), calc(100% - 40px));
+      height: 100%;
+      margin: auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: max-content;
+      font-size: 13px;
+      font-weight: 800;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+
+    .brand-mark {
+      width: 28px;
+      height: 28px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 3px;
+      transform: rotate(45deg);
+    }
+
+    .brand-mark i { border-radius: 3px; }
+    .brand-mark i:nth-child(1) { background: var(--green); }
+    .brand-mark i:nth-child(2) { background: var(--blue); }
+    .brand-mark i:nth-child(3) { background: var(--yellow); }
+    .brand-mark i:nth-child(4) { background: var(--red); }
+
+    .nav {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+
+    .nav::-webkit-scrollbar { display: none; }
+    .nav a {
+      padding: 8px 10px;
+      border-radius: 9px;
+      color: var(--muted);
+      font-size: 12px;
+      text-decoration: none;
+      white-space: nowrap;
+      transition: .2s ease;
+    }
+    .nav a:hover { color: var(--text); background: rgba(148, 163, 184, .10); }
+
+    main {
+      width: min(var(--content), calc(100% - 40px));
+      margin: 0 auto;
+      padding-bottom: 100px;
+    }
+
+    section { scroll-margin-top: 82px; }
+    .section { padding: 76px 0 0; }
+    .section-head {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 28px;
+      margin-bottom: 28px;
+    }
+    .eyebrow {
+      margin: 0 0 8px;
+      color: var(--cyan);
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+    h1, h2, h3, p { margin-top: 0; }
+    h2 {
+      margin-bottom: 7px;
+      font-size: clamp(26px, 3vw, 38px);
+      line-height: 1.16;
+      letter-spacing: -.035em;
+    }
+    .section-lead { max-width: 760px; margin: 0; color: var(--muted); font-size: 15px; }
+
+    .hero {
+      min-height: 690px;
+      padding: 92px 0 56px;
+      display: grid;
+      grid-template-columns: 1.25fr .75fr;
+      align-items: center;
+      gap: 70px;
+    }
+
+    .hero-kicker {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      margin-bottom: 22px;
+      padding: 7px 11px;
+      border: 1px solid rgba(70, 201, 215, .28);
+      border-radius: 999px;
+      background: rgba(70, 201, 215, .08);
+      color: #9be6ed;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+    .hero-kicker::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--cyan);
+      box-shadow: 0 0 16px var(--cyan);
+    }
+    .hero h1 {
+      max-width: 920px;
+      margin-bottom: 24px;
+      font-size: clamp(48px, 6vw, 84px);
+      line-height: .99;
+      letter-spacing: -.065em;
+    }
+    .hero h1 span {
+      display: block;
+      margin-top: 10px;
+      color: transparent;
+      background: linear-gradient(90deg, #f1f6fc, #8ea5c3 58%, #46c9d7);
+      background-clip: text;
+      -webkit-background-clip: text;
+    }
+    .hero-copy { max-width: 760px; margin-bottom: 30px; color: var(--muted); font-size: 17px; }
+    .hero-meta { display: flex; flex-wrap: wrap; gap: 9px; }
+    .meta-chip, .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 6px 10px;
+      border: 1px solid var(--line-soft);
+      border-radius: 999px;
+      background: rgba(148, 163, 184, .06);
+      color: #c3d0e2;
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .meta-chip code { color: #ecf4ff; }
+
+    .hero-panel {
+      padding: 25px;
+      border: 1px solid var(--line);
+      border-radius: 26px;
+      background: linear-gradient(155deg, rgba(20, 37, 61, .96), rgba(10, 23, 41, .92));
+      box-shadow: var(--shadow);
+    }
+    .hero-status {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 22px;
+      padding-bottom: 19px;
+      border-bottom: 1px solid var(--line-soft);
+    }
+    .hero-status strong { font-size: 12px; letter-spacing: .14em; text-transform: uppercase; }
+    .status-light {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--orange);
+      box-shadow: 0 0 0 7px rgba(243, 155, 69, .12), 0 0 22px rgba(243, 155, 69, .55);
+    }
+    .hero-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 13px; }
+    .hero-metric {
+      min-height: 112px;
+      padding: 16px;
+      border: 1px solid rgba(148, 163, 184, .13);
+      border-radius: 15px;
+      background: rgba(3, 12, 25, .28);
+    }
+    .hero-metric small { display: block; margin-bottom: 8px; color: var(--muted-2); font-size: 11px; }
+    .hero-metric b { display: block; font-size: 28px; line-height: 1.1; letter-spacing: -.04em; }
+    .hero-metric span { color: var(--muted); font-size: 11px; }
+    .legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 20px; color: var(--muted); font-size: 11px; }
+    .legend-item { display: flex; align-items: center; gap: 7px; }
+    .dot { width: 9px; height: 9px; border-radius: 50%; }
+
+    .panel {
+      border: 1px solid var(--line-soft);
+      border-radius: var(--radius);
+      background: linear-gradient(155deg, rgba(16, 30, 50, .94), rgba(10, 24, 42, .94));
+      box-shadow: 0 16px 50px rgba(0, 0, 0, .12);
+    }
+
+    .scope-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+    .scope-card { min-height: 220px; padding: 24px; }
+    .scope-index { display: block; margin-bottom: 34px; color: var(--muted-2); font-size: 11px; font-weight: 800; }
+    .scope-card h3 { margin-bottom: 10px; font-size: 17px; }
+    .scope-card p { margin: 0; color: var(--muted); font-size: 13px; }
+    .tech-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 17px; }
+
+    .flow-wrap { padding: 28px; overflow: hidden; }
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(8, minmax(120px, 1fr));
+      gap: 10px;
+      min-width: 1100px;
+    }
+    .flow-node {
+      position: relative;
+      min-height: 176px;
+      padding: 18px 16px;
+      border: 1px solid var(--line-soft);
+      border-radius: 14px;
+      background: rgba(5, 14, 28, .38);
+    }
+    .flow-node:not(:last-child)::after {
+      content: "→";
+      position: absolute;
+      z-index: 2;
+      right: -16px;
+      top: 48%;
+      width: 22px;
+      height: 22px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      background: #182a43;
+      color: #7f96b5;
+      font-size: 13px;
+    }
+    .flow-step { color: var(--cyan); font-size: 10px; font-weight: 900; letter-spacing: .12em; }
+    .flow-node h3 { margin: 13px 0 9px; font-size: 14px; }
+    .flow-node p { margin-bottom: 15px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+    .artifact {
+      display: inline-block;
+      padding: 4px 7px;
+      border-radius: 6px;
+      background: rgba(70, 201, 215, .08);
+      color: #8fdde6;
+      font-size: 9px;
+    }
+    .flow-note { margin: 20px 0 0; color: var(--muted); font-size: 12px; }
+
+    .s-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    .s-card { position: relative; min-height: 310px; padding: 26px; overflow: hidden; }
+    .s-card::before {
+      content: attr(data-label);
+      position: absolute;
+      right: 15px;
+      top: -30px;
+      color: rgba(255, 255, 255, .035);
+      font-size: 132px;
+      font-weight: 900;
+      letter-spacing: -.1em;
+    }
+    .s-tag { color: var(--cyan); font-size: 11px; font-weight: 900; letter-spacing: .14em; }
+    .s-card h3 { margin: 22px 0 12px; font-size: 21px; }
+    .s-card > p { max-width: 92%; color: var(--muted); font-size: 13px; }
+    .s-stat { margin-top: 25px; padding-top: 19px; border-top: 1px solid var(--line-soft); }
+    .s-stat b { display: block; margin-bottom: 4px; font-size: 27px; }
+    .s-stat span { color: var(--muted); font-size: 11px; }
+    .resolver {
+      margin-top: 17px;
+      padding: 21px 24px;
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      overflow-x: auto;
+      color: #c9d5e5;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .resolver .node { padding: 9px 12px; border: 1px solid var(--line); border-radius: 9px; background: #0b1728; }
+    .resolver .arrow { color: var(--muted-2); }
+    .callout {
+      margin-top: 16px;
+      padding: 16px 18px;
+      border-left: 3px solid var(--orange);
+      border-radius: 0 12px 12px 0;
+      background: rgba(243, 155, 69, .07);
+      color: #d9c5ae;
+      font-size: 12px;
+    }
+    details.history { margin-top: 14px; padding: 16px 18px; }
+    details.history summary { cursor: pointer; color: #cbd7e6; font-size: 12px; font-weight: 800; }
+    details.history p { margin: 13px 0 0; color: var(--muted); font-size: 12px; }
+
+    .review-layout { display: grid; grid-template-columns: minmax(0, 1fr) 290px; gap: 18px; }
+    .sheet-viewer { overflow: hidden; }
+    .sheet-toolbar {
+      padding: 17px 19px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      border-bottom: 1px solid var(--line-soft);
+    }
+    .sheet-toolbar h3 { margin: 0; font-size: 15px; }
+    .sheet-toolbar p { margin: 3px 0 0; color: var(--muted); font-size: 10px; }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      min-height: 35px;
+      padding: 8px 12px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: rgba(148, 163, 184, .06);
+      color: #d9e4f1;
+      font-size: 11px;
+      font-weight: 750;
+      text-decoration: none;
+      cursor: pointer;
+      transition: .2s ease;
+    }
+    .btn:hover { border-color: #526987; background: rgba(148, 163, 184, .12); transform: translateY(-1px); }
+    .btn.primary { border-color: rgba(70, 201, 215, .42); background: rgba(70, 201, 215, .12); color: #a5edf3; }
+    .sheet-canvas {
+      min-height: 640px;
+      padding: 18px;
+      display: grid;
+      place-items: center;
+      background:
+        linear-gradient(45deg, rgba(148, 163, 184, .025) 25%, transparent 25%) 0 0 / 22px 22px,
+        linear-gradient(45deg, transparent 75%, rgba(148, 163, 184, .025) 75%) 0 0 / 22px 22px,
+        #081426;
+    }
+    .sheet-canvas img {
+      display: block;
+      width: 100%;
+      max-height: 960px;
+      object-fit: contain;
+      cursor: zoom-in;
+    }
+    .sheet-tabs { display: flex; flex-direction: column; gap: 9px; }
+    .sheet-tab {
+      width: 100%;
+      padding: 14px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      border: 1px solid var(--line-soft);
+      border-radius: 12px;
+      background: rgba(16, 30, 50, .72);
+      text-align: left;
+      cursor: pointer;
+      transition: .2s ease;
+    }
+    .sheet-tab:hover, .sheet-tab.active { border-color: #4a647f; background: var(--panel-2); }
+    .sheet-tab i { width: 8px; height: 42px; border-radius: 9px; background: var(--cyan); }
+    .sheet-tab[data-role="target"] i { background: var(--green); }
+    .sheet-tab[data-role="receiver"] i { background: var(--blue); }
+    .sheet-tab b { display: block; font-size: 12px; }
+    .sheet-tab span { color: var(--muted); font-size: 10px; }
+    .episode-strip {
+      margin-top: 15px;
+      padding: 17px;
+      display: grid;
+      grid-template-columns: repeat(15, 1fr);
+      gap: 6px;
+    }
+    .episode-dot {
+      aspect-ratio: 1;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--line-soft);
+      border-radius: 7px;
+      background: #13243a;
+      color: #c8d4e3;
+      font-size: 9px;
+      font-weight: 800;
+      text-decoration: none;
+    }
+    .episode-dot.passed { border-color: rgba(36, 180, 92, .35); background: rgba(36, 180, 92, .14); color: #86e6ac; }
+    .episode-dot.quarantined, .episode-dot.incomplete { border-color: rgba(243, 155, 69, .42); background: rgba(243, 155, 69, .13); color: #ffc38a; }
+    .episode-dot.error, .episode-dot.missing { border-color: rgba(232, 67, 55, .40); background: rgba(232, 67, 55, .14); color: #ff9c94; }
+
+    .dashboard-grid { display: grid; grid-template-columns: 1.15fr .85fr; gap: 16px; }
+    .dashboard-card { padding: 24px; }
+    .dashboard-card h3 { margin-bottom: 5px; font-size: 15px; }
+    .dashboard-card > p { margin-bottom: 21px; color: var(--muted); font-size: 11px; }
+    .role-block + .role-block { margin-top: 24px; }
+    .role-head { display: flex; justify-content: space-between; margin-bottom: 9px; font-size: 12px; }
+    .role-head span { color: var(--muted); }
+    .stacked-bar { height: 11px; display: flex; overflow: hidden; border-radius: 999px; background: #07111f; }
+    .stacked-bar i { height: 100%; }
+    .bar-key { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 13px; color: var(--muted); font-size: 10px; }
+    .bar-key span::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 2px; background: var(--key); }
+    .route-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .route-card { padding: 16px; border: 1px solid var(--line-soft); border-radius: 12px; background: rgba(5, 14, 28, .33); }
+    .route-card b { display: block; margin-bottom: 2px; font-size: 24px; }
+    .route-card span { color: var(--muted); font-size: 10px; }
+    .route-card small { display: block; margin-top: 7px; color: #c7d4e4; font-size: 10px; }
+
+    .group-list { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .group-card { padding: 22px; }
+    .group-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+    .group-number { color: var(--muted-2); font-size: 11px; font-weight: 900; }
+    .group-card h3 { max-width: 720px; margin: 13px 0 5px; font-size: 15px; line-height: 1.45; }
+    .group-card .zh { min-height: 19px; margin-bottom: 18px; color: var(--muted); font-size: 11px; }
+    .group-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+    .group-stat { padding: 10px; border-radius: 9px; background: rgba(5, 14, 28, .35); }
+    .group-stat b { display: block; font-size: 14px; }
+    .group-stat span { color: var(--muted); font-size: 9px; }
+    .episode-pills { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 16px; }
+    .episode-pill {
+      padding: 4px 7px;
+      border: 1px solid var(--line-soft);
+      border-radius: 6px;
+      color: #c7d4e4;
+      font-size: 9px;
+      text-decoration: none;
+    }
+    .episode-pill.issue { border-color: rgba(232, 67, 55, .34); color: #ffaaa4; background: rgba(232, 67, 55, .08); }
+
+    .anomaly-list { display: grid; gap: 13px; }
+    .anomaly-card {
+      padding: 20px 22px;
+      display: grid;
+      grid-template-columns: 90px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 20px;
+      border-left: 4px solid var(--orange);
+    }
+    .anomaly-card.error, .anomaly-card.missing { border-left-color: var(--red); }
+    .anomaly-id b { display: block; font-size: 17px; }
+    .anomaly-id span { color: var(--muted); font-size: 10px; }
+    .anomaly-copy h3 { margin: 0 0 7px; font-size: 13px; }
+    .anomaly-copy p { margin: 0; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+    .anomaly-roles { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
+
+    .controls {
+      padding: 16px;
+      display: grid;
+      grid-template-columns: minmax(240px, 1fr) repeat(3, minmax(150px, 220px));
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .control {
+      width: 100%;
+      min-height: 40px;
+      padding: 8px 11px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      outline: none;
+      background: #0a1729;
+      color: #dce7f4;
+      font-size: 11px;
+    }
+    .control:focus { border-color: var(--cyan); box-shadow: 0 0 0 3px rgba(70, 201, 215, .09); }
+    .video-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    .video-card { overflow: hidden; }
+    .video-card[hidden] { display: none; }
+    .video-shell {
+      position: relative;
+      aspect-ratio: 640 / 352;
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 60% 30%, rgba(35, 116, 224, .18), transparent 44%),
+        #050d19;
+    }
+    .video-shell video { width: 100%; height: 100%; display: none; object-fit: contain; background: #000; }
+    .video-shell.loaded video { display: block; }
+    .video-load {
+      width: 100%;
+      height: 100%;
+      border: 0;
+      background: transparent;
+      cursor: pointer;
+    }
+    .play-mark {
+      width: 52px;
+      height: 52px;
+      margin: auto auto 11px;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(255, 255, 255, .28);
+      border-radius: 50%;
+      background: rgba(255, 255, 255, .08);
+      font-size: 17px;
+      backdrop-filter: blur(8px);
+    }
+    .video-load b { display: block; font-size: 11px; }
+    .video-load span { color: var(--muted); font-size: 9px; }
+    .video-body { padding: 17px; }
+    .video-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .video-head b { font-size: 12px; }
+    .video-title { min-height: 54px; margin: 12px 0 15px; color: #c9d6e5; font-size: 11px; }
+    .video-role-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+    .role-pill { padding: 9px; border: 1px solid var(--line-soft); border-radius: 9px; background: rgba(5, 14, 28, .34); }
+    .role-pill span { display: block; color: var(--muted); font-size: 8px; text-transform: uppercase; letter-spacing: .1em; }
+    .role-pill b { display: block; margin-top: 4px; font-size: 10px; }
+    .video-actions { margin-top: 13px; display: flex; gap: 7px; }
+    .gallery-empty { display: none; padding: 50px; text-align: center; color: var(--muted); }
+
+    .lineage-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .lineage-card { padding: 24px; }
+    .lineage-card h3 { font-size: 15px; }
+    .file-tree, .command {
+      margin: 15px 0 0;
+      padding: 18px;
+      overflow-x: auto;
+      border: 1px solid var(--line-soft);
+      border-radius: 12px;
+      background: #06101f;
+      color: #a9bdd4;
+      font-size: 11px;
+      line-height: 1.7;
+    }
+    .limitations { margin-top: 16px; padding: 20px 24px; }
+    .limitations h3 { margin-bottom: 10px; font-size: 14px; }
+    .limitations ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: 11px; }
+
+    .table-wrap { overflow: auto; }
+    table { width: 100%; border-collapse: collapse; min-width: 1180px; font-size: 10px; }
+    th, td { padding: 11px 10px; border-bottom: 1px solid var(--line-soft); text-align: left; vertical-align: top; }
+    th { position: sticky; top: 0; z-index: 2; background: #15253c; color: #c7d5e6; font-size: 9px; letter-spacing: .08em; text-transform: uppercase; }
+    td { color: #b9c8da; }
+    td.task-cell { max-width: 360px; }
+    tr.issue-row td { background: rgba(232, 67, 55, .025); }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 7px;
+      border: 1px solid var(--line-soft);
+      border-radius: 6px;
+      color: #c8d5e5;
+      font-size: 9px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+    .status-badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--muted-2); }
+    .status-badge.passed::before, .status-badge.valid::before, .status-badge.completed::before { background: var(--green); }
+    .status-badge.rejected::before, .status-badge.incomplete::before, .status-badge.sam_incomplete::before, .status-badge.quarantined::before { background: var(--orange); }
+    .status-badge.error::before, .status-badge.failed::before, .status-badge.missing::before { background: var(--red); }
+    .status-badge.not_run::before, .status-badge.not_annotated::before { background: var(--muted-2); }
+
+    .modal {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 34px;
+      background: rgba(2, 7, 14, .91);
+      backdrop-filter: blur(14px);
+    }
+    .modal.open { display: flex; }
+    .modal-box { width: min(1500px, 100%); max-height: calc(100vh - 68px); display: flex; flex-direction: column; }
+    .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    .modal-head h3 { margin: 0; font-size: 13px; }
+    .modal-close { width: 37px; height: 37px; border: 1px solid var(--line); border-radius: 50%; background: #122239; cursor: pointer; }
+    .modal-content { min-height: 0; display: grid; place-items: center; overflow: auto; }
+    .modal-content img { max-width: 100%; max-height: calc(100vh - 125px); object-fit: contain; }
+    .modal-content video { width: 100%; max-height: calc(100vh - 125px); background: #000; }
+
+    .footer { margin-top: 70px; padding-top: 22px; border-top: 1px solid var(--line-soft); display: flex; justify-content: space-between; gap: 20px; color: var(--muted-2); font-size: 10px; }
+
+    @media (max-width: 1100px) {
+      .hero { grid-template-columns: 1fr; gap: 36px; min-height: auto; }
+      .hero-panel { max-width: 760px; }
+      .scope-grid { grid-template-columns: 1fr 1fr; }
+      .s-grid { grid-template-columns: 1fr; }
+      .review-layout, .dashboard-grid, .lineage-grid { grid-template-columns: 1fr; }
+      .sheet-tabs { display: grid; grid-template-columns: 1fr 1fr; }
+      .video-grid { grid-template-columns: 1fr 1fr; }
+      .controls { grid-template-columns: 1fr 1fr; }
+      .nav { display: none; }
+    }
+
+    @media (max-width: 720px) {
+      main, .topbar-inner { width: min(100% - 24px, var(--content)); }
+      .section { padding-top: 58px; }
+      .hero { padding-top: 62px; }
+      .hero h1 { font-size: 47px; }
+      .hero-metrics, .scope-grid, .group-list, .video-grid, .lineage-grid { grid-template-columns: 1fr; }
+      .group-stats { grid-template-columns: 1fr 1fr; }
+      .sheet-tabs, .controls { grid-template-columns: 1fr; }
+      .sheet-canvas { min-height: 300px; padding: 8px; }
+      .episode-strip { grid-template-columns: repeat(10, 1fr); }
+      .anomaly-card { grid-template-columns: 1fr; gap: 11px; }
+      .section-head { display: block; }
+      .footer { flex-direction: column; }
+    }
+
+    @media print {
+      :root { color-scheme: light; }
+      body { background: white; color: #111827; }
+      .topbar, .controls, .video-grid, .modal, .btn { display: none !important; }
+      main { width: 100%; }
+      .panel, .scope-card, .s-card { background: white; box-shadow: none; border-color: #d7dde6; }
+      .section { break-inside: avoid; }
+      .section-lead, .scope-card p, .s-card > p, .flow-node p { color: #526071; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand"><span class="brand-mark"><i></i><i></i><i></i><i></i></span>RoboTwin Mask Review</div>
+      <nav class="nav" aria-label="页面章节">
+        <a href="#overview">结论</a><a href="#scope">范围</a><a href="#pipeline">流程</a>
+        <a href="#open-set">S1–S3</a><a href="#review">Review Sheets</a>
+        <a href="#dashboard">指标</a><a href="#tasks">任务</a><a href="#anomalies">异常</a>
+        <a href="#videos">视频</a><a href="#lineage">复现</a><a href="#appendix">附录</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero" id="overview">
+      <div>
+        <div class="hero-kicker">Object-source evaluation · static report</div>
+        <h1>真实场景 Pick & Place<span>Mask 结果汇报</span></h1>
+        <p class="hero-copy" id="hero-copy"></p>
+        <div class="hero-meta" id="hero-meta"></div>
+      </div>
+      <aside class="hero-panel">
+        <div class="hero-status">
+          <div><small style="color:var(--muted);font-size:10px">RUN STATUS</small><br><strong>PARTIAL · NEEDS REVIEW</strong></div>
+          <span class="status-light" aria-hidden="true"></span>
+        </div>
+        <div class="hero-metrics">
+          <div class="hero-metric"><small>Episode 输出</small><b id="metric-rendered">—</b><span>rendered / requested</span></div>
+          <div class="hero-metric"><small>可发布角色</small><b id="metric-valid">—</b><span>after temporal QC</span></div>
+          <div class="hero-metric"><small>视频总时长</small><b id="metric-duration">—</b><span>29 overlays</span></div>
+          <div class="hero-metric"><small>需复核 Episode</small><b id="metric-issues">—</b><span>includes missing output</span></div>
+        </div>
+        <div class="legend">
+          <span class="legend-item"><i class="dot" style="background:var(--green)"></i>Target</span>
+          <span class="legend-item"><i class="dot" style="background:var(--blue)"></i>Receiver</span>
+          <span class="legend-item"><i class="dot" style="background:var(--yellow)"></i>Grasp hold</span>
+          <span class="legend-item"><i class="dot" style="background:var(--red)"></i>Gripper（本次未生成）</span>
+        </div>
+      </aside>
+    </section>
+
+    <section class="section" id="scope">
+      <div class="section-head">
+        <div><p class="eyebrow">01 · Project scope</p><h2>项目目标与数据范围</h2><p class="section-lead">从真实机器人操作视频中识别被操作物与放置区域，生成可追溯的 visible-only mask、完整 overlay 视频及人工复核证据。</p></div>
+      </div>
+      <div class="scope-grid">
+        <article class="scope-card panel"><span class="scope-index">OBJECTIVE</span><h3>标注对象角色</h3><p>识别被抓取移动的 <b style="color:#78d99d">target</b>，以及动作完成时与之接触的 <b style="color:#78aef0">receiver</b>。</p></article>
+        <article class="scope-card panel"><span class="scope-index">INPUT</span><h3>真实 Episode 数据</h3><p>读取 cam_high RGB 视频、state/action 时序及任务文本，通过状态事件建立合法 seed 与角色输出窗口。</p></article>
+        <article class="scope-card panel"><span class="scope-index">OUTPUT</span><h3>可审计标注产物</h3><p><code>loop.json</code>、<code>semantic_plan.json</code>、<code>mask_qc.json</code>、四通道 <code>masks.npz</code>、overlay 与 review sheets。</p></article>
+        <article class="scope-card panel"><span class="scope-index">RUNTIME</span><h3>本次技术配置</h3><p>Qwen 负责语义与视觉 QC，SAM3 负责候选分割和视频传播；遮挡区域不做 amodal 补全。</p><div class="tech-row" id="scope-tech"></div></article>
+      </div>
+    </section>
+
+    <section class="section" id="pipeline">
+      <div class="section-head">
+        <div><p class="eyebrow">02 · Generation pipeline</p><h2>这些结果是怎样生成的</h2><p class="section-lead">主流程的 Stage 1/2/3 是工程阶段；每一步都保存中间产物，渲染器只消费已发布 mask，不在可视化阶段修复标注。</p></div>
+      </div>
+      <div class="flow-wrap panel">
+        <div class="flow">
+          <article class="flow-node"><span class="flow-step">INPUT</span><h3>RoboTwin Episode</h3><p>RGB video<br>state / action<br>task instruction</p><span class="artifact">source data</span></article>
+          <article class="flow-node"><span class="flow-step">STAGE 1</span><h3>State Loop</h3><p>活动手、抓取/释放事件、合法 seed、角色窗口</p><span class="artifact">loop.json</span></article>
+          <article class="flow-node"><span class="flow-step">STAGE 2</span><h3>Qwen Semantic Plan</h3><p>target / receiver 身份、seed frame、query bank</p><span class="artifact">semantic_plan.json</span></article>
+          <article class="flow-node"><span class="flow-step">STAGE 3</span><h3>SAM3 + Identity QC</h3><p>真实候选 mask、机械检查、Qwen visual QC</p><span class="artifact">mask_qc.json</span></article>
+          <article class="flow-node"><span class="flow-step">TRACKING</span><h3>Native Propagation</h3><p>已通过 seed 前后向传播，仅保留角色窗口</p><span class="artifact">native_track.npz</span></article>
+          <article class="flow-node"><span class="flow-step">PUBLICATION</span><h3>Temporal QC</h3><p>覆盖率、缺帧、IoU、质心与面积跳变检查</p><span class="artifact">masks.npz</span></article>
+          <article class="flow-node"><span class="flow-step">RENDER</span><h3>Overlay Video</h3><p>颜色填充、外轮廓、黑色 halo 与 hold 编码</p><span class="artifact">*.mp4</span></article>
+          <article class="flow-node"><span class="flow-step">REVIEW</span><h3>Report Bundle</h3><p>early / late 总览、异常定位与视频浏览</p><span class="artifact">report.html</span></article>
+        </div>
+        <p class="flow-note">固定四通道：<code>target_0</code>、<code>receiver_0</code>、<code>gripper_left</code>、<code>gripper_right</code>。本次是 object-source-only run，两个 gripper 通道保留但标记为未标注。</p>
+      </div>
+    </section>
+
+    <section class="section" id="open-set">
+      <div class="section-head">
+        <div><p class="eyebrow">03 · Open-set resolution</p><h2>S1–S3 开放集 Mask 解析</h2><p class="section-lead">这里的 S1/S2/S3 是失败救回能力标签，不是上面三个 Pipeline Stage。S2 从语义规划起始即生效；运行时顺序仍是 text attempts → 最后的 bbox attempts。</p></div>
+      </div>
+      <div class="s-grid">
+        <article class="s-card panel" data-label="S1"><span class="s-tag">S1 · TEXT-FIRST</span><h3>多 Query · 多合法 Seed</h3><p>按 query bank 顺序生成候选，追加受配置约束的 curated aliases；语义 seed 未通过时，再尝试 State Loop 声明的其他合法 seed。</p><div class="s-stat"><b id="s1-alt">—</b><span>角色通过额外合法 seed 救回</span></div></article>
+        <article class="s-card panel" data-label="S2"><span class="s-tag">S2 · OPEN-SET POLICY</span><h3>外观语义 · 严格身份 QC</h3><p>允许用颜色、形状和真实外观描述非典型资产，并结合完整部件、同步运动与夹爪接触证据检查候选身份。</p><div class="s-stat"><b id="s2-count">—</b><span>episode 使用 open-set semantic/QC</span></div></article>
+        <article class="s-card panel" data-label="S3"><span class="s-tag">S3 · BBOX FALLBACK</span><h3>Qwen BBox → SAM Box Mask</h3><p>只有全部 text query × legal seed 都 rejected/ambiguous 后才进入。原始 bbox 不 clamp、不扩框，最终 mask 仍须通过同一套 QC。</p><div class="s-stat"><b id="s3-stat">—</b><span>进入 S3 / 通过 S3 的角色</span></div></article>
+      </div>
+      <div class="resolver panel"><span class="node">Semantic query bank</span><span class="arrow">→</span><span class="node">Curated aliases</span><span class="arrow">×</span><span class="node">Legal seeds</span><span class="arrow">→</span><span class="node">Mechanical gate + visual QC</span><span class="arrow">→ rejected only →</span><span class="node">Qwen bbox</span><span class="arrow">→</span><span class="node">SAM box mask + same QC</span></div>
+      <div class="callout">安全边界：第一个 passed 候选立即停止；任何服务、parser、prompt 或候选 shape 的 error 立即停止当前角色，不静默进入下一 fallback。不按面积选最大候选，不合并候选。</div>
+      <details class="history panel"><summary>历史实验参考（与本次 run 统计分开）</summary><p>历史 52 条已知失败切片中：S1 新救回 23 条，S2 再救回 17 条，S3 再救回 4 条，累计 44/52（84.62%）。这是独立失败切片实验，不是本次 30 条输入的成功率，也不是严格单变量消融。</p></details>
+    </section>
+
+    <section class="section" id="review">
+      <div class="section-head">
+        <div><p class="eyebrow">04 · Visual evidence</p><h2>Overall Review Sheets</h2><p class="section-lead">全局总览覆盖全部已渲染 episode；分别查看 target / receiver 在各自输出窗口的 early 与 late 关键帧。异常角色保留空 mask 或失败状态，不从总览中隐藏。</p></div>
+      </div>
+      <div class="review-layout">
+        <div class="sheet-viewer panel">
+          <div class="sheet-toolbar"><div><h3 id="sheet-title">—</h3><p id="sheet-meta">—</p></div><a class="btn" id="sheet-download" download>下载原图</a></div>
+          <div class="sheet-canvas"><img id="sheet-featured" alt="Review sheet"></div>
+        </div>
+        <div class="sheet-tabs" id="sheet-tabs"></div>
+      </div>
+      <div class="episode-strip panel" id="episode-strip" aria-label="Episode 状态索引"></div>
+    </section>
+
+    <section class="section" id="dashboard">
+      <div class="section-head"><div><p class="eyebrow">05 · Result dashboard</p><h2>质量指标总览</h2><p class="section-lead">身份 QC 与可发布状态采用两套口径：前者评价 seed mask 是否选对对象；后者还包含整段传播的 temporal QC。</p></div></div>
+      <div class="dashboard-grid">
+        <article class="dashboard-card panel"><h3>角色质量门</h3><p>Identity QC → temporal QC → canonical publication</p><div id="role-bars"></div></article>
+        <article class="dashboard-card panel"><h3>解析路径</h3><p>按 58 个 target / receiver 角色统计最终路径</p><div class="route-grid" id="route-grid"></div></article>
+      </div>
+    </section>
+
+    <section class="section" id="tasks">
+      <div class="section-head"><div><p class="eyebrow">06 · Task groups</p><h2>按任务分组结果</h2><p class="section-lead">输入共有 10 类自然语言任务；其中 patterned ceramic bowl 对应的 episode 25 未完成，因此 29 个 overlay 覆盖其余 9 类任务。</p></div></div>
+      <div class="group-list" id="group-list"></div>
+    </section>
+
+    <section class="section" id="anomalies">
+      <div class="section-head"><div><p class="eyebrow">07 · Exceptions</p><h2>异常案例与问题定位</h2><p class="section-lead">这里同时列出 mask-QC 拒绝、parser error、temporal quarantine 和完全未生成产物的 episode。</p></div></div>
+      <div class="anomaly-list" id="anomaly-list"></div>
+    </section>
+
+    <section class="section" id="videos">
+      <div class="section-head"><div><p class="eyebrow">08 · Overlay browser</p><h2>29 条视频浏览器</h2><p class="section-lead">视频按需加载，避免一次性读取全部 MP4。可按任务、发布状态和解析路径筛选。</p></div></div>
+      <div class="controls panel">
+        <input class="control" id="filter-search" type="search" placeholder="搜索 episode 或任务描述…">
+        <select class="control" id="filter-status"><option value="all">全部状态</option><option value="passed">仅通过</option><option value="issue">仅异常</option></select>
+        <select class="control" id="filter-route"><option value="all">全部解析路径</option><option value="direct_text">Text · first seed</option><option value="alternate_seed">Text · alternate seed</option><option value="bbox">S3 · bbox attempted</option></select>
+        <select class="control" id="filter-task"><option value="all">全部任务</option></select>
+      </div>
+      <div class="video-grid" id="video-grid"></div>
+      <div class="gallery-empty panel" id="gallery-empty">没有符合当前筛选条件的视频。</div>
+    </section>
+
+    <section class="section" id="lineage">
+      <div class="section-head"><div><p class="eyebrow">09 · Lineage & reproducibility</p><h2>产物血缘与复现方式</h2><p class="section-lead">所有汇报统计来自 process summary、render manifest 和逐 episode 产物；HTML 不内嵌视频 Base64，移动时应保留整个 rendered_videos 目录。</p></div></div>
+      <div class="lineage-grid">
+        <article class="lineage-card panel"><h3>产物链路</h3><pre class="file-tree">RoboTwin episode
+  ├─ loop.json
+  ├─ semantic_plan.json
+  ├─ mask_qc.json
+  ├─ run_manifest.json
+  └─ masks.npz
+        ↓ renderer
+rendered_videos/
+  ├─ manifest.json
+  ├─ *.mp4
+  ├─ review_sheets/*.jpg
+  └─ report.html</pre></article>
+        <article class="lineage-card panel"><h3>本地打开</h3><p style="color:var(--muted);font-size:12px">进入 <code>rendered_videos</code> 目录后启动静态 HTTP 服务：</p><pre class="command">python3 -m http.server 8000 --directory .
+
+# 浏览器打开
+http://localhost:8000/report.html</pre><p style="margin:14px 0 0;color:var(--muted);font-size:11px">也可直接双击 <code>report.html</code>；HTTP 模式对不同浏览器的视频 seek 和大图加载更稳定。</p></article>
+      </div>
+      <article class="limitations panel"><h3>当前结果边界</h3><ul><li>本次为 object-source-only：gripper producer 未运行，红色通道不代表已验证结果。</li><li>visible-only mask 不补全遮挡区域；黄色 hold encoding 只保留“抓持中”语义。</li><li>S1/S2/S3 同时启用，本次 run 不是单独 ablation，不能把单条成功完全归因于一个能力。</li><li>Renderer 只展示 canonical mask；空白 overlay 可能是上游 reject/quarantine 的预期结果。</li></ul></article>
+    </section>
+
+    <section class="section" id="appendix">
+      <div class="section-head"><div><p class="eyebrow">10 · Appendix</p><h2>Episode 完整状态表</h2><p class="section-lead">30 条输入的审计视图：process 状态、角色 QC、可发布状态、解析路径、帧数与时长。</p></div><a class="btn" href="manifest.json" target="_blank">打开 render manifest</a></div>
+      <div class="table-wrap panel"><table><thead><tr><th>Episode</th><th>Task</th><th>Process</th><th>Target identity QC</th><th>Target publication</th><th>Receiver identity QC</th><th>Receiver publication</th><th>Resolution</th><th>Frames</th><th>Duration</th></tr></thead><tbody id="appendix-body"></tbody></table></div>
+    </section>
+
+    <footer class="footer"><span id="footer-run"></span><span id="footer-generated"></span></footer>
+  </main>
+
+  <div class="modal" id="media-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-box"><div class="modal-head"><h3 id="modal-title"></h3><button class="modal-close" id="modal-close" aria-label="关闭">×</button></div><div class="modal-content" id="modal-content"></div></div>
+  </div>
+
+  <script type="application/json" id="report-data">__REPORT_JSON__</script>
+  <script>
+    "use strict";
+    const report = JSON.parse(document.getElementById("report-data").textContent);
+    const $ = (selector, root = document) => root.querySelector(selector);
+    const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+
+    const statusLabel = {
+      passed: "通过", valid: "可发布", completed: "完成", rejected: "拒绝",
+      quarantined: "时序隔离", incomplete: "不完整", sam_incomplete: "SAM 不完整",
+      error: "错误", failed: "失败", missing: "未生成", not_run: "未运行",
+      not_annotated: "未标注", unknown: "未知"
+    };
+    const routeLabel = {
+      direct_text: "Text · first seed", alternate_seed: "S1 · alternate seed",
+      bbox: "S3 · bbox attempted", unresolved: "未解析", missing: "未生成"
+    };
+    const esc = value => String(value ?? "").replace(/[&<>'"]/g, char => ({
+      "&":"&amp;", "<":"&lt;", ">":"&gt;", "'":"&#39;", '"':"&quot;"
+    })[char]);
+    const statusBadge = status => `<span class="status-badge ${esc(status)}">${esc(statusLabel[status] || status)}</span>`;
+    const formatDuration = seconds => {
+      const total = Math.round(Number(seconds) || 0);
+      const minutes = Math.floor(total / 60);
+      return `${String(minutes).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+    };
+    const percent = (value, total) => total ? Math.round(value / total * 1000) / 10 : 0;
+    const byId = index => report.episodes.find(item => item.index === Number(index));
+
+    function initOverview() {
+      const s = report.stats;
+      $("#hero-copy").textContent = `本次 run 请求处理 ${s.inputEpisodes} 条真实场景 episode，生成 ${s.renderedEpisodes} 条 overlay。对象身份 QC 通过 ${s.qcPassedRoles}/${s.roleCount} 个角色；经过整段传播与 temporal QC 后，${s.validRoles}/${s.roleCount} 个角色可发布。`;
+      $("#hero-meta").innerHTML = [
+        `Run <code>${esc(report.meta.runId)}</code>`, report.meta.camera,
+        report.meta.qwenModel, `${report.meta.inputTasks || s.inputTasks} task groups`, report.meta.stageMode
+      ].map(value => `<span class="meta-chip">${value}</span>`).join("");
+      $("#metric-rendered").textContent = `${s.renderedEpisodes}/${s.inputEpisodes}`;
+      $("#metric-valid").textContent = `${s.validRoles}/${s.roleCount}`;
+      $("#metric-duration").textContent = formatDuration(s.totalDurationSeconds);
+      $("#metric-issues").textContent = report.anomalies.length;
+      $("#scope-tech").innerHTML = [report.meta.qwenModel, "SAM3", report.meta.camera, report.meta.annotationMode, report.meta.maskFormat]
+        .map(value => `<span class="badge">${esc(value)}</span>`).join("");
+      $("#s1-alt").textContent = s.resolution.alternate_seed || 0;
+      $("#s2-count").textContent = `${s.openSetEpisodeCount}/${s.renderedEpisodes}`;
+      $("#s3-stat").textContent = `${s.s3AttemptedRoles} / ${s.s3PassedRoles}`;
+      $("#footer-run").textContent = `${report.meta.runId} · ${report.meta.task} · ${report.meta.camera}`;
+      $("#footer-generated").textContent = `Report generated ${new Date(report.generatedAt).toLocaleString("zh-CN")}`;
+    }
+
+    function initSheets() {
+      const tabs = $("#sheet-tabs");
+      const image = $("#sheet-featured");
+      const title = $("#sheet-title");
+      const meta = $("#sheet-meta");
+      const download = $("#sheet-download");
+      function selectSheet(index) {
+        const sheet = report.reviewSheets[index];
+        image.src = sheet.path;
+        image.alt = sheet.title;
+        title.textContent = sheet.title;
+        meta.textContent = `${sheet.width} × ${sheet.height} · click to zoom`;
+        download.href = sheet.path;
+        $$(".sheet-tab", tabs).forEach((button, buttonIndex) => button.classList.toggle("active", buttonIndex === index));
+      }
+      tabs.innerHTML = report.reviewSheets.map((sheet, index) => `<button class="sheet-tab${index === 0 ? " active" : ""}" data-index="${index}" data-role="${esc(sheet.role)}"><i></i><span><b>${esc(sheet.title)}</b><span>${sheet.width} × ${sheet.height}</span></span></button>`).join("");
+      tabs.addEventListener("click", event => {
+        const button = event.target.closest(".sheet-tab");
+        if (button) selectSheet(Number(button.dataset.index));
+      });
+      image.addEventListener("click", () => openImage(image.src, title.textContent));
+      selectSheet(0);
+
+      $("#episode-strip").innerHTML = report.episodes.map(episode => {
+        const target = episode.hasVideo ? `#episode-${String(episode.index).padStart(6, "0")}` : `#appendix-${String(episode.index).padStart(6, "0")}`;
+        return `<a class="episode-dot ${esc(episode.status)}" href="${target}" title="${esc(episode.label)} · ${esc(statusLabel[episode.status])}">${String(episode.index).padStart(2, "0")}</a>`;
+      }).join("");
+    }
+
+    function barSegment(value, total, color) {
+      return `<i style="width:${percent(value, total)}%;background:${color}" title="${value}/${total}"></i>`;
+    }
+
+    function initDashboard() {
+      const s = report.stats;
+      $("#role-bars").innerHTML = ["target", "receiver"].map(role => {
+        const qc = s.qcByRole[role] || {};
+        const publication = s.annotationByRole[role] || {};
+        const total = Object.values(qc).reduce((sum, value) => sum + value, 0);
+        const valid = publication.valid || 0;
+        const passed = qc.passed || 0;
+        const rejected = qc.rejected || 0;
+        const error = qc.error || 0;
+        return `<div class="role-block"><div class="role-head"><b>${role.toUpperCase()}</b><span>identity ${passed}/${total} · publishable ${valid}/${total}</span></div><div class="stacked-bar">${barSegment(valid,total,"var(--green)")}${barSegment(Math.max(0,passed-valid),total,"var(--orange)")}${barSegment(rejected+error,total,"var(--red)")}</div><div class="bar-key"><span style="--key:var(--green)">publishable ${valid}</span><span style="--key:var(--orange)">QC pass, temporal fail ${Math.max(0,passed-valid)}</span><span style="--key:var(--red)">identity reject/error ${rejected+error}</span></div></div>`;
+      }).join("");
+      const routes = [
+        ["direct_text", s.resolution.direct_text || 0, "首个 text seed 通过"],
+        ["alternate_seed", s.resolution.alternate_seed || 0, "额外合法 seed 通过"],
+        ["bbox", s.resolution.bbox || 0, `S3 通过；${s.s3AttemptedRoles} 个进入`],
+        ["unresolved", s.resolution.unresolved || 0, "最终 rejected / error"]
+      ];
+      $("#route-grid").innerHTML = routes.map(([key, value, note]) => `<div class="route-card"><b>${value}</b><span>${esc(routeLabel[key])}</span><small>${esc(note)}</small></div>`).join("");
+    }
+
+    function initGroups() {
+      $("#group-list").innerHTML = report.groups.map((group, index) => {
+        const issue = group.issueCount > 0;
+        const episodes = group.episodeIds.map(id => {
+          const episode = byId(id);
+          const href = episode.hasVideo ? `#episode-${String(id).padStart(6,"0")}` : `#appendix-${String(id).padStart(6,"0")}`;
+          return `<a class="episode-pill${episode.status === "passed" ? "" : " issue"}" href="${href}">EP ${String(id).padStart(2,"0")}</a>`;
+        }).join("");
+        return `<article class="group-card panel"><div class="group-top"><span class="group-number">TASK ${String(index+1).padStart(2,"0")}</span>${issue ? statusBadge("incomplete") : statusBadge("passed")}</div><h3>${esc(group.taskText)}</h3><p class="zh">${esc(group.taskTextZh || "")}</p><div class="group-stats"><div class="group-stat"><b>${group.renderedCount}/${group.episodeCount}</b><span>rendered</span></div><div class="group-stat"><b>${formatDuration(group.durationSeconds)}</b><span>duration</span></div><div class="group-stat"><b>${group.targetPassed}/${group.episodeCount}</b><span>target QC</span></div><div class="group-stat"><b>${group.receiverPassed}/${group.episodeCount}</b><span>receiver QC</span></div></div><div class="episode-pills">${episodes}</div></article>`;
+      }).join("");
+    }
+
+    function roleIssue(role) {
+      return role.qcStatus !== "passed" || role.annotationStatus !== "valid";
+    }
+
+    function issueReason(episode) {
+      if (episode.processError) return episode.processError;
+      const reasons = Object.values(episode.roles).filter(roleIssue).map(role => {
+        const detail = role.failure || role.qcReason || role.annotationStatus || role.qcStatus;
+        return `${role.role}: ${detail}`;
+      });
+      return reasons.join(" · ") || "Requires review";
+    }
+
+    function initAnomalies() {
+      $("#anomaly-list").innerHTML = report.anomalies.map(episode => {
+        const roleBadges = Object.values(episode.roles).filter(roleIssue).map(role => `<span class="badge">${esc(role.role)} · ${esc(statusLabel[role.annotationStatus] || statusLabel[role.qcStatus] || role.qcStatus)}</span>`).join("");
+        const action = episode.hasVideo ? `<a class="btn primary" href="#episode-${String(episode.index).padStart(6,"0")}">查看视频</a>` : `<a class="btn" href="#appendix-${String(episode.index).padStart(6,"0")}">查看记录</a>`;
+        return `<article class="anomaly-card panel ${esc(episode.status)}"><div class="anomaly-id"><b>EP ${String(episode.index).padStart(6,"0")}</b><span>${esc(statusLabel[episode.status])}</span></div><div class="anomaly-copy"><h3>${esc(episode.taskText)}</h3><p>${esc(issueReason(episode))}</p><div class="anomaly-roles">${roleBadges}${statusBadge(episode.processStatus)}</div></div>${action}</article>`;
+      }).join("");
+    }
+
+    function roleCard(role) {
+      const status = role.annotationStatus === "valid" ? role.qcStatus : role.annotationStatus;
+      const route = routeLabel[role.resolution] || role.resolution;
+      return `<div class="role-pill"><span>${esc(role.role)}</span><b>${esc(statusLabel[status] || status)} · ${esc(route)}</b></div>`;
+    }
+
+    function initVideos() {
+      const videos = report.episodes.filter(episode => episode.hasVideo);
+      const taskSelect = $("#filter-task");
+      const renderedGroups = report.groups.filter(group => group.renderedCount > 0);
+      taskSelect.innerHTML += renderedGroups.map((group, index) => `<option value="${esc(group.taskText)}">Task ${String(index+1).padStart(2,"0")}</option>`).join("");
+      $("#video-grid").innerHTML = videos.map(episode => `<article class="video-card panel" id="episode-${String(episode.index).padStart(6,"0")}" data-status="${esc(episode.status)}" data-route="${esc(episode.route)}" data-task="${esc(episode.taskText)}" data-search="${esc(`${episode.index} ${episode.taskText}`.toLowerCase())}"><div class="video-shell"><video controls muted playsinline preload="none"></video><button class="video-load" data-src="${esc(episode.video)}"><span class="play-mark">▶</span><b>加载 Overlay 视频</b><span>${episode.width}×${episode.height} · ${formatDuration(episode.durationSeconds)}</span></button></div><div class="video-body"><div class="video-head"><b>${esc(episode.label)}</b>${statusBadge(episode.status)}</div><p class="video-title">${esc(episode.taskText)}</p><div class="video-role-grid">${roleCard(episode.roles.target)}${roleCard(episode.roles.receiver)}</div><div class="video-actions"><button class="btn video-modal" data-src="${esc(episode.video)}" data-title="${esc(episode.label)}">大屏播放</button><a class="btn" href="#appendix-${String(episode.index).padStart(6,"0")}">数据</a></div></div></article>`).join("");
+
+      $("#video-grid").addEventListener("click", event => {
+        const load = event.target.closest(".video-load");
+        if (load) {
+          const shell = load.closest(".video-shell");
+          const video = $("video", shell);
+          video.src = load.dataset.src;
+          shell.classList.add("loaded");
+          load.remove();
+          video.play().catch(() => {});
+          return;
+        }
+        const modal = event.target.closest(".video-modal");
+        if (modal) openVideo(modal.dataset.src, modal.dataset.title);
+      });
+
+      const controls = ["#filter-search", "#filter-status", "#filter-route", "#filter-task"];
+      const applyFilters = () => {
+        const search = $("#filter-search").value.trim().toLowerCase();
+        const status = $("#filter-status").value;
+        const route = $("#filter-route").value;
+        const task = $("#filter-task").value;
+        let visible = 0;
+        $$(".video-card").forEach(card => {
+          const statusMatch = status === "all" || (status === "issue" ? card.dataset.status !== "passed" : card.dataset.status === status);
+          const match = (!search || card.dataset.search.includes(search)) && statusMatch && (route === "all" || card.dataset.route === route) && (task === "all" || card.dataset.task === task);
+          card.hidden = !match;
+          visible += Number(match);
+        });
+        $("#gallery-empty").style.display = visible ? "none" : "block";
+      };
+      controls.forEach(selector => $(selector).addEventListener(selector.includes("search") ? "input" : "change", applyFilters));
+    }
+
+    function initAppendix() {
+      $("#appendix-body").innerHTML = report.episodes.map(episode => {
+        const target = episode.roles.target;
+        const receiver = episode.roles.receiver;
+        return `<tr id="appendix-${String(episode.index).padStart(6,"0")}" class="${episode.status === "passed" ? "" : "issue-row"}"><td><b>${esc(episode.label)}</b></td><td class="task-cell">${esc(episode.taskText)}</td><td>${statusBadge(episode.processStatus)}</td><td>${statusBadge(target.qcStatus)}</td><td>${statusBadge(target.annotationStatus)}</td><td>${statusBadge(receiver.qcStatus)}</td><td>${statusBadge(receiver.annotationStatus)}</td><td>${esc(routeLabel[episode.route] || episode.route)}</td><td>${episode.frameCount || "—"}</td><td>${episode.hasVideo ? formatDuration(episode.durationSeconds) : "—"}</td></tr>`;
+      }).join("");
+    }
+
+    const modal = $("#media-modal");
+    function openImage(src, title) {
+      $("#modal-title").textContent = title;
+      const image = document.createElement("img");
+      image.src = src;
+      image.alt = title;
+      $("#modal-content").replaceChildren(image);
+      modal.classList.add("open");
+      document.body.style.overflow = "hidden";
+    }
+    function openVideo(src, title) {
+      $("#modal-title").textContent = title;
+      const video = document.createElement("video");
+      video.src = src;
+      video.controls = true;
+      video.autoplay = true;
+      video.playsInline = true;
+      $("#modal-content").replaceChildren(video);
+      modal.classList.add("open");
+      document.body.style.overflow = "hidden";
+    }
+    function closeModal() {
+      const video = $("video", modal);
+      if (video) { video.pause(); video.removeAttribute("src"); }
+      modal.classList.remove("open");
+      $("#modal-content").replaceChildren();
+      document.body.style.overflow = "";
+    }
+    $("#modal-close").addEventListener("click", closeModal);
+    modal.addEventListener("click", event => { if (event.target === modal) closeModal(); });
+    document.addEventListener("keydown", event => { if (event.key === "Escape") closeModal(); });
+
+    initOverview();
+    initSheets();
+    initDashboard();
+    initGroups();
+    initAnomalies();
+    initVideos();
+    initAppendix();
+  </script>
+</body>
+</html>

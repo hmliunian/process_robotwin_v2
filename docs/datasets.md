@@ -4,6 +4,34 @@
 > close/open loop 的 `cam_high` pipeline；不代表所有 episode 都有完整 depth，也不代表
 > Qwen/SAM mask 一定通过。
 
+## 0. 真实 P&P MCAP 转换
+
+真实采集的 `/DATA/disk8/xuran/add_mask_robotwin/dataset/pick_and_place_real` 已转换为独立
+任务目录：
+
+```text
+/home/xuran/add_mask_robotwin/dataset/pick_place_20/pick_and_place_real_v2
+```
+
+转换只使用头部左相机
+`/camera/coracam_head_left/left_h264/video`，映射为 `cam_high`；腕部相机仅用于人工核对，
+不写入输出。数据没有 depth，因此该目录只适用于 `sam` 后端，不应传给 `urdf` 后端。
+
+可从仓库根目录复现转换（需要安装 `real-mcap` extra）：
+
+```bash
+uv sync --extra real-mcap
+.venv/bin/python scripts/convert_real_mcap_dataset.py \
+  /DATA/disk8/xuran/add_mask_robotwin/dataset/pick_and_place_real \
+  /home/xuran/add_mask_robotwin/dataset/pick_place_20/pick_and_place_real_v2 \
+  --texts configs/datasets/pick_and_place_real_texts.json
+```
+
+转换器只物化人工复核为 `complete_pick_place` 的 29 条轨迹，并在
+`EXTRACT_MANIFEST.json` 的 `excluded_sources` 中保留排除原因；输出 episode ID 连续从 0
+开始，Parquet 帧数是视频帧数 authority。原始高频关节、EEF 和时间戳保存在 HDF5 sidecar，
+未经信任的 MCAP `task.action_text` 不会覆盖复核后的任务文本。
+
 ## 1. 结论
 
 RoboTwin 2.0 中有 9 类任务可直接套用当前角色/事件模型，共 4,950 个 episode。每类 550 条：
