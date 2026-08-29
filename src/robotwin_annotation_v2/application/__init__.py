@@ -6,8 +6,13 @@ from importlib import import_module
 from typing import Any
 
 _EXPORTS = {
+    "DatasetBinding": (".dataset_binding", "DatasetBinding"),
     "DatasetPipeline": (".dataset_pipeline", "DatasetPipeline"),
     "EpisodePipeline": (".episode_pipeline", "EpisodePipeline"),
+    "dataset_binding_from_target": (
+        ".dataset_binding",
+        "dataset_binding_from_target",
+    ),
 }
 
 __all__ = list(_EXPORTS)
