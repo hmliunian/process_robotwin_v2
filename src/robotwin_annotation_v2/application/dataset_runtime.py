@@ -13,6 +13,7 @@ import robotwin_annotation_v2.application.discovery as _discovery
 import robotwin_annotation_v2.application.urdf_runtime as _urdf_runtime
 from robotwin_annotation_v2.adapters.artifact_store import ArtifactStore
 from robotwin_annotation_v2.adapters.robotwin_dataset import RoboTwinDataset
+from robotwin_annotation_v2.application.dataset_binding import dataset_binding_from_target
 from robotwin_annotation_v2.application.dataset_input import (
     DatasetTarget,
     read_dataset_task_kind,
@@ -42,10 +43,16 @@ from robotwin_annotation_v2.application.urdf_workflow import (
     UrdfWorkflowHooks,
 )
 from robotwin_annotation_v2.config import (
+    ConfigError,
     ParallelConfig,
     PipelineConfig,
+    PipelineProfile,
+    bind_dataset,
+    has_dataset_block,
     load_config,
+    load_profile,
     parse_gpu_list,
+    validate_dataset_component,
 )
 from robotwin_annotation_v2.domain import (
     AnnotationMode,
@@ -69,14 +76,19 @@ DEFAULT_BUNDLED_URDF_PATH = (
     / "aloha-agilex"
     / "arx5_description_isaac_gripper.urdf"
 )
-DEFAULT_PROCESS_CONFIG = PROJECT_ROOT / "configs" / "process_qwen38_api.yaml"
+# ``process.yaml`` is the single reusable profile used by the path-oriented
+# CLI.  Keep the old API file available only for explicit legacy task-bound
+# configurations; it must not silently become the default again.
+DEFAULT_PROFILE_CONFIG = PROJECT_ROOT / "configs" / "process.yaml"
+DEFAULT_PROCESS_CONFIG = DEFAULT_PROFILE_CONFIG
+LEGACY_DEFAULT_PROCESS_CONFIG = PROJECT_ROOT / "configs" / "process_qwen38_api.yaml"
 PATH_MODE_CONFIGS = {
     "local": {
         AnnotationMode.PICK_PLACE: PROJECT_ROOT / "configs" / "pilot_move_pillbottle_pad.yaml",
         AnnotationMode.TARGET_ONLY: PROJECT_ROOT / "configs" / "pilot_adjust_bottle_target_only.yaml",
     },
     "api": {
-        AnnotationMode.PICK_PLACE: DEFAULT_PROCESS_CONFIG,
+        AnnotationMode.PICK_PLACE: LEGACY_DEFAULT_PROCESS_CONFIG,
         AnnotationMode.TARGET_ONLY: PROJECT_ROOT / "configs" / "process_target_only_qwen38_api.yaml",
     },
 }
@@ -429,7 +441,14 @@ def process_live_urdf_pipeline(
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset-root", type=Path)
+    parser.add_argument(
+        "--dataset-root",
+        type=Path,
+        help=(
+            "Legacy task-bound dataset root; with the shared process profile, "
+            "use --data-path instead"
+        ),
+    )
     parser.add_argument(
         "--data-path",
         "--data_path",
@@ -451,6 +470,16 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_const",
         const=AnnotationMode.PICK_PLACE.value,
     )
+    path_mode.add_argument(
+        "--mode",
+        dest="path_mode",
+        choices=(
+            AnnotationMode.PICK_PLACE.value,
+            AnnotationMode.TARGET_ONLY.value,
+            "contact_press",
+        ),
+        help="Annotation profile for --data-path (pick_place, target_only, or contact_press)",
+    )
     parser.add_argument(
         "--config",
         type=Path,
@@ -465,7 +494,15 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Override output.root from the selected config",
     )
     parser.add_argument("--run-id")
-    parser.add_argument("--episode-ids", type=int, nargs="*")
+    parser.add_argument("--episode-ids", type=_nonnegative_cli_integer, nargs="*")
+    parser.add_argument(
+        "--all-episodes",
+        action="store_true",
+        help=(
+            "Ignore episode IDs recorded in an extract manifest and process every "
+            "complete episode discovered under the selected task"
+        ),
+    )
     parser.add_argument(
         "--sam-worker-gpus",
         type=parse_gpu_list,
@@ -555,6 +592,26 @@ def _positive_cli_integer(value: str) -> int:
     return parsed
 
 
+def _nonnegative_cli_integer(value: str) -> int:
+    """Parse an episode id while rejecting path-invalid negative values."""
+
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("value must be a non-negative integer") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("value must be a non-negative integer")
+    return parsed
+
+
+def _runtime_dataset_component(value: str, *, field: str) -> str:
+    """Apply the shared path-component contract at CLI/workflow boundaries."""
+
+    # ``validate_dataset_component`` raises ConfigError (a ValueError), which
+    # is intentionally allowed to propagate as a normal CLI validation error.
+    return validate_dataset_component(value, field=field)
+
+
 def _apply_parallel_cli_overrides(
     config: PipelineConfig,
     args: argparse.Namespace,
@@ -585,6 +642,49 @@ def _optional_cli_path(value: str | None) -> Path | None:
     return Path(value)
 
 
+def _infer_path_mode(path: Path) -> str:
+    """Infer the annotation mode from an extract manifest when available."""
+
+    manifest_path = path.expanduser().resolve() / "EXTRACT_MANIFEST.json"
+    if manifest_path.is_file():
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"cannot infer annotation mode from {manifest_path}: {exc}") from exc
+        if isinstance(payload, dict):
+            profile = payload.get("profile")
+            if profile in {
+                AnnotationMode.PICK_PLACE.value,
+                AnnotationMode.TARGET_ONLY.value,
+                "contact_press",
+            }:
+                return str(profile)
+            # A few collection manifests omit the top-level profile while
+            # retaining it on every task record.  If those records are
+            # homogeneous, infer the mode here as well as in the resolver so
+            # ``just process COLLECTION`` remains path-only and does not need
+            # a redundant mode flag.  Mixed or incomplete records stay
+            # fail-closed in ``resolve_dataset_input`` with its detailed
+            # diagnostic (and the native-layout fallback remains pick-place).
+            datasets = payload.get("datasets")
+            if isinstance(datasets, list) and datasets:
+                record_profiles = {
+                    record.get("profile")
+                    for record in datasets
+                    if isinstance(record, Mapping) and record.get("profile") is not None
+                }
+                if len(record_profiles) == 1:
+                    inferred = next(iter(record_profiles))
+                    if inferred in {
+                        AnnotationMode.PICK_PLACE.value,
+                        AnnotationMode.TARGET_ONLY.value,
+                    }:
+                        return str(inferred)
+    # Native RoboTwin directories have historically been pick-place inputs;
+    # callers can select target-only explicitly with --mode/--target-only.
+    return AnnotationMode.PICK_PLACE.value
+
+
 def _path_target_args(
     args: argparse.Namespace,
     *,
@@ -594,6 +694,8 @@ def _path_target_args(
     camera: str,
     run_id: str | None,
     parallel_defaults: ParallelConfig | None,
+    bound_config: PipelineConfig | None = None,
+    episode_ids: tuple[int, ...] | None = None,
 ) -> argparse.Namespace:
     values = vars(args) | {
         "config": config,
@@ -604,6 +706,8 @@ def _path_target_args(
         "path_mode": None,
         "run_id": run_id,
         "path_parallel_defaults": parallel_defaults,
+        "bound_config": bound_config,
+        "episode_ids": episode_ids,
     }
     return argparse.Namespace(**values)
 
@@ -624,40 +728,212 @@ def _path_profile_config(
     return PATH_MODE_CONFIGS[profile.qwen.runtime][mode]
 
 
+def _load_path_config(
+    path: Path,
+    *,
+    mode: AnnotationMode | str,
+) -> PipelineProfile | PipelineConfig:
+    """Load the shared profile, with an explicit legacy-config fallback.
+
+    A malformed shared profile must not be reported as a missing ``dataset``
+    block merely because the compatibility loader was tried afterward.  The
+    fallback is only useful when the profile loader rejects a legacy,
+    task-bound document; if neither parser succeeds, retain the original
+    profile error and chain the legacy error for debugging.
+    """
+
+    selector = mode.value if isinstance(mode, AnnotationMode) else str(mode)
+    expected_annotation_mode = (
+        AnnotationMode.TARGET_ONLY
+        if selector == "contact_press"
+        else AnnotationMode(selector)
+    )
+    try:
+        return load_profile(path, mode=selector)
+    except ConfigError as profile_error:
+        # Only task-bound YAML documents belong to the compatibility parser.
+        # In particular, do not turn a malformed shared profile into a
+        # misleading "dataset is required" error by trying ``load_config``
+        # unconditionally.
+        # A missing path is kept on the compatibility seam as well: callers
+        # may provide a loader double (and the legacy loader gives the same
+        # actionable missing-file error in production).  For an existing
+        # document, require an explicit top-level dataset block before trying
+        # the legacy parser.
+        if path.expanduser().resolve().is_file() and not has_dataset_block(path):
+            raise
+        try:
+            # Keep the compatibility seam callable by older loader doubles
+            # and task-bound files.  Legacy documents carry one concrete
+            # annotation mode; validate it immediately below instead of
+            # asking the loader to resolve shared-profile overlays.
+            legacy_profile = load_config(path)
+        except ConfigError as legacy_error:
+            # A strict profile rejection is the expected first step for a
+            # valid legacy file.  If that file is malformed as well, expose
+            # the legacy parser's field-level error instead of the generic
+            # profile/legacy distinction.
+            if "dataset block" in str(profile_error):
+                raise legacy_error from profile_error
+            raise profile_error from legacy_error
+        if legacy_profile.annotation.mode is not expected_annotation_mode:
+            raise ValueError(
+                f"--{selector.replace('_', '-')} requires "
+                f"annotation.mode={expected_annotation_mode.value}, "
+                f"but {legacy_profile.config_path} declares "
+                f"{legacy_profile.annotation.mode.value}"
+            )
+        return legacy_profile
+
+
+def _is_unbound_profile_error(path: Path, error: ConfigError) -> bool:
+    """Identify the actionable shared-profile/no-dataset failure mode.
+
+    The legacy execution branch calls :func:`load_config`, which intentionally
+    rejects a reusable profile because it has no dataset block (and may have
+    several mode overlays).  Restrict the migration hint to the two errors
+    emitted for an otherwise valid profile; malformed YAML and legacy config
+    validation errors should retain their original diagnostics.
+    """
+
+    resolved = path.expanduser().resolve()
+    if not resolved.is_file() or has_dataset_block(resolved):
+        return False
+    message = str(error)
+    return message.startswith("profile mode is required when multiple modes are defined") or (
+        message == "config.dataset is required"
+    )
+
+
 def _run_path_input(args: argparse.Namespace, reporter: ProcessUI) -> dict[str, Any]:
     if args.dataset_root is not None:
         raise ValueError("--data-path and --dataset-root cannot be used together")
-    if args.path_mode is None:
-        raise ValueError("--data-path requires exactly one of --target-only/--pick-place")
+    requested_task = (
+        None
+        if args.task is None
+        else _runtime_dataset_component(args.task, field="--task")
+    )
+    requested_camera = (
+        None
+        if args.camera is None
+        else _runtime_dataset_component(args.camera, field="--camera")
+    )
+    requested_path_mode = (
+        str(args.path_mode)
+        if args.path_mode is not None
+        else _infer_path_mode(args.data_path)
+    )
     if _optional_cli_path(args.source_run_dir) is not None:
         raise ValueError("--source-run-dir is not supported with --data-path")
-    mode = AnnotationMode(args.path_mode)
-    resolved = resolve_dataset_input(args.data_path, mode=mode, task=args.task)
-    if args.camera is not None and any(target.camera != args.camera for target in resolved.targets):
-        raise ValueError("--camera does not match the dataset extract manifest")
+    mode = (
+        AnnotationMode.TARGET_ONLY
+        if requested_path_mode == "contact_press"
+        else AnnotationMode(requested_path_mode)
+    )
+    resolved = resolve_dataset_input(
+        args.data_path,
+        mode=mode,
+        task=requested_task,
+        camera=requested_camera,
+    )
     if resolved.is_collection and args.episode_ids is not None and len(resolved.targets) != 1:
         raise ValueError("collection --episode-ids requires selecting one --task")
 
-    profile = load_config(args.config)
-    if profile.annotation.mode is not mode:
-        raise ValueError(
-            f"--{mode.value.replace('_', '-')} requires annotation.mode={mode.value}, "
-            f"but {profile.config_path} declares {profile.annotation.mode.value}"
-        )
+    # Try the single profile document first.  Legacy task-bound YAML remains a
+    # compatibility path and keeps the old task-kind profile selection intact.
+    base_profile = _load_path_config(args.config, mode=requested_path_mode)
+
+    def selected_episode_ids(target: DatasetTarget) -> tuple[int, ...]:
+        if getattr(args, "all_episodes", False):
+            discovery = discover_episodes(
+                target.root,
+                camera=target.camera,
+                require_depth=args.gripper_backend == "urdf",
+            )
+            selected = discovery.episode_ids
+        elif args.episode_ids is not None:
+            selected = tuple(args.episode_ids)
+        else:
+            selected = target.episode_ids
+        selected = tuple(dict.fromkeys(int(value) for value in selected))
+        if not selected:
+            raise ValueError(f"no episodes selected for task {target.task!r}")
+        return selected
+
+    def target_profile_key(target: DatasetTarget) -> str:
+        target_profile = getattr(target, "profile", TargetProfile.GRASP_MANIPULATION)
+        if requested_path_mode == "contact_press":
+            if target_profile is not TargetProfile.CONTACT_PRESS:
+                raise ValueError(
+                    f"--mode contact_press requires contact_action_site task metadata; "
+                    f"{target.task!r} declares {target_profile.value}"
+                )
+            return "contact_press"
+        if target_profile is TargetProfile.CONTACT_PRESS:
+            return "contact_press"
+        return mode.value
+
+    profile_cache: dict[str, PipelineProfile] = {}
+    if isinstance(base_profile, PipelineProfile):
+        profile_cache[requested_path_mode] = base_profile
+
+    def bound_target_config(target: DatasetTarget) -> tuple[PipelineConfig, tuple[int, ...]]:
+        _runtime_dataset_component(target.task, field="dataset.task")
+        _runtime_dataset_component(target.camera, field="dataset.camera")
+        selected = selected_episode_ids(target)
+        if isinstance(base_profile, PipelineProfile):
+            key = target_profile_key(target)
+            if key not in profile_cache:
+                profile_cache[key] = load_profile(args.config, mode=key)
+            binding = dataset_binding_from_target(
+                target,
+                # Let a manifest's declared smoke episode survive the normal
+                # (no CLI override) path.  ``selected`` is explicit only for
+                # ``--episode-ids`` or ``--all-episodes``; in the default case
+                # the target already carries the manifest selection.
+                episode_ids=(
+                    selected
+                    if getattr(args, "all_episodes", False) or args.episode_ids is not None
+                    else None
+                ),
+                manifest_data=getattr(target, "manifest_data", None),
+                manifest_path=getattr(target, "manifest_path", None),
+            )
+            return bind_dataset(profile_cache[key], binding), selected
+        target_config_path = _path_profile_config(base_profile, target)
+        # ``base_profile`` is a legacy PipelineConfig.  Preserve its previous
+        # task-specific override behavior while forwarding manifest-selected
+        # episode IDs into the request.
+        # Keep the legacy loader call per target for compatibility with tools
+        # that monkeypatch or audit task-specific YAML selection.  The shared
+        # profile path never enters this branch.
+        if requested_path_mode == "contact_press":
+            # Keep explicit contact mode fail-closed for legacy task-bound
+            # configs too.  Otherwise an ordinary target-only task would be
+            # silently routed through the generic target-only YAML below.
+            target_profile_key(target)
+        target_config = load_config(target_config_path)
+        return target_config, selected
+
     if not resolved.is_collection:
         target = resolved.targets[0]
-        target_config = _path_profile_config(profile, target)
+        target_config, selected = bound_target_config(target)
         return _run_from_args(
             _path_target_args(
                 args,
-                config=target_config,
+                config=target_config.config_path,
                 dataset_root=target.root,
                 task=target.task,
                 camera=target.camera,
                 run_id=args.run_id,
                 parallel_defaults=(
-                    None if target_config == profile.config_path else profile.parallel
+                    None
+                    if isinstance(base_profile, PipelineProfile)
+                    or target_config.config_path == base_profile.config_path
+                    else base_profile.parallel
                 ),
+                bound_config=target_config,
+                episode_ids=selected,
             ),
             reporter,
         )
@@ -666,19 +942,24 @@ def _run_path_input(args: argparse.Namespace, reporter: ProcessUI) -> dict[str, 
     records: list[dict[str, Any]] = []
     for target in resolved.targets:
         task_run_id = _validate_run_id(f"{collection_run_id}-{target.task}")
-        target_config = _path_profile_config(profile, target)
         try:
+            target_config, selected = bound_target_config(target)
             summary = _run_from_args(
                 _path_target_args(
                     args,
-                    config=target_config,
+                    config=target_config.config_path,
                     dataset_root=target.root,
                     task=target.task,
                     camera=target.camera,
                     run_id=task_run_id,
                     parallel_defaults=(
-                        None if target_config == profile.config_path else profile.parallel
+                        None
+                        if isinstance(base_profile, PipelineProfile)
+                        or target_config.config_path == base_profile.config_path
+                        else base_profile.parallel
                     ),
+                    bound_config=target_config,
+                    episode_ids=selected,
                 ),
                 reporter,
             )
@@ -709,11 +990,18 @@ def _run_path_input(args: argparse.Namespace, reporter: ProcessUI) -> dict[str, 
         "run_id": collection_run_id,
         "dataset_root": str(resolved.root),
         "annotation_mode": mode.value,
+        "profile": (
+            "contact_press" if requested_path_mode == "contact_press" else "shared"
+        ),
         "records": records,
         "passed": all(record["status"] == "completed" for record in records),
     }
     artifact = ArtifactStore.write_json(
-        (profile.output_root if args.output_dir is None else args.output_dir).expanduser().resolve()
+        (
+            base_profile.output_root
+            if args.output_dir is None
+            else args.output_dir
+        ).expanduser().resolve()
         / f"{collection_run_id}-collection-summary.json",
         result,
     )
@@ -730,8 +1018,22 @@ def _run_from_args(
     if args.data_path is not None:
         return _run_path_input(args, reporter)
     if args.path_mode is not None:
-        raise ValueError("--target-only/--pick-place require --data-path")
-    config = load_config(args.config)
+        raise ValueError("--mode/--target-only/--pick-place require --data-path")
+    bound_config = getattr(args, "bound_config", None)
+    if bound_config is not None:
+        config = bound_config
+    else:
+        try:
+            config = load_config(args.config)
+        except ConfigError as exc:
+            if _is_unbound_profile_error(args.config, exc):
+                raise ValueError(
+                    "the shared pipeline profile requires --data-path; use "
+                    "--data-path DATASET_OR_COLLECTION with --mode/--target-only/"
+                    "--pick-place, or pass a legacy task-bound --config containing "
+                    "a dataset block when using --dataset-root"
+                ) from exc
+            raise
     parallel_defaults = getattr(args, "path_parallel_defaults", None)
     if parallel_defaults is not None:
         config = replace(config, parallel=parallel_defaults)
@@ -757,8 +1059,14 @@ def _run_from_args(
         dataset_root = (
             config.dataset.root if args.dataset_root is None else args.dataset_root
         )
-        task = config.dataset.task if args.task is None else args.task
-        camera = config.dataset.camera if args.camera is None else args.camera
+        task = _runtime_dataset_component(
+            config.dataset.task if args.task is None else args.task,
+            field="--task",
+        )
+        camera = _runtime_dataset_component(
+            config.dataset.camera if args.camera is None else args.camera,
+            field="--camera",
+        )
         request = ProcessRequest(
             dataset_root=dataset_root,
             output_root=output_root,
@@ -822,8 +1130,14 @@ def _run_from_args(
             dataset_root = (
                 config.dataset.root if args.dataset_root is None else args.dataset_root
             )
-            task = config.dataset.task if args.task is None else args.task
-            camera = config.dataset.camera if args.camera is None else args.camera
+            task = _runtime_dataset_component(
+                config.dataset.task if args.task is None else args.task,
+                field="--task",
+            )
+            camera = _runtime_dataset_component(
+                config.dataset.camera if args.camera is None else args.camera,
+                field="--camera",
+            )
             request = ProcessRequest(
                 dataset_root=dataset_root,
                 output_root=output_root,
@@ -891,6 +1205,8 @@ def _run_from_args(
             )
             if not task or not camera:
                 raise ValueError("source process summary does not define task/camera")
+            task = _runtime_dataset_component(task, field="--task")
+            camera = _runtime_dataset_component(camera, field="--camera")
             request = ProcessRequest(
                 dataset_root=dataset_root,
                 output_root=output_root,

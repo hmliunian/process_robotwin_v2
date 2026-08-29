@@ -30,6 +30,34 @@ State Loop → Qwen Semantic Plan → SAM target/receiver → Gripper Stage → 
 项目只提交 [dataset manifest](configs/datasets/move_pillbottle_pad_coverage20.json)，不提交视频、
 Parquet 或 HDF5。
 
+## 统一配置与数据路径
+
+算法参数集中在 [`configs/process.yaml`](configs/process.yaml)；任务名、数据根目录、相机和
+episode 选择属于运行时绑定，不需要为每个任务复制一份 Qwen/SAM 配置。`just process` 会在
+内存中把同一个 profile 绑定到输入数据，不会向输入目录写入动态配置 JSON。已有的
+`EXTRACT_MANIFEST.json` 如果存在，只作为数据 provenance 和 episode 选择使用。
+
+以下三种输入形式都使用同一套 profile：
+
+```bash
+# 单任务目录（例如 pick_place_20 下的一个 task）
+just process /DATA/disk8/xuran/add_mask_robotwin/dataset/pick_place_20/move_pillbottle_pad \
+  --gripper-backend sam
+
+# collection：默认处理其中所有 task；--task 可只选一个
+just process /DATA/disk8/xuran/add_mask_robotwin/dataset/pick_place_20 \
+  --task move_pillbottle_pad --gripper-backend sam
+
+# target-only collection；根 manifest 会自动选择 target-only mode
+just process /DATA/disk8/xuran/add_mask_robotwin/dataset/target_only_20_v2
+```
+
+带 extract manifest 的目录会自动推断 mode；原生 RoboTwin 目录没有 manifest 时默认按
+pick-place 处理，运行 target-only 时显式加 `--target-only`（或 `--mode target_only`）。
+`--all-episodes` 可忽略 manifest 中固定的 episode 子集，重新从目录发现全部完整 episode。
+旧的 task-bound 配置仍可通过 `--config` 运行，作为兼容入口；新任务优先复用
+`configs/process.yaml`，只在命令行指定数据路径和必要的 mode/backend 覆盖。
+
 ## 目录
 
 ```text
@@ -61,7 +89,7 @@ just process ../dataset/move_pillbottle_pad_coverage20_original
 SAM_WORKER_GPUS=0,1,2,3 just run-parallel \
   ../dataset/move_pillbottle_pad_coverage20_original
 
-# 将审核后的真实 pick-and-place MCAP 转成 RoboTwin 目录
+# 将审核后的真实 pick-and-place MCAP 转成 RoboTwin 目录（转换后再 process）
 just convert-real <input_root> <new_output_root> --limit 1
 
 # 多 episode 顺序执行；一个 SAM3 adapter 在整个 batch 内常驻
@@ -134,11 +162,24 @@ just run-parallel <dataset_root> \
 仍可使用 `just process ... --sam-worker-gpus ... --qwen-max-in-flight ...`；不传 worker pool 时
 沿用 YAML，YAML 也未配置则保持单进程串行。
 
-真实 pick-and-place MCAP 可通过 `just convert-real INPUT_ROOT OUTPUT_ROOT [OPTIONS...]` 转换。
+真实 pick-and-place MCAP 不是 RoboTwin layout，不能直接传给 `process`；必须先通过
+`just convert-real INPUT_ROOT OUTPUT_ROOT [OPTIONS...]` 转换。
 首次使用先安装 `uv sync --extra real-mcap`；`--texts` 默认是已审核的
 `configs/datasets/pick_and_place_real_texts.json`，`--limit N` 可用于 smoke conversion。转换器
 只选择 `complete_pick_place` 记录并拒绝覆盖已有输出目录。转换结果没有 depth，后续必须使用
-`--gripper-backend sam`。完整流程见 [docs/datasets.md](docs/datasets.md#0-真实-pp-mcap-转换)。
+`--gripper-backend sam`：
+
+```bash
+uv sync --extra real-mcap
+just convert-real \
+  /DATA/disk8/xuran/add_mask_robotwin/dataset/pick_and_place_real \
+  /DATA/disk8/xuran/add_mask_robotwin/dataset/pick_place_20/pick_and_place_real_v2
+just process \
+  /DATA/disk8/xuran/add_mask_robotwin/dataset/pick_place_20/pick_and_place_real_v2 \
+  --gripper-backend sam
+```
+
+完整流程见 [docs/datasets.md](docs/datasets.md#0-真实-pp-mcap-转换)。
 
 完整文档从 [docs/README.md](docs/README.md) 开始；当前实现契约见
 [docs/architecture.md](docs/architecture.md)，coverage20 实验、参数依据和证据边界见

@@ -899,6 +899,74 @@ def test_parse_args_accepts_path_only_modes(
     assert args.path_mode == expected
 
 
+def test_parse_args_rejects_negative_episode_ids() -> None:
+    with pytest.raises(SystemExit):
+        process_module._parse_args(["--episode-ids", "-1"])
+
+
+def test_infer_path_mode_uses_homogeneous_collection_records_without_top_level_profile(
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "EXTRACT_MANIFEST.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "datasets": [
+                    {"task": "alpha", "profile": "target_only"},
+                    {"task": "beta", "profile": "target_only"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert process_module._infer_path_mode(tmp_path) == "target_only"
+
+
+def test_path_loader_does_not_fallback_malformed_shared_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile_path = tmp_path / "malformed-profile.yaml"
+    profile_path.write_text("defaults: []\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        process_module,
+        "load_config",
+        lambda _path: pytest.fail("malformed shared profile must not use legacy loader"),
+    )
+
+    with pytest.raises(ValueError, match="defaults must be a mapping"):
+        process_module._load_path_config(
+            profile_path,
+            mode=process_module.AnnotationMode.PICK_PLACE,
+        )
+
+
+@pytest.mark.parametrize(
+    "path_args",
+    (
+        (),
+        ("--dataset-root", "/tmp/legacy-dataset"),
+    ),
+)
+def test_shared_profile_without_data_path_has_actionable_migration_hint(
+    path_args: tuple[str, ...],
+) -> None:
+    args = process_module._parse_args(
+        ["--config", str(process_module.DEFAULT_PROFILE_CONFIG), *path_args]
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"shared pipeline profile requires --data-path.*legacy task-bound --config",
+    ):
+        process_module._run_from_args(
+            args,
+            process_module.ProcessUI(emit_json_summary=False, verbose=False),
+        )
+
+
 @pytest.mark.parametrize(
     ("profile", "mode", "semantic_prompt", "qc_prompt", "bbox_prompt"),
     (
@@ -985,9 +1053,55 @@ def test_path_mode_does_not_silently_replace_selected_config(
             is_collection=False,
         ),
     )
-    args = process_module._parse_args(["--data-path", str(tmp_path), "--target-only"])
+    args = process_module._parse_args(
+        [
+            "--data-path",
+            str(tmp_path),
+            "--target-only",
+            "--config",
+            "configs/process_qwen38_api.yaml",
+        ]
+    )
 
     with pytest.raises(ValueError, match=r"process_qwen38_api.yaml.*pick_place"):
+        process_module._run_from_args(
+            args,
+            process_module.ProcessUI(emit_json_summary=False, verbose=False),
+        )
+
+
+def test_legacy_contact_press_mode_rejects_non_contact_task_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = SimpleNamespace(
+        root=tmp_path / "task",
+        task="adjust_bottle",
+        camera="cam_high",
+        episode_ids=(0,),
+        profile=TargetProfile.GRASP_MANIPULATION,
+    )
+    monkeypatch.setattr(
+        process_module,
+        "resolve_dataset_input",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            root=tmp_path,
+            targets=(target,),
+            is_collection=False,
+        ),
+    )
+    args = process_module._parse_args(
+        [
+            "--data-path",
+            str(tmp_path),
+            "--mode",
+            "contact_press",
+            "--config",
+            "configs/process_target_only_qwen38_api.yaml",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="requires contact_action_site task metadata"):
         process_module._run_from_args(
             args,
             process_module.ProcessUI(emit_json_summary=False, verbose=False),

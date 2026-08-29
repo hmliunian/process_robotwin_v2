@@ -297,6 +297,25 @@ def test_forwarded_config_uses_last_argparse_value() -> None:
     assert manager_script._effective_config_path(args) == Path("last.yaml")
 
 
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        (("--mode", "pick_place"), "pick_place"),
+        (("--mode", "target_only"), "target_only"),
+        (("--mode=target_only",), "target_only"),
+        (("--mode", "contact_press"), "contact_press"),
+        (("--target-only",), "target_only"),
+        (("--pick-place",), "pick_place"),
+        ((), "pick_place"),
+    ],
+)
+def test_process_mode_selects_shared_profile_mode(
+    arguments: tuple[str, ...],
+    expected: str,
+) -> None:
+    assert manager_script._process_mode(arguments) == expected
+
+
 def test_settings_preserve_symlinked_qwen_virtualenv_python(tmp_path: Path) -> None:
     qwen_python = tmp_path / "qwen-venv" / "bin" / "python"
     qwen_python.parent.mkdir(parents=True)

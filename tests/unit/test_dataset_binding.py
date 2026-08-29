@@ -54,6 +54,28 @@ def test_task_kind_and_manifest_are_carried_without_aliasing() -> None:
     assert binding.manifest_data["nested"]["value"] == 1
 
 
+def test_target_manifest_is_used_when_binding_overrides_are_omitted() -> None:
+    target = DatasetTarget(
+        root=Path("/dataset/task"),
+        task="move_pillbottle_pad",
+        camera="cam_high",
+        episode_ids=(7, 8),
+        manifest_path=Path("/dataset/task/EXTRACT_MANIFEST.json"),
+        manifest_data={
+            "task": "move_pillbottle_pad",
+            "camera": "cam_high",
+            "episode_indices": [7, 8],
+            "smoke_episode_ids": [8],
+        },
+    )
+
+    binding = dataset_binding_from_target(target)
+
+    assert binding.manifest_path == Path("/dataset/task/EXTRACT_MANIFEST.json").resolve()
+    assert binding.regression_episode_ids == (7, 8)
+    assert binding.smoke_episode_ids == (8,)
+
+
 def test_manifest_task_kind_fills_an_older_target_without_kind() -> None:
     binding = dataset_binding_from_target(
         _target(),
@@ -76,3 +98,18 @@ def test_explicit_empty_episode_selection_is_preserved() -> None:
     binding = dataset_binding_from_target(_target(), episode_ids=[])
 
     assert binding.episode_ids == ()
+
+
+def test_manifest_smoke_selection_is_preserved_without_cli_override() -> None:
+    binding = dataset_binding_from_target(
+        _target(),
+        manifest_data={
+            "task": "move_pillbottle_pad",
+            "camera": "cam_high",
+            "episode_indices": [7, 8],
+            "smoke_episode_ids": [8],
+        },
+    )
+
+    assert binding.regression_episode_ids == (7, 8)
+    assert binding.smoke_episode_ids == (8,)

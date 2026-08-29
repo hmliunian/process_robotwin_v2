@@ -105,6 +105,36 @@ profile，不按任务名猜测：
 `press_stapler` 三类使用 `contact_press`；其余 8 类保持普通 target-only。articulated task
 保留独立 provenance，但在完成专门 A/B 前不自动切换 profile。
 
+### 2.4 Pipeline profile 与 DatasetBinding
+
+任务数据身份不再和算法配置一一对应。`configs/process.yaml` 先解析为可复用的
+`PipelineProfile`（Qwen、SAM3、mask QC、gripper ROI、输出和 mode-specific prompt）；每次
+命令执行时，再把 `DatasetBinding`（`root`、`task`、`camera`、episode selection、可选
+`task_kind` 和 manifest provenance）绑定为 workflow 使用的 `PipelineConfig`：
+
+```text
+PipelineProfile + DatasetBinding -> PipelineConfig -> DatasetPipeline
+```
+
+这一步只在内存中完成，不会为每个 task 复制或写入 JSON/YAML。`EXTRACT_MANIFEST.json` 若
+存在，仍然是输入数据的 provenance/selection 合同；它不是算法配置。没有 manifest 的原生
+RoboTwin task 会根据标准目录自动发现 camera 和完整 episode；原生 collection 会扫描直接
+子目录。默认 mode 是 pick-place，target-only 必须显式传 `--target-only` 或
+`--mode target_only`。`--all-episodes` 可覆盖 manifest 中的固定 episode selection。
+
+推荐调用：
+
+```bash
+just process DATASET_OR_TASK [--task TASK_NAME] [--camera cam_high] [--all-episodes]
+just process DATASET_OR_TASK --target-only
+just process DATASET_OR_TASK --gripper-backend sam
+```
+
+输入路径可以是 task（例如 `pick_place_20/move_pillbottle_pad`）或 collection（例如
+`pick_place_20`、`target_only_20_v2`）。collection 默认按 task 逐项运行；`--episode-ids`
+与 collection 一起使用时必须先用 `--task` 选定单个 task。旧的 task-bound config 仍由
+`load_config` 兼容读取，但新增数据不需要再建立一份任务 JSON。
+
 ## 3. Stage 1：State Loop
 
 Stage 1 只读取 metadata、state 和帧数，不判断视觉实例，也不调用 Qwen/SAM。
@@ -186,9 +216,10 @@ response parser 属于各 pipeline stage，artifact persistence 属于 applicati
 | SAM gripper keyframe QC | `pipeline/gripper/sam/` | 只供显式 SAM gripper backend 使用；服务/合同失败时按已记录的 availability policy 处理 |
 
 pick-place 的 target 和 receiver 在一次 semantic request 中联合判断，避免角色交换或指向同一
-实例；target-only request/response 只包含 target。pipeline 内部只检查 endpoint health；
-`just process` 的外层 launcher 在 endpoint 不可用时自动选卡并启动本地 server，且只在退出时
-回收自己启动的进程。已有健康服务保持外部所有权。
+实例；target-only request/response 只包含 target。pipeline 内部只检查 endpoint health。
+共享 profile 默认使用 `qwen.runtime=api`，此时 `just process` 只探测远程 endpoint，失败即
+退出；只有显式选择 `qwen.runtime=local` 的配置时，外层 launcher 才会在 endpoint 不可用时
+选卡并启动本地 server，并只回收自己启动的进程。已有健康服务保持外部所有权。
 
 ### 4.2 角色语义
 
@@ -475,9 +506,10 @@ just process DATASET_ROOT [OUTPUT_ROOT] [PROCESS_ARGS...]
 ```
 
 默认 live URDF 仍需先用 Qwen/SAM 生成 mode-required object source，并要求发现同 camera
-depth。该入口自动复用健康 Qwen endpoint；若 endpoint 不可用，会排除 SAM 和显式 EGL GPU 后按
-空闲显存选卡，等待服务就绪，并在 process 成功、失败或中断后回收服务。分阶段入口仍可用
-`just serve-qwen` 手动维持服务。
+depth。共享 profile 的 API runtime 只复用并探测远程 Qwen endpoint，endpoint 不可用即失败；
+若显式改用 `qwen.runtime=local`，入口才会排除 SAM 和显式 EGL GPU 后按空闲显存选卡，等待
+服务就绪，并在 process 成功、失败或中断后回收自己启动的服务。分阶段入口仍可用
+`just serve-qwen` 手动维持本地服务。
 
 常用参数：
 
@@ -510,25 +542,27 @@ just run-parallel DATASET_ROOT [OUTPUT_ROOT] [PROCESS_ARGS...]
 若第二个 positional token 以 `-` 开头，它会被当作 process 参数，输出根仍为
 `artifacts/runs`。
 
-也可以提供带兼容 `EXTRACT_MANIFEST.json` 的单任务目录或 collection。`--config` 必须与所选
-mode 匹配；正式 API 示例为：
+也可以提供带兼容 `EXTRACT_MANIFEST.json` 的单任务目录或 collection。推荐使用共享
+`configs/process.yaml`；它只定义可复用的算法 profile，数据身份由路径在运行时绑定。`--config`
+仍可传入旧的 task-bound 文件作为兼容入口，且必须与所选 mode 匹配。正式 API 示例为：
 
 ```bash
-just process --data-path DATASET_OR_COLLECTION --pick-place \
-  --config configs/process_qwen38_api.yaml
-just process --data-path DATASET_OR_COLLECTION --target-only \
-  --config configs/process_target_only_qwen38_api.yaml
+just process --data-path DATASET_OR_COLLECTION --pick-place
+just process --data-path DATASET_OR_COLLECTION --target-only
+just process --data-path DATASET_OR_COLLECTION --task TASK_NAME \
+  --gripper-backend sam
 ```
 
-path 模式使用显式配置确定 Qwen runtime/model 和基础 mode；manifest 替换 dataset root、task、
-camera 和 episode ids，并按 `task_kind` 选择 target profile。普通 target-only task 保留传入配置，
+path 模式使用 profile 确定 Qwen runtime/model 和基础 mode；manifest 替换 dataset root、task、
+camera 和 episode ids，并按 `task_kind` 选择 target profile。普通 target-only task 保留共享配置，
 `contact_action_site` 改用同一 runtime 类别的 contact-press 配置；articulated task 不切换。
 bundled local profile 使用 18086，API profile 使用 Qwen API。特殊的
 `runtime_target_only_v2_qwen18087.yaml` 是单任务 pilot，不作为 mixed 11-task collection 配置。
 
-`EXTRACT_MANIFEST.json` 必须显式声明与 mode 匹配的 `profile`。缺少该字段的旧 extract 会
-fail closed；此时使用 `just process DATASET_ROOT [OUTPUT_ROOT] --config PROFILE`，不要同时传
-`--pick-place/--target-only`。
+带 manifest 的 extract 必须声明与 mode 匹配的 `profile`。原生 RoboTwin layout 可以没有
+manifest：程序会从标准目录发现完整 episode，默认按 pick-place；target-only 原生目录请传
+`--target-only` 或 `--mode target_only`。`--all-episodes` 会忽略 manifest 中的固定
+`episode_indices`，改用实际发现的完整 episode。整个过程不会在数据根写入动态配置文件。
 
 live URDF：
 
@@ -774,10 +808,9 @@ episode。
 
 ## 10. 配置与模块边界
 
-主配置段：
+共享 profile 的稳定配置段（`configs/process.yaml`）和运行时绑定分别是：
 
 ```yaml
-dataset: {root, manifest, task, camera, smoke_episode_ids, regression_episode_ids}
 qwen: {endpoint, model, prompt_template, timeout_seconds, max_tokens}
 sam3: {checkpoint, gpus}
 mask:
@@ -796,7 +829,15 @@ gripper_roi:
   hard: {axial_back_m: 0.120, axial_front_m: 0.045}
   fixed_half_width_m: 0.085
 output: {root}
+
+# command-line/application boundary; not stored in the shared profile
+DatasetBinding: {root, task, camera, smoke_episode_ids, regression_episode_ids,
+                 task_kind, manifest_path, manifest_data}
 ```
+
+`defaults`/`common` 保存跨任务的稳定字段，`modes.pick_place`、`modes.target_only` 和
+`modes.contact_press` 只覆盖 mode-specific prompt/annotation 参数。旧的 task-bound YAML 仍
+可以通过 `load_config()` 读取；它们保留 `dataset` 段只是为了兼容，不是新增任务的推荐方式。
 
 关键代码职责：
 

@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
+from ..config import ConfigError, validate_dataset_component
 from ..models import EpisodeRef
 
 NDArray = np.ndarray[Any, Any]
@@ -51,8 +52,14 @@ class RoboTwinDataset:
         manifest_data: dict[str, Any] | None = None,
     ) -> None:
         self.root = root.expanduser().resolve()
-        self.task = task
-        self.camera = camera
+        try:
+            self.task = validate_dataset_component(task, field="dataset.task")
+            self.camera = validate_dataset_component(camera, field="dataset.camera")
+        except ConfigError as exc:
+            # Keep adapter callers insulated from the configuration layer's
+            # exception type while enforcing the same path-component contract
+            # for direct adapter construction.
+            raise DatasetError(str(exc)) from exc
         self.manifest_path = manifest_path.expanduser().resolve()
         self._manifest_data = None if manifest_data is None else dict(manifest_data)
         self.manifest = self._load_manifest()
@@ -70,11 +77,12 @@ class RoboTwinDataset:
             raise DatasetError("dataset manifest must be a JSON object")
         if payload.get("task") != self.task or payload.get("camera") != self.camera:
             raise DatasetError("dataset config does not match manifest task/camera")
-        manifest_root = Path(str(payload.get("dataset_root", ""))).expanduser().resolve()
-        if manifest_root != self.root:
-            raise DatasetError(
-                f"dataset root does not match manifest: {self.root} != {manifest_root}"
-            )
+        # ``dataset_root`` is provenance recorded when an extract is created.  A
+        # dataset can be moved or mounted at a different path before it is
+        # processed, so the runtime binding (``self.root``) is the authority for
+        # all physical file access.  Keep the manifest value untouched for
+        # reporting, but never resolve it or reject a valid binding because it
+        # contains a stale/host-specific absolute path.
         return payload
 
     @staticmethod
@@ -188,12 +196,55 @@ class RoboTwinDataset:
             raise DatasetError(f"video contains no frames: {path}")
         return count, shape
 
+    def frame_shape(self, ref: EpisodeRef) -> tuple[int, int]:
+        """Return the expected RGB frame shape, inferring native inputs lazily.
+
+        Extract manifests normally carry ``frame_shape_hw``.  Manifest-free
+        native RoboTwin directories are intentionally resolved without
+        materialising a JSON file, so that field is absent until the first
+        content check.  Keep the inference in the dataset adapter (the owner
+        of video I/O) and cache it in the in-memory manifest for downstream
+        stages.
+        """
+
+        raw_shape = self.manifest.get("frame_shape_hw")
+        if raw_shape is not None:
+            try:
+                values = tuple(int(value) for value in raw_shape)
+            except (TypeError, ValueError) as exc:
+                raise DatasetError("dataset manifest frame_shape_hw must contain two integers") from exc
+            if len(values) != 2 or any(value <= 0 for value in values):
+                raise DatasetError("dataset manifest frame_shape_hw must contain two positive integers")
+            return values
+        _count, shape = self.video_info(ref)
+        self.manifest["frame_shape_hw"] = list(shape)
+        return shape
+
     def preflight(self, episode_ids: Iterable[int]) -> dict[str, Any]:
         ids = tuple(int(value) for value in episode_ids)
         issues: list[str] = []
         metadata = self._metadata_index()
-        expected_shape = tuple(int(value) for value in self.manifest["frame_shape_hw"])
-        expected_surplus = int(self.manifest["raw_video_frame_surplus"])
+        expected_shape: tuple[int, int] | None = None
+        raw_shape = self.manifest.get("frame_shape_hw")
+        if raw_shape is not None:
+            try:
+                shape_values = tuple(int(value) for value in raw_shape)
+            except (TypeError, ValueError):
+                issues.append("dataset manifest frame_shape_hw must contain two integers")
+            else:
+                if len(shape_values) != 2 or any(value <= 0 for value in shape_values):
+                    issues.append(
+                        "dataset manifest frame_shape_hw must contain two positive integers"
+                    )
+                else:
+                    expected_shape = shape_values
+        expected_surplus: int | None = None
+        raw_surplus = self.manifest.get("raw_video_frame_surplus")
+        if raw_surplus is not None:
+            try:
+                expected_surplus = int(raw_surplus)
+            except (TypeError, ValueError):
+                issues.append("dataset manifest raw_video_frame_surplus must be an integer")
         content: dict[str, dict[str, Any]] = {}
         for episode_index in ids:
             ref = EpisodeRef(self.task, episode_index, self.camera)
@@ -218,12 +269,21 @@ class RoboTwinDataset:
                         "raw_video_frame_surplus": surplus,
                         "frame_shape_hw": list(video_shape),
                     }
-                    if surplus != expected_surplus:
+                    # Native manifest-free inputs have no declared baseline;
+                    # infer it from the first valid episode and enforce
+                    # consistency for all following episodes.
+                    if expected_surplus is None:
+                        expected_surplus = surplus
+                        self.manifest["raw_video_frame_surplus"] = surplus
+                    elif surplus != expected_surplus:
                         issues.append(
                             f"episode {episode_index}: video surplus {surplus} "
                             f"!= {expected_surplus}"
                         )
-                    if video_shape != expected_shape:
+                    if expected_shape is None:
+                        expected_shape = video_shape
+                        self.manifest["frame_shape_hw"] = list(video_shape)
+                    elif video_shape != expected_shape:
                         issues.append(
                             f"episode {episode_index}: frame shape {video_shape} "
                             f"!= {expected_shape}"

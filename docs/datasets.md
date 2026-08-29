@@ -6,16 +6,17 @@
 
 ## 0. 真实 P&P MCAP 转换
 
-真实采集的 `/DATA/disk8/xuran/add_mask_robotwin/dataset/pick_and_place_real` 已转换为独立
-任务目录：
+真实采集的 `/DATA/disk8/xuran/add_mask_robotwin/dataset/pick_and_place_real` 是原始 MCAP
+目录，不是 RoboTwin layout，不能直接交给 `just process`。先转换为独立任务目录：
 
 ```text
-/home/xuran/add_mask_robotwin/dataset/pick_place_20/pick_and_place_real_v2
+/DATA/disk8/xuran/add_mask_robotwin/dataset/pick_place_20/pick_and_place_real_v2
 ```
 
 转换只使用头部左相机
 `/camera/coracam_head_left/left_h264/video`，映射为 `cam_high`；腕部相机仅用于人工核对，
-不写入输出。数据没有 depth，因此该目录只适用于 `sam` 后端，不应传给 `urdf` 后端。
+不写入输出。数据没有 depth，因此该目录只适用于 `sam` 后端，不应传给 `urdf` 后端；若未
+显式指定 `--gripper-backend sam`，默认 URDF discovery 会因缺 depth 而拒绝该输入。
 
 可从仓库根目录复现转换（需要安装 `real-mcap` extra）：
 
@@ -23,6 +24,23 @@
 uv sync --extra real-mcap
 just convert-real INPUT_ROOT OUTPUT_ROOT
 ```
+
+转换后直接复用共享 `configs/process.yaml`，不需要再为这个真实任务创建新的算法 JSON/YAML：
+
+```bash
+just convert-real \
+  /DATA/disk8/xuran/add_mask_robotwin/dataset/pick_and_place_real \
+  /DATA/disk8/xuran/add_mask_robotwin/dataset/pick_place_20/pick_and_place_real_v2
+just process \
+  /DATA/disk8/xuran/add_mask_robotwin/dataset/pick_place_20/pick_and_place_real_v2 \
+  --gripper-backend sam
+```
+
+`just process` 同时接受单任务目录和 collection 根目录。带 `EXTRACT_MANIFEST.json` 时会
+自动读取 mode/task/camera/episode selection；原生 RoboTwin 目录没有 manifest 时默认按
+pick-place 处理，target-only 需显式传 `--target-only`。`--task TASK_NAME` 可从 collection
+中选择一个任务，`--all-episodes` 可忽略 manifest 的固定子集并重新扫描全部完整 episode。
+这些绑定只存在于内存，不会向数据目录写入动态配置文件。
 
 `INPUT_ROOT` 是包含原始 `.mcap` 文件的目录；`OUTPUT_ROOT` 必须尚不存在。默认审核清单是
 `configs/datasets/pick_and_place_real_texts.json`，可用 `--texts MANIFEST` 覆盖；先验证一条时
@@ -41,7 +59,6 @@ SAM_WORKER_GPUS=0 QWEN_MAX_IN_FLIGHT=1 \
 just run-parallel \
   --data-path OUTPUT_ROOT \
   --pick-place \
-  --config configs/process_pick_and_place_real_qwen38_api.yaml \
   --gripper-backend sam \
   --episode-ids 0 \
   --ui plain

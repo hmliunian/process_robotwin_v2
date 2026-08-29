@@ -45,15 +45,50 @@ amodal 补全。
 默认 URDF gripper（仍使用 Qwen/SAM 生成 mode-required object）：
 
 ```bash
-# Qwen endpoint 不可用时会自动选卡、启动，并在 process 退出后释放
+# 共享 profile 默认 qwen.runtime=api；这里只探测远程 endpoint，失败即退出
 just process DATASET_ROOT [OUTPUT_ROOT]
 ```
+
+只有显式选择 `qwen.runtime=local` 的配置时，launcher 才会在 endpoint 不可用时选卡启动
+本地 Qwen，并在退出时回收自己启动的服务。
 
 显式使用 SAM gripper：
 
 ```bash
 just process DATASET_ROOT [OUTPUT_ROOT] --gripper-backend sam
 ```
+
+### 共享 profile 与数据绑定
+
+算法配置和数据身份已经分开：[`configs/process.yaml`](../configs/process.yaml) 是可复用的
+`PipelineProfile`，只包含 Qwen/SAM/QC/输出等稳定参数；`--data-path` 在每次运行时绑定数据
+根目录、task、camera 和 episode。绑定在内存完成，不会为每个 task 生成新的配置 JSON，也不
+会修改输入数据目录。旧的 task-bound `pilot_*.yaml` 仍可通过 `--config` 使用，主要用于分
+阶段调试和固定回归。
+
+支持单任务目录和 collection：
+
+```bash
+# 单任务目录
+just process /DATA/disk8/xuran/add_mask_robotwin/dataset/pick_place_20/move_pillbottle_pad \
+  --gripper-backend sam
+
+# collection 默认逐 task；--task 只运行指定 task
+just process /DATA/disk8/xuran/add_mask_robotwin/dataset/pick_place_20 \
+  --task move_pillbottle_pad --gripper-backend sam
+
+# target-only collection（根 EXTRACT_MANIFEST.json 自动推断 mode）
+just process /DATA/disk8/xuran/add_mask_robotwin/dataset/target_only_20_v2
+```
+
+带 `EXTRACT_MANIFEST.json` 的输入会自动读取 `profile`、task、camera 和 episode selection；
+原生 RoboTwin layout 没有 manifest 时，程序会扫描标准 `data/`、`videos/`、`sidecars/`、
+`meta/` 目录，并默认按 pick-place 处理。原生 target-only 需要显式传
+`--target-only`（或 `--mode target_only`）。`--all-episodes` 会忽略 manifest 中记录的固定
+子集，重新发现并处理所选 task 下全部完整 episode。collection 还可用 `--task NAME` 缩小范围。
+
+若 collection 的 task manifest 带有 `task_kind=contact_action_site`，运行时会自动选择同一
+runtime 下的 `contact_press` semantic/QC profile；不会依据 task 名称硬编码路由。
 
 Qwen API 配置下使用多 GPU SAM worker：
 

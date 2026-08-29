@@ -8,12 +8,17 @@ import pytest
 from robotwin_annotation_v2.config import (
     AnnotationConfig,
     ConfigError,
+    DatasetBinding,
     GripperRoiConfig,
     MaskConfig,
     ParallelConfig,
     Sam3Config,
+    _resolve_profile_document,
+    bind_dataset,
     load_config,
+    load_profile,
     parse_gpu_list,
+    validate_dataset_component,
 )
 from robotwin_annotation_v2.domain import (
     AnnotationMode,
@@ -90,6 +95,204 @@ def test_legacy_qwen_config_without_runtime_defaults_to_local() -> None:
     assert config.qwen.runtime == "local"
     assert config.qwen.probe == "health"
     assert config.qwen.api_key_env is None
+
+
+def test_load_profile_rejects_task_bound_dataset_block() -> None:
+    with pytest.raises(ConfigError, match="must not contain a dataset block"):
+        load_profile(PROJECT_ROOT / "configs/pilot_move_pillbottle_pad.yaml")
+
+
+def test_load_profile_rejects_nested_dataset_block(tmp_path: Path) -> None:
+    source = (PROJECT_ROOT / "configs/process.yaml").read_text(encoding="utf-8")
+    config_path = tmp_path / "nested-dataset-profile.yaml"
+    config_path.write_text(
+        source.replace("defaults:\n", "defaults:\n  dataset:\n    task: accidental\n"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="must not contain a dataset block"):
+        load_profile(config_path, mode=AnnotationMode.PICK_PLACE)
+
+
+def test_load_profile_rejects_dataset_block_in_another_mode(tmp_path: Path) -> None:
+    source = (PROJECT_ROOT / "configs/process.yaml").read_text(encoding="utf-8")
+    config_path = tmp_path / "unselected-dataset-profile.yaml"
+    config_path.write_text(
+        source.replace(
+            "  target_only:\n",
+            "  target_only:\n    dataset:\n      task: accidental\n",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="must not contain a dataset block"):
+        load_profile(config_path, mode=AnnotationMode.PICK_PLACE)
+
+
+def test_shared_profile_loads_each_supported_mode_without_dataset_identity() -> None:
+    profile_path = PROJECT_ROOT / "configs/process.yaml"
+
+    pick_place = load_profile(profile_path, mode=AnnotationMode.PICK_PLACE)
+    target_only = load_profile(profile_path, mode=AnnotationMode.TARGET_ONLY)
+    contact_press = load_profile(profile_path, mode="contact_press")
+
+    assert not hasattr(pick_place, "dataset")
+    assert pick_place.annotation.mode is AnnotationMode.PICK_PLACE
+    assert target_only.annotation.mode is AnnotationMode.TARGET_ONLY
+    assert contact_press.annotation.profile is TargetProfile.CONTACT_PRESS
+    assert pick_place.qwen.runtime == target_only.qwen.runtime == contact_press.qwen.runtime == "api"
+
+
+def test_contact_press_requires_a_dedicated_mode_overlay() -> None:
+    """A mode-less profile must not masquerade as the contact profile."""
+
+    with pytest.raises(
+        ConfigError,
+        match="contact_press requires an explicit modes[.]contact_press profile overlay",
+    ):
+        _resolve_profile_document(
+            {"defaults": {"annotation": {"mode": "target_only"}}},
+            mode="contact_press",
+        )
+
+
+def test_dataset_binding_rejects_task_or_camera_identity_mismatch() -> None:
+    with pytest.raises(ConfigError, match="binding task differs"):
+        DatasetBinding(
+            root=Path("/dataset/task"),
+            task="task",
+            camera="cam_high",
+            episode_ids=(1,),
+            manifest_data={"task": "other-task", "camera": "cam_high"},
+        )
+
+    with pytest.raises(ConfigError, match="binding camera differs"):
+        DatasetBinding(
+            root=Path("/dataset/task"),
+            task="task",
+            camera="cam_high",
+            episode_ids=(1,),
+            manifest_data={"task": "task", "camera": "cam_left"},
+        )
+
+
+@pytest.mark.parametrize("value", ("../escape", "a/b", r"a\b", ".", "..", "C:task", r"C:\\task", "task\x00name"))
+def test_dataset_component_rejects_path_like_names(value: str) -> None:
+    with pytest.raises(ConfigError, match="single path component"):
+        validate_dataset_component(value, field="dataset.task")
+
+
+def test_dataset_component_strips_surrounding_whitespace() -> None:
+    assert validate_dataset_component("  move_task  ", field="dataset.task") == "move_task"
+
+
+@pytest.mark.parametrize("field", ("task", "camera"))
+def test_dataset_binding_rejects_path_like_identity(field: str) -> None:
+    kwargs = {
+        "root": Path("/dataset/task"),
+        "task": "task",
+        "camera": "cam_high",
+        "episode_ids": (1,),
+    }
+    kwargs[field] = "../escape"
+    with pytest.raises(ConfigError, match="single path component"):
+        DatasetBinding(**kwargs)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("field", ("task", "camera"))
+def test_legacy_config_rejects_path_like_dataset_identity(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    source = (PROJECT_ROOT / "configs/pilot_move_pillbottle_pad.yaml").read_text(
+        encoding="utf-8"
+    )
+    needle = (
+        "  task: move_pillbottle_pad\n"
+        if field == "task"
+        else "  camera: cam_high\n"
+    )
+    replacement = f"  {field}: ../escape\n"
+    config_path = tmp_path / f"invalid-{field}.yaml"
+    config_path.write_text(source.replace(needle, replacement), encoding="utf-8")
+    with pytest.raises(ConfigError, match="single path component"):
+        load_config(config_path)
+
+
+def test_bind_dataset_keeps_profile_reusable_and_copies_manifest(tmp_path: Path) -> None:
+    profile = load_profile(PROJECT_ROOT / "configs/process.yaml", mode="pick_place")
+    manifest = {
+        "task": "task",
+        "camera": "cam_high",
+        "dataset_root": "/old/mount/task",
+        "episode_indices": [4, 9],
+        "smoke_episode_ids": [4],
+    }
+    binding = DatasetBinding(
+        root=tmp_path / "task",
+        task="task",
+        camera="cam_high",
+        episode_ids=(9,),
+        manifest_path=Path("EXTRACT_MANIFEST.json"),
+        manifest_data=manifest,
+    )
+
+    bound = bind_dataset(profile, binding)
+
+    assert bound.dataset.root == (tmp_path / "task").resolve()
+    assert bound.dataset.manifest == (tmp_path / "task/EXTRACT_MANIFEST.json").resolve()
+    assert bound.dataset.regression_episode_ids == (9,)
+    assert bound.dataset.smoke_episode_ids == (9,)
+    assert bound.dataset.manifest_data is not manifest
+    assert bound.dataset.manifest_data is not binding.manifest_data
+    assert bound.dataset.manifest_data["dataset_root"] == str(bound.dataset.root)
+    assert manifest["dataset_root"] == "/old/mount/task"
+
+
+def test_bind_dataset_rejects_manifest_profile_mismatch(tmp_path: Path) -> None:
+    profile = load_profile(PROJECT_ROOT / "configs/process.yaml", mode="pick_place")
+    binding = DatasetBinding(
+        root=tmp_path / "task",
+        task="task",
+        camera="cam_high",
+        episode_ids=(1,),
+        manifest_data={
+            "profile": "target_only",
+            "task": "task",
+            "camera": "cam_high",
+        },
+    )
+
+    with pytest.raises(ConfigError, match="binding profile differs"):
+        bind_dataset(profile, binding)
+
+
+def test_bind_dataset_builds_manifest_in_memory_when_native_manifest_is_absent(
+    tmp_path: Path,
+) -> None:
+    profile = load_profile(PROJECT_ROOT / "configs/process.yaml", mode="pick_place")
+    binding = DatasetBinding(
+        root=tmp_path / "native-task",
+        task="native-task",
+        camera="cam_high",
+        regression_episode_ids=(12, 15),
+        smoke_episode_ids=(15,),
+    )
+
+    bound = bind_dataset(profile, binding)
+
+    assert bound.dataset.manifest_data == {
+        "format_version": "robotwin_dataset_manifest_bound_v1",
+        "profile": "pick_place",
+        "task": "native-task",
+        "camera": "cam_high",
+        "dataset_root": str((tmp_path / "native-task").resolve()),
+        "episode_indices": [12, 15],
+        "smoke_episode_ids": [15],
+        "regression_episode_ids": [12, 15],
+    }
+    # The synthetic record is runtime-only; no manifest is materialized.
+    assert not bound.dataset.manifest.is_file()
 
 
 def test_api_runtime_requires_environment_credential_name(tmp_path: Path) -> None:

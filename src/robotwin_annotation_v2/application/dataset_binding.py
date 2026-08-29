@@ -64,12 +64,31 @@ def dataset_binding_from_target(
     caller's mapping cannot be changed by downstream code.
     """
 
-    if not isinstance(target, DatasetTarget):
-        raise TypeError("target must be a DatasetTarget")
+    # Keep the application port friendly to lightweight resolver doubles used
+    # by callers/tests while still rejecting arbitrary objects early.  The
+    # required attributes are the same small contract as ``DatasetTarget``;
+    # the concrete dataclass is not needed for this pure binding operation.
+    if not isinstance(target, DatasetTarget) and not all(
+        hasattr(target, attribute)
+        for attribute in ("root", "task", "camera", "episode_ids")
+    ):
+        raise TypeError("target must provide root, task, camera and episode_ids")
     selected = target.episode_ids if episode_ids is None else episode_ids
     normalized_ids = _episode_ids(selected, field="episode_ids")
-    copied_manifest = None if manifest_data is None else deepcopy(dict(manifest_data))
-    task_kind = target.task_kind
+    source_manifest = (
+        getattr(target, "manifest_data", None)
+        if manifest_data is None
+        else manifest_data
+    )
+    copied_manifest = (
+        None if source_manifest is None else deepcopy(dict(source_manifest))
+    )
+    source_manifest_path = (
+        getattr(target, "manifest_path", None)
+        if manifest_path is None
+        else manifest_path
+    )
+    task_kind = getattr(target, "task_kind", None)
     if task_kind is None and copied_manifest is not None:
         raw_task_kind = copied_manifest.get("task_kind")
         if raw_task_kind is not None:
@@ -84,10 +103,22 @@ def dataset_binding_from_target(
         "root": target.root,
         "task": target.task,
         "camera": target.camera,
-        "episode_ids": normalized_ids,
-        "manifest_path": manifest_path,
+        "manifest_path": source_manifest_path,
         "manifest_data": copied_manifest,
     }
+    # A target's manifest is authoritative when the caller did not request a
+    # new episode selection.  Passing the target IDs through the compatibility
+    # alias would otherwise mark them as explicit and silently replace a
+    # manifest's dedicated smoke episode.
+    manifest_declares_selection = bool(
+        source_manifest
+        and any(
+            key in source_manifest
+            for key in ("regression_episode_ids", "episode_indices", "episode_ids")
+        )
+    )
+    if episode_ids is not None or not manifest_declares_selection:
+        kwargs["episode_ids"] = normalized_ids
     if task_kind is not None:
         kwargs["task_kind"] = TargetOnlyTaskKind(task_kind)
     return DatasetBinding(**kwargs)
