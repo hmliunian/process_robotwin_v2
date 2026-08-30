@@ -19,6 +19,7 @@ from .domain import (
     TargetOnlyTaskKind,
     TargetProfile,
     annotation_spec,
+    target_profile_for_task_kind,
 )
 
 _REMOVED_S4_MASK_FIELDS = frozenset(
@@ -82,12 +83,19 @@ def _path(value: Any, *, base_dir: Path, field: str) -> Path:
 
 
 def _integers(value: Any, *, field: str) -> tuple[int, ...]:
-    if not isinstance(value, list) or any(isinstance(item, bool) for item in value):
+    """Parse a YAML integer list without implicit coercion.
+
+    YAML makes it deceptively easy to pass values such as ``"2"`` or ``1.9``
+    into a numeric option.  Coercing those values here can silently change GPU
+    or episode selection, so configuration parsing accepts only real Python
+    integers (while still rejecting ``bool``, which is an ``int`` subclass).
+    """
+
+    if not isinstance(value, list) or any(
+        isinstance(item, bool) or not isinstance(item, int) for item in value
+    ):
         raise ConfigError(f"{field} must be a list of integers")
-    try:
-        return tuple(int(item) for item in value)
-    except (TypeError, ValueError) as exc:
-        raise ConfigError(f"{field} must be a list of integers") from exc
+    return tuple(value)
 
 
 def parse_gpu_list(value: str, *, field: str = "GPU list") -> tuple[int, ...]:
@@ -135,12 +143,46 @@ def _integer(value: Any, *, field: str, minimum: int) -> int:
     return value
 
 
+def _strict_float(value: Any, *, field: str) -> float:
+    """Parse a finite YAML number while rejecting strings and booleans."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError(f"{field} must be a finite number")
+    try:
+        parsed = float(value)
+    except (TypeError, OverflowError, ValueError) as exc:
+        # The type guard above handles YAML's built-in scalar types.  Keep the
+        # conversion guarded as callers may provide an int subclass whose
+        # value cannot be represented as a Python float (for example, a very
+        # large integer).
+        raise ConfigError(f"{field} must be a finite number") from exc
+    if not math.isfinite(parsed):
+        raise ConfigError(f"{field} must be a finite number")
+    return parsed
+
+
+def _strict_bool(value: Any, *, field: str) -> bool:
+    """Parse a YAML boolean without treating non-empty strings as true."""
+
+    if not isinstance(value, bool):
+        raise ConfigError(f"{field} must be a boolean")
+    return value
+
+
+def _string(value: Any, *, field: str) -> str:
+    """Parse a required textual option without stringifying arbitrary values."""
+
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(f"{field} must be a non-empty string")
+    return value.strip()
+
+
 def _positive_float(value: Any, *, field: str) -> float:
-    if isinstance(value, bool):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ConfigError(f"{field} must be a finite number greater than zero")
     try:
         parsed = float(value)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, OverflowError, ValueError) as exc:
         raise ConfigError(f"{field} must be a finite number greater than zero") from exc
     if not math.isfinite(parsed) or parsed <= 0.0:
         raise ConfigError(f"{field} must be a finite number greater than zero")
@@ -192,6 +234,7 @@ class DatasetBinding:
     manifest_data: Mapping[str, Any] | None = None
     episode_ids: tuple[int, ...] | Sequence[int] | None = None
     task_kind: TargetOnlyTaskKind | str | None = None
+    target_profile: TargetProfile | str | None = None
 
     def __post_init__(self) -> None:
         root = Path(self.root).expanduser().resolve()
@@ -216,6 +259,34 @@ class DatasetBinding:
                 task=self.task,
                 camera=self.camera,
             )
+
+        declared_target_profile = (
+            None if manifest_data is None else _manifest_target_profile(manifest_data)
+        )
+        binding_target_profile = (
+            None
+            if self.target_profile is None
+            else _normalise_target_profile(self.target_profile)
+        )
+        if binding_target_profile is not None:
+            try:
+                binding_target_profile_enum = TargetProfile(binding_target_profile)
+            except (TypeError, ValueError) as exc:
+                choices = ", ".join(profile.value for profile in TargetProfile)
+                raise ConfigError(
+                    f"dataset binding target_profile must be one of: {choices}"
+                ) from exc
+            object.__setattr__(self, "target_profile", binding_target_profile_enum)
+        if (
+            declared_target_profile is not None
+            and binding_target_profile is not None
+            and declared_target_profile.value != binding_target_profile
+        ):
+            raise ConfigError(
+                "dataset binding target_profile differs from manifest target_profile"
+            )
+        if declared_target_profile is not None and binding_target_profile is None:
+            object.__setattr__(self, "target_profile", declared_target_profile)
 
         raw_manifest_task_kind = (
             manifest_data.get("task_kind") if manifest_data is not None else None
@@ -254,6 +325,11 @@ class DatasetBinding:
                     f"dataset binding manifest task_kind must be one of: {choices}"
                 ) from exc
 
+        manifest_regression = (
+            None
+            if manifest_data is None
+            else _manifest_episode_selection(manifest_data)
+        )
         alias = _binding_episode_ids(self.episode_ids, field="episode_ids")
         smoke = _binding_episode_ids(self.smoke_episode_ids, field="smoke_episode_ids")
         regression = _binding_episode_ids(
@@ -267,15 +343,17 @@ class DatasetBinding:
             raise ConfigError(
                 "dataset binding episode_ids and regression_episode_ids differ"
             )
-        if regression is None and manifest_data is not None:
-            regression = _binding_episode_ids(
-                _manifest_episode_values(manifest_data, "regression_episode_ids"),
-                field="manifest.regression_episode_ids",
-            )
+        if regression is None:
+            regression = manifest_regression
         if smoke is None and not explicit_regression and manifest_data is not None:
-            smoke = _binding_episode_ids(
-                _manifest_episode_values(manifest_data, "smoke_episode_ids"),
-                field="manifest.smoke_episode_ids",
+            smoke_raw = manifest_data.get("smoke_episode_ids")
+            smoke = (
+                None
+                if smoke_raw is None
+                else _binding_episode_ids(
+                    smoke_raw,
+                    field="manifest.smoke_episode_ids",
+                )
             )
         # A binding is also used as an intermediate DTO by path discovery.  It
         # is therefore valid to omit episode selections here; ``bind_dataset``
@@ -339,14 +417,76 @@ def _binding_episode_ids(
 
 
 def _manifest_episode_values(manifest: Mapping[str, Any], key: str) -> Any:
-    """Read an episode selection from either manifest spelling."""
+    """Read a canonical episode selection after validating all aliases.
 
-    value = manifest.get(key)
-    if value is None and key == "regression_episode_ids":
-        value = manifest.get("episode_indices")
-    if value is None and key == "regression_episode_ids":
-        value = manifest.get("episode_ids")
-    return value
+    ``episode_indices`` is the historical spelling, while
+    ``regression_episode_ids`` and ``episode_ids`` are newer compatibility
+    names.  A manifest may contain more than one spelling, but every
+    non-null declaration must describe the exact same ordered sequence.  The
+    helper remains for callers that need the raw value; new code should use
+    :func:`_manifest_episode_selection` directly.
+    """
+
+    if key == "regression_episode_ids":
+        selection = _manifest_episode_selection(manifest)
+        return None if selection is None else list(selection)
+    return manifest.get(key)
+
+
+_MANIFEST_REGRESSION_ALIASES = (
+    "episode_indices",
+    "regression_episode_ids",
+    "episode_ids",
+)
+
+
+def _manifest_episode_selection(
+    manifest: Mapping[str, Any],
+    *,
+    field_prefix: str = "manifest",
+) -> tuple[int, ...] | None:
+    """Return one validated regression selection from a manifest.
+
+    All non-null aliases are parsed independently so malformed or conflicting
+    declarations cannot be hidden by precedence.  Equality is intentionally
+    sequence-based (including order), making the serialized contract
+    deterministic and fail-closed.
+    """
+
+    declared: list[tuple[str, tuple[int, ...]]] = []
+    for key in _MANIFEST_REGRESSION_ALIASES:
+        raw = manifest.get(key)
+        if raw is None:
+            continue
+        parsed = _binding_episode_ids(raw, field=f"{field_prefix}.{key}")
+        if parsed is None:  # pragma: no cover - raw was checked above
+            raise ConfigError(f"{field_prefix}.{key} must not be null")
+        declared.append((key, parsed))
+    smoke_raw = manifest.get("smoke_episode_ids")
+    smoke: tuple[int, ...] | None = None
+    if smoke_raw is not None:
+        smoke = _binding_episode_ids(
+            smoke_raw,
+            field=f"{field_prefix}.smoke_episode_ids",
+        )
+        if not smoke:
+            raise ConfigError(
+                f"{field_prefix}.smoke_episode_ids must be non-empty"
+            )
+    if not declared:
+        return None
+    first_key, selection = declared[0]
+    for key, candidate in declared[1:]:
+        if candidate != selection:
+            raise ConfigError(
+                f"{field_prefix}.{key} conflicts with {field_prefix}.{first_key}"
+            )
+    if smoke is not None and not set(smoke).issubset(selection):
+        raise ConfigError(
+            f"{field_prefix}.smoke_episode_ids must be included in "
+            f"{field_prefix}.{first_key}"
+        )
+    return selection
 
 
 def _validate_binding_manifest_identity(
@@ -427,11 +567,125 @@ def _normalise_selector(value: AnnotationMode | str | None, *, field: str) -> st
     return value.strip()
 
 
+def _normalise_target_profile(value: TargetProfile | str | None) -> str | None:
+    """Normalize public profile aliases to canonical domain values.
+
+    ``origin`` is retained as a concise configuration spelling for the
+    historical grasp-manipulation target-only profile.  Internally we keep the
+    descriptive ``grasp_manipulation`` enum value to avoid conflating profile
+    selection with dataset provenance.
+    """
+
+    if isinstance(value, TargetProfile):
+        selected: str | None = value.value
+    else:
+        selected = _normalise_selector(value, field="target_profile")
+    if selected is None:
+        return None
+    normalized = selected.lower().replace("-", "_")
+    aliases = {
+        "origin": TargetProfile.GRASP_MANIPULATION.value,
+        "graspmanipulation": TargetProfile.GRASP_MANIPULATION.value,
+        "contactpress": TargetProfile.CONTACT_PRESS.value,
+        "dooropen": TargetProfile.DOOR_OPEN.value,
+    }
+    return aliases.get(normalized, normalized)
+
+
+# ``target_only`` is the timeline; these selectors choose its semantic
+# prompt bundle.  Keep the mapping next to the resolver so a semantic profile
+# can never silently fall back to the generic target-only overlay.
+_TARGET_PROFILE_MODE_KEYS = {
+    TargetProfile.GRASP_MANIPULATION.value: "origin",
+    TargetProfile.CONTACT_PRESS.value: "contact_press",
+    TargetProfile.DOOR_OPEN.value: "door_open",
+}
+_TARGET_PROFILE_SELECTORS = {
+    "origin": TargetProfile.GRASP_MANIPULATION.value,
+    "contact_press": TargetProfile.CONTACT_PRESS.value,
+    "door_open": TargetProfile.DOOR_OPEN.value,
+}
+
+
+def _overlay_target_profile(candidate: Mapping[str, Any]) -> str | None:
+    annotation = candidate.get("annotation", {})
+    if not isinstance(annotation, Mapping):
+        raise ConfigError("mode overlay annotation must be a mapping")
+    return _normalise_target_profile(annotation.get("profile"))
+
+
+def _normalise_annotation_profile(value: Any) -> str | None:
+    """Normalize the historical manifest ``profile`` workflow aliases."""
+
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError("dataset manifest profile must be a non-empty string")
+    normalized = value.strip().lower().replace("-", "_")
+    aliases = {
+        "pickplace": AnnotationMode.PICK_PLACE.value,
+        "targetonly": AnnotationMode.TARGET_ONLY.value,
+        # Older task-bound manifests used the semantic profile as the
+        # workflow selector.  Both variants still execute the target-only
+        # timeline and must therefore compare equal at the binding boundary.
+        "contact_press": AnnotationMode.TARGET_ONLY.value,
+        "contactpress": AnnotationMode.TARGET_ONLY.value,
+        "door_open": AnnotationMode.TARGET_ONLY.value,
+        "dooropen": AnnotationMode.TARGET_ONLY.value,
+        "origin": AnnotationMode.TARGET_ONLY.value,
+        "grasp_manipulation": AnnotationMode.TARGET_ONLY.value,
+        "graspmanipulation": AnnotationMode.TARGET_ONLY.value,
+    }
+    return aliases.get(normalized, normalized)
+
+
+def _manifest_target_profile(manifest: Mapping[str, Any]) -> TargetProfile | None:
+    """Read an explicit semantic profile without confusing workflow aliases."""
+
+    def parse(raw: Any, *, field: str) -> TargetProfile:
+        normalized = _normalise_target_profile(raw)
+        if normalized is None:
+            raise ConfigError(f"dataset manifest {field} must be a non-empty string")
+        try:
+            return TargetProfile(normalized)
+        except (TypeError, ValueError) as exc:
+            choices = ", ".join(profile.value for profile in TargetProfile)
+            raise ConfigError(
+                f"dataset manifest {field} must be one of: {choices}"
+            ) from exc
+
+    explicit_raw = manifest.get("target_profile")
+    explicit = (
+        None if explicit_raw is None else parse(explicit_raw, field="target_profile")
+    )
+    legacy_raw = manifest.get("profile")
+    legacy: TargetProfile | None = None
+    if legacy_raw is not None:
+        if not isinstance(legacy_raw, str) or not legacy_raw.strip():
+            raise ConfigError("dataset manifest profile must be a non-empty string")
+        normalized = legacy_raw.strip().lower().replace("-", "_")
+        if normalized in {
+            "pick_place",
+            "pickplace",
+            "target_only",
+            "targetonly",
+        }:
+            legacy = None
+        else:
+            legacy = parse(legacy_raw, field="profile")
+    if explicit is not None and legacy is not None and explicit is not legacy:
+        raise ConfigError(
+            "dataset manifest target_profile conflicts with semantic profile alias"
+        )
+    return explicit or legacy
+
+
 def _resolve_profile_document(
     raw: Mapping[str, Any],
     *,
     mode: AnnotationMode | str | None = None,
     target_profile: TargetProfile | str | None = None,
+    require_semantic_overlay: bool = True,
 ) -> dict[str, Any]:
     """Resolve ``common``/``defaults`` plus an optional mode overlay.
 
@@ -456,15 +710,9 @@ def _resolve_profile_document(
         requested_mode = declared_mode
 
     declared_target_profile = raw.get("target_profile")
-    requested_target_profile = _normalise_selector(
-        target_profile,
-        field="target_profile",
-    )
+    requested_target_profile = _normalise_target_profile(target_profile)
     if declared_target_profile is not None:
-        declared_target_profile = _normalise_selector(
-            declared_target_profile,
-            field="target_profile",
-        )
+        declared_target_profile = _normalise_target_profile(declared_target_profile)
         if (
             requested_target_profile is not None
             and declared_target_profile != requested_target_profile
@@ -474,6 +722,21 @@ def _resolve_profile_document(
                 f"YAML selects {declared_target_profile!r}"
             )
         requested_target_profile = declared_target_profile
+
+    # A semantic mode selector is shorthand for one target-only prompt
+    # bundle.  Resolve it to the canonical profile up front, and reject a
+    # contradictory explicit profile before any overlay is merged.
+    mode_target_profile = _TARGET_PROFILE_SELECTORS.get(requested_mode or "")
+    if mode_target_profile is not None:
+        if (
+            requested_target_profile is not None
+            and requested_target_profile != mode_target_profile
+        ):
+            raise ConfigError(
+                f"profile mode {requested_mode!r} conflicts with target profile "
+                f"{requested_target_profile!r}"
+            )
+        requested_target_profile = mode_target_profile
 
     reserved = {"common", "defaults", "modes", "mode", "target_profile", "version"}
     direct = {key: value for key, value in raw.items() if key not in reserved}
@@ -495,22 +758,50 @@ def _resolve_profile_document(
         resolved = _deep_merge(resolved, common_value, field="common")
     resolved = _deep_merge(resolved, direct, field="config")
 
+    # A profile declared in the reusable base sections is semantic metadata,
+    # too.  Carry it into the same routing path as the explicit
+    # ``target_profile`` argument so a generic target-only overlay cannot
+    # silently inherit contact/door prompts (or an origin profile) by name
+    # alone.
+    base_annotation = resolved.get("annotation")
+    if base_annotation is not None:
+        if not isinstance(base_annotation, Mapping):
+            raise ConfigError("annotation must be a mapping")
+        base_profile = _normalise_target_profile(base_annotation.get("profile"))
+        if base_profile is not None:
+            if (
+                requested_target_profile is not None
+                and requested_target_profile != base_profile
+            ):
+                raise ConfigError(
+                    f"target profile conflict: argument selects {requested_target_profile!r}, "
+                    f"YAML selects {base_profile!r}"
+                )
+            requested_target_profile = base_profile
+
     modes_value = raw.get("modes")
     if modes_value is not None and not isinstance(modes_value, Mapping):
         raise ConfigError("modes must be a mapping")
     mode_map = {} if modes_value is None else dict(modes_value)
     if mode_map:
+        # ``mode=target_only`` plus a semantic profile must select that
+        # profile's dedicated overlay.  Merely changing annotation.profile
+        # after loading the generic target-only prompts is unsafe.
+        if requested_mode == AnnotationMode.TARGET_ONLY.value and requested_target_profile:
+            semantic_mode = _TARGET_PROFILE_MODE_KEYS.get(requested_target_profile)
+            if semantic_mode is not None and semantic_mode in mode_map:
+                requested_mode = semantic_mode
+            elif requested_target_profile in _TARGET_PROFILE_MODE_KEYS:
+                raise ConfigError(
+                    f"target profile {requested_target_profile!r} requires an explicit "
+                    f"modes.{semantic_mode} profile overlay"
+                )
         if requested_mode is None and requested_target_profile is not None:
             profile_matches: list[str] = []
             for key, candidate in mode_map.items():
                 if not isinstance(candidate, Mapping):
                     continue
-                candidate_annotation = candidate.get("annotation", {})
-                candidate_profile = (
-                    candidate_annotation.get("profile")
-                    if isinstance(candidate_annotation, Mapping)
-                    else None
-                )
+                candidate_profile = _overlay_target_profile(candidate)
                 if str(key) == requested_target_profile or candidate_profile == requested_target_profile:
                     profile_matches.append(str(key))
             if len(profile_matches) == 1:
@@ -529,7 +820,25 @@ def _resolve_profile_document(
                 raise ConfigError(
                     f"profile mode is required when multiple modes are defined; choose: {choices}"
                 )
+        # The mode may have been inferred from a single-entry map only after
+        # the initial selector pass above.  Re-run the semantic routing check
+        # here so a base annotation.profile=contact_press/door_open cannot
+        # silently inherit a generic target_only overlay in custom profiles.
+        if requested_mode == AnnotationMode.TARGET_ONLY.value and requested_target_profile:
+            semantic_mode = _TARGET_PROFILE_MODE_KEYS.get(requested_target_profile)
+            if semantic_mode is not None and semantic_mode in mode_map:
+                requested_mode = semantic_mode
+            elif requested_target_profile in _TARGET_PROFILE_MODE_KEYS:
+                raise ConfigError(
+                    f"target profile {requested_target_profile!r} requires an explicit "
+                    f"modes.{semantic_mode} profile overlay"
+                )
         if requested_mode not in mode_map:
+            if requested_mode in _TARGET_PROFILE_SELECTORS:
+                raise ConfigError(
+                    f"{requested_mode} requires an explicit "
+                    f"modes.{requested_mode} profile overlay"
+                )
             choices = ", ".join(str(key) for key in mode_map)
             raise ConfigError(
                 f"unknown profile mode {requested_mode!r}; choose one of: {choices}"
@@ -540,7 +849,7 @@ def _resolve_profile_document(
         resolved = _deep_merge(resolved, selected, field=f"modes.{requested_mode}")
 
         # A mode key is allowed to carry the mode declaration tersely.  The
-        # contact-press key is a profile selector layered on target-only.
+        # target-only variants are profile selectors layered on one workflow.
         annotation = resolved.get("annotation")
         if annotation is None:
             annotation = {}
@@ -548,7 +857,7 @@ def _resolve_profile_document(
             raise ConfigError("annotation must be a mapping")
         annotation = dict(annotation)
         if "mode" not in annotation:
-            if requested_mode == "contact_press":
+            if requested_mode in _TARGET_PROFILE_SELECTORS:
                 annotation["mode"] = AnnotationMode.TARGET_ONLY.value
             elif requested_mode in {item.value for item in AnnotationMode}:
                 annotation["mode"] = requested_mode
@@ -557,26 +866,63 @@ def _resolve_profile_document(
                     f"modes.{requested_mode} must declare annotation.mode"
                 )
         resolved["annotation"] = annotation
+
+        # A custom ``target_only`` overlay may carry a semantic profile of its
+        # own.  Do not let that declaration inherit whichever generic prompt
+        # fields happened to be placed in the overlay: semantic profiles have
+        # dedicated mode keys and must be selected through those keys.  This
+        # check runs after the merge because the profile may be declared only
+        # by the selected overlay (and therefore was unknown during the first
+        # routing pass above).
+        overlay_profile = _normalise_target_profile(annotation.get("profile"))
+        if overlay_profile is not None:
+            if (
+                requested_target_profile is not None
+                and overlay_profile != requested_target_profile
+            ):
+                raise ConfigError(
+                    f"target profile conflict: selected overlay declares "
+                    f"{overlay_profile!r}, expected {requested_target_profile!r}"
+                )
+            requested_target_profile = overlay_profile
+            semantic_mode = _TARGET_PROFILE_MODE_KEYS.get(overlay_profile)
+            if (
+                semantic_mode is not None
+                and overlay_profile != TargetProfile.GRASP_MANIPULATION.value
+                and requested_mode != semantic_mode
+            ):
+                raise ConfigError(
+                    f"modes.{requested_mode} declares target profile "
+                    f"{overlay_profile!r}; select modes.{semantic_mode} "
+                    "to use its dedicated prompt overlay"
+                )
     elif requested_mode is not None:
-        if requested_mode == "contact_press":
-            # Contact prompts are supplied by the dedicated mode overlay.
-            # Falling back to a mode-less target-only document would silently
-            # run the generic prompts while advertising the contact profile.
+        if requested_mode in _TARGET_PROFILE_SELECTORS:
+            # Semantic prompts are supplied by dedicated mode overlays.
+            # Falling back to a mode-less document would silently run generic
+            # prompts while advertising a different target profile.
             raise ConfigError(
-                "contact_press requires an explicit modes.contact_press profile overlay"
+                f"{requested_mode} requires an explicit "
+                f"modes.{requested_mode} profile overlay"
             )
         annotation = resolved.get("annotation", {})
         if not isinstance(annotation, Mapping):
             raise ConfigError("annotation must be a mapping")
         annotation = dict(annotation)
         # Mode-less profiles can still use a terse annotation mode selector.
-        # Contact-press is intentionally excluded above because it needs its
-        # dedicated prompt/mask overlay.
         annotation.setdefault(
             "mode",
             requested_mode,
         )
         resolved["annotation"] = annotation
+    elif require_semantic_overlay and requested_target_profile in _TARGET_PROFILE_MODE_KEYS:
+        # A semantic target profile without a mode map has no safe way to
+        # obtain its dedicated prompt/QC bundle.
+        semantic_mode = _TARGET_PROFILE_MODE_KEYS[requested_target_profile]
+        raise ConfigError(
+            f"target profile {requested_target_profile!r} requires an explicit "
+            f"modes.{semantic_mode} profile overlay"
+        )
 
     annotation_value = resolved.get("annotation")
     if annotation_value is not None and not isinstance(annotation_value, Mapping):
@@ -586,7 +932,7 @@ def _resolve_profile_document(
         # ``contact_press`` is a mode-map key, not an AnnotationMode value.
         expected_annotation_mode = (
             AnnotationMode.TARGET_ONLY.value
-            if requested_mode == "contact_press"
+            if requested_mode in _TARGET_PROFILE_SELECTORS
             else requested_mode
         )
         if actual_mode is not None and actual_mode != expected_annotation_mode:
@@ -598,10 +944,17 @@ def _resolve_profile_document(
     if requested_target_profile is not None:
         annotation = dict(resolved.get("annotation", {}))
         actual_profile = annotation.get("profile")
+        actual_profile = _normalise_target_profile(actual_profile)
         if actual_profile is not None and actual_profile != requested_target_profile:
             raise ConfigError(
                 f"target profile {requested_target_profile!r} conflicts with "
                 f"annotation.profile {actual_profile!r}"
+            )
+        selected_mode_profile = _TARGET_PROFILE_SELECTORS.get(requested_mode or "")
+        if selected_mode_profile is not None and actual_profile != selected_mode_profile:
+            raise ConfigError(
+                f"modes.{requested_mode} must declare profile "
+                f"{selected_mode_profile!r}"
             )
         annotation["profile"] = requested_target_profile
         resolved["annotation"] = annotation
@@ -775,11 +1128,13 @@ class AnnotationConfig:
     profile: TargetProfile = TargetProfile.GRASP_MANIPULATION
 
     def __post_init__(self) -> None:
-        if (
-            self.profile is TargetProfile.CONTACT_PRESS
-            and self.mode is not AnnotationMode.TARGET_ONLY
-        ):
-            raise ConfigError("annotation.profile=contact_press requires target_only mode")
+        if self.profile in {
+            TargetProfile.CONTACT_PRESS,
+            TargetProfile.DOOR_OPEN,
+        } and self.mode is not AnnotationMode.TARGET_ONLY:
+            raise ConfigError(
+                f"annotation.profile={self.profile.value} requires target_only mode"
+            )
 
     @property
     def spec(self) -> AnnotationSpec:
@@ -881,11 +1236,17 @@ def _load_config_impl(
             "must be mappings"
         )
 
-    raw_mode = annotation_raw.get("mode", AnnotationMode.PICK_PLACE.value)
+    raw_mode = _string(
+        annotation_raw.get("mode", AnnotationMode.PICK_PLACE.value),
+        field="annotation.mode",
+    )
     raw_profile = annotation_raw.get(
         "profile",
         TargetProfile.GRASP_MANIPULATION.value,
     )
+    raw_profile = _normalise_target_profile(raw_profile)
+    if raw_profile is None:
+        raise ConfigError("annotation.profile must be a non-empty string")
     try:
         annotation_mode = AnnotationMode(raw_mode)
     except (TypeError, ValueError) as exc:
@@ -905,13 +1266,21 @@ def _load_config_impl(
 
     dataset: DatasetConfig | None = None
     if dataset_value is not None:
-        smoke = _integers(
+        # Validate every regression-selection alias before choosing one.  This
+        # keeps legacy ``episode_indices`` and newer names interchangeable
+        # without allowing contradictory values to be hidden by precedence.
+        regression = _manifest_episode_selection(
+            dataset_raw,
+            field_prefix="dataset",
+        )
+        if regression is None:
+            regression = _binding_episode_ids(
+                _required(dataset_raw, "regression_episode_ids", section="dataset"),
+                field="dataset.regression_episode_ids",
+            )
+        smoke = _binding_episode_ids(
             _required(dataset_raw, "smoke_episode_ids", section="dataset"),
             field="dataset.smoke_episode_ids",
-        )
-        regression = _integers(
-            _required(dataset_raw, "regression_episode_ids", section="dataset"),
-            field="dataset.regression_episode_ids",
         )
         if not smoke or not regression or not set(smoke).issubset(regression):
             raise ConfigError("smoke episodes must be non-empty and included in regression episodes")
@@ -938,30 +1307,59 @@ def _load_config_impl(
             smoke_episode_ids=smoke,
             regression_episode_ids=regression,
         )
-    qwen_runtime = str(qwen_raw.get("runtime", "local"))
+    qwen_runtime = _string(qwen_raw.get("runtime", "local"), field="qwen.runtime")
     api_key_env_raw = qwen_raw.get("api_key_env")
-    if api_key_env_raw is not None and not isinstance(api_key_env_raw, str):
-        raise ConfigError("qwen.api_key_env must be a string or null")
-    enable_thinking = qwen_raw.get("enable_thinking", False)
-    if not isinstance(enable_thinking, bool):
-        raise ConfigError("qwen.enable_thinking must be a boolean")
+    api_key_env = (
+        _string(api_key_env_raw, field="qwen.api_key_env")
+        if api_key_env_raw is not None
+        else None
+    )
+    enable_thinking = _strict_bool(
+        qwen_raw.get("enable_thinking", False),
+        field="qwen.enable_thinking",
+    )
     qwen = QwenConfig(
-        endpoint=str(_required(qwen_raw, "endpoint", section="qwen")),
-        model=str(_required(qwen_raw, "model", section="qwen")),
+        endpoint=_string(
+            _required(qwen_raw, "endpoint", section="qwen"),
+            field="qwen.endpoint",
+        ),
+        model=_string(
+            _required(qwen_raw, "model", section="qwen"),
+            field="qwen.model",
+        ),
         prompt_template=_path(
             _required(qwen_raw, "prompt_template", section="qwen"),
             base_dir=base_dir,
             field="qwen.prompt_template",
         ),
         runtime=qwen_runtime,
-        api_key_env=api_key_env_raw,
-        probe=str(qwen_raw.get("probe", "models" if qwen_runtime == "api" else "health")),
-        temperature=float(qwen_raw.get("temperature", 0.0)),
+        api_key_env=api_key_env,
+        probe=_string(
+            qwen_raw.get("probe", "models" if qwen_runtime == "api" else "health"),
+            field="qwen.probe",
+        ),
+        temperature=_strict_float(
+            qwen_raw.get("temperature", 0.0),
+            field="qwen.temperature",
+        ),
         enable_thinking=enable_thinking,
-        timeout_seconds=float(qwen_raw.get("timeout_seconds", 180.0)),
-        max_tokens=int(qwen_raw.get("max_tokens", 800)),
-        query_selection=str(qwen_raw.get("query_selection", "first_recommended")),
-        allow_query_fallback=bool(qwen_raw.get("allow_query_fallback", False)),
+        timeout_seconds=_strict_float(
+            qwen_raw.get("timeout_seconds", 180.0),
+            field="qwen.timeout_seconds",
+        ),
+        max_tokens=_integer(
+            qwen_raw.get("max_tokens", 800),
+            field="qwen.max_tokens",
+            minimum=1,
+        ),
+        query_selection=_string(
+            qwen_raw.get("query_selection", "first_recommended"),
+            field="qwen.query_selection",
+        ),
+        allow_query_fallback=_strict_bool(
+            qwen_raw.get("allow_query_fallback", False),
+            field="qwen.allow_query_fallback",
+        ),
     )
     sam3 = Sam3Config(
         checkpoint=_path(
@@ -982,7 +1380,10 @@ def _load_config_impl(
             minimum=1,
         ),
     )
-    qc_enabled = bool(mask_raw.get("qc_enabled", False))
+    qc_enabled = _strict_bool(
+        mask_raw.get("qc_enabled", False),
+        field="mask.qc_enabled",
+    )
     removed_s4_fields = sorted(_REMOVED_S4_MASK_FIELDS & mask_raw.keys())
     if removed_s4_fields:
         raise ConfigError(f"removed S4 mask fields are not supported: {removed_s4_fields}")
@@ -999,7 +1400,10 @@ def _load_config_impl(
         if qc_template_value is not None
         else None
     )
-    qc_bbox_enabled = bool(mask_raw.get("qc_bbox_fallback_enabled", False))
+    qc_bbox_enabled = _strict_bool(
+        mask_raw.get("qc_bbox_fallback_enabled", False),
+        field="mask.qc_bbox_fallback_enabled",
+    )
     qc_bbox_template_value = mask_raw.get("qc_bbox_prompt_template")
     qc_bbox_template = (
         _path(
@@ -1011,34 +1415,81 @@ def _load_config_impl(
         else None
     )
     mask = MaskConfig(
-        target_envelope_padding_px=int(mask_raw.get("target_envelope_padding_px", 4)),
-        receiver_envelope_padding_px=int(mask_raw.get("receiver_envelope_padding_px", 4)),
-        temporal_qc_min_adjacent_iou_p05=float(
-            mask_raw.get("temporal_qc_min_adjacent_iou_p05", 0.5)
+        target_envelope_padding_px=_integer(
+            mask_raw.get("target_envelope_padding_px", 4),
+            field="mask.target_envelope_padding_px",
+            minimum=0,
         ),
-        temporal_qc_max_centroid_jump_p95_px=float(
-            mask_raw.get("temporal_qc_max_centroid_jump_p95_px", 5.0)
+        receiver_envelope_padding_px=_integer(
+            mask_raw.get("receiver_envelope_padding_px", 4),
+            field="mask.receiver_envelope_padding_px",
+            minimum=0,
         ),
-        temporal_qc_max_area_ratio_jump_p95=float(
-            mask_raw.get("temporal_qc_max_area_ratio_jump_p95", 0.4)
+        temporal_qc_min_adjacent_iou_p05=_strict_float(
+            mask_raw.get("temporal_qc_min_adjacent_iou_p05", 0.5),
+            field="mask.temporal_qc_min_adjacent_iou_p05",
         ),
-        temporal_qc_quarantine_signal_count=int(
-            mask_raw.get("temporal_qc_quarantine_signal_count", 2)
+        temporal_qc_max_centroid_jump_p95_px=_strict_float(
+            mask_raw.get("temporal_qc_max_centroid_jump_p95_px", 5.0),
+            field="mask.temporal_qc_max_centroid_jump_p95_px",
+        ),
+        temporal_qc_max_area_ratio_jump_p95=_strict_float(
+            mask_raw.get("temporal_qc_max_area_ratio_jump_p95", 0.4),
+            field="mask.temporal_qc_max_area_ratio_jump_p95",
+        ),
+        temporal_qc_quarantine_signal_count=_integer(
+            mask_raw.get("temporal_qc_quarantine_signal_count", 2),
+            field="mask.temporal_qc_quarantine_signal_count",
+            minimum=1,
         ),
         qc_enabled=qc_enabled,
         qc_prompt_template=qc_template,
-        qc_max_candidates=int(mask_raw.get("qc_max_candidates", 3)),
-        qc_query_fallback_enabled=bool(mask_raw.get("qc_query_fallback_enabled", False)),
-        qc_seed_fallback_enabled=bool(mask_raw.get("qc_seed_fallback_enabled", False)),
+        qc_max_candidates=_integer(
+            mask_raw.get("qc_max_candidates", 3),
+            field="mask.qc_max_candidates",
+            minimum=1,
+        ),
+        qc_query_fallback_enabled=_strict_bool(
+            mask_raw.get("qc_query_fallback_enabled", False),
+            field="mask.qc_query_fallback_enabled",
+        ),
+        qc_seed_fallback_enabled=_strict_bool(
+            mask_raw.get("qc_seed_fallback_enabled", False),
+            field="mask.qc_seed_fallback_enabled",
+        ),
         qc_bbox_fallback_enabled=qc_bbox_enabled,
         qc_bbox_prompt_template=qc_bbox_template,
-        qc_bbox_max_tokens=int(mask_raw.get("qc_bbox_max_tokens", 180)),
-        qc_max_tokens=int(mask_raw.get("qc_max_tokens", 160)),
-        qc_max_attempts=int(mask_raw.get("qc_max_attempts", 2)),
-        qc_min_confidence=float(mask_raw.get("qc_min_confidence", 0.70)),
-        qc_min_area_fraction=float(mask_raw.get("qc_min_area_fraction", 0.0001)),
-        qc_max_area_fraction=float(mask_raw.get("qc_max_area_fraction", 0.85)),
-        qc_duplicate_iou_threshold=float(mask_raw.get("qc_duplicate_iou_threshold", 0.98)),
+        qc_bbox_max_tokens=_integer(
+            mask_raw.get("qc_bbox_max_tokens", 180),
+            field="mask.qc_bbox_max_tokens",
+            minimum=1,
+        ),
+        qc_max_tokens=_integer(
+            mask_raw.get("qc_max_tokens", 160),
+            field="mask.qc_max_tokens",
+            minimum=1,
+        ),
+        qc_max_attempts=_integer(
+            mask_raw.get("qc_max_attempts", 2),
+            field="mask.qc_max_attempts",
+            minimum=1,
+        ),
+        qc_min_confidence=_strict_float(
+            mask_raw.get("qc_min_confidence", 0.70),
+            field="mask.qc_min_confidence",
+        ),
+        qc_min_area_fraction=_strict_float(
+            mask_raw.get("qc_min_area_fraction", 0.0001),
+            field="mask.qc_min_area_fraction",
+        ),
+        qc_max_area_fraction=_strict_float(
+            mask_raw.get("qc_max_area_fraction", 0.85),
+            field="mask.qc_max_area_fraction",
+        ),
+        qc_duplicate_iou_threshold=_strict_float(
+            mask_raw.get("qc_duplicate_iou_threshold", 0.98),
+            field="mask.qc_duplicate_iou_threshold",
+        ),
     )
     gripper_roi = GripperRoiConfig(
         prompt_axial_back_m=_positive_float(
@@ -1199,6 +1650,11 @@ def load_config(
         raw,
         mode=mode,
         target_profile=target_profile,
+        # Legacy task-bound files may carry a direct semantic annotation block
+        # without a reusable ``modes`` map.  Their prompts are already
+        # task-specific, so retain that compatibility path; load_profile()
+        # keeps the stricter dedicated-overlay contract.
+        require_semantic_overlay=False,
     )
     parsed = _load_config_impl(
         config_path,
@@ -1264,19 +1720,41 @@ def bind_dataset(
             task=binding.task,
             camera=binding.camera,
         )
-        declared_profile = manifest_data.get("profile")
-        if (
-            declared_profile is not None
-            and declared_profile != profile.annotation.mode.value
-        ):
+        manifest_regression = _manifest_episode_selection(manifest_data)
+        declared_profile = _normalise_annotation_profile(manifest_data.get("profile"))
+        if declared_profile is not None and declared_profile != profile.annotation.mode.value:
             raise ConfigError(
                 "dataset binding profile differs from annotation mode: "
                 f"{declared_profile!r} != {profile.annotation.mode.value!r}"
             )
-    if regression is None and manifest_data is not None:
-        raw_ids = _manifest_episode_values(manifest_data, "regression_episode_ids")
-        if raw_ids is not None:
-            regression = _binding_episode_ids(raw_ids, field="manifest.regression_episode_ids")
+        declared_target_profile = _manifest_target_profile(manifest_data)
+    else:
+        manifest_regression = None
+        declared_target_profile = None
+
+    binding_target_profile = None
+    if binding.target_profile is not None:
+        normalized_binding_profile = _normalise_target_profile(binding.target_profile)
+        if normalized_binding_profile is None:  # pragma: no cover - guarded above
+            raise ConfigError("dataset binding target_profile must be a non-empty string")
+        try:
+            binding_target_profile = TargetProfile(normalized_binding_profile)
+        except (TypeError, ValueError) as exc:
+            choices = ", ".join(profile.value for profile in TargetProfile)
+            raise ConfigError(
+                f"dataset binding target_profile must be one of: {choices}"
+            ) from exc
+    if (
+        declared_target_profile is not None
+        and binding_target_profile is not None
+        and declared_target_profile is not binding_target_profile
+    ):
+        raise ConfigError(
+            "dataset binding target_profile differs from manifest target_profile"
+        )
+    selected_target_profile = binding_target_profile or declared_target_profile
+    if regression is None:
+        regression = manifest_regression
     if regression is None or not regression:
         raise ConfigError(
             "dataset binding requires at least one regression episode; provide "
@@ -1285,7 +1763,7 @@ def bind_dataset(
 
     smoke = binding.smoke_episode_ids
     if smoke is None and manifest_data is not None:
-        raw_smoke = _manifest_episode_values(manifest_data, "smoke_episode_ids")
+        raw_smoke = manifest_data.get("smoke_episode_ids")
         if raw_smoke is not None:
             smoke = _binding_episode_ids(raw_smoke, field="manifest.smoke_episode_ids")
     if smoke is None:
@@ -1342,13 +1820,35 @@ def bind_dataset(
             "dataset binding task_kind differs from manifest task_kind: "
             f"{task_kind.value} != {declared_task_kind.value}"
         )
+    if task_kind is not None:
+        required_profile = target_profile_for_task_kind(task_kind)
+        if (
+            profile.annotation.mode is not AnnotationMode.TARGET_ONLY
+        ):
+            raise ConfigError(
+                f"{task_kind.value} task_kind requires target_only mode"
+            )
+        if (
+            selected_target_profile is not None
+            and selected_target_profile is not required_profile
+        ):
+            raise ConfigError(
+                "dataset binding target_profile differs from task_kind-derived profile: "
+                f"{selected_target_profile.value} != {required_profile.value}"
+            )
+        if profile.annotation.profile is not required_profile:
+            raise ConfigError(
+                f"{task_kind.value} requires a {required_profile.value} profile; load the "
+                f"{required_profile.value} mode before binding"
+            )
+        selected_target_profile = required_profile
     if (
-        task_kind is TargetOnlyTaskKind.CONTACT_ACTION_SITE
-        and profile.annotation.profile is not TargetProfile.CONTACT_PRESS
+        selected_target_profile is not None
+        and profile.annotation.profile is not selected_target_profile
     ):
         raise ConfigError(
-            "contact_action_site requires a contact_press profile; load the "
-            "contact_press mode before binding"
+            "dataset binding target_profile differs from annotation profile: "
+            f"{selected_target_profile.value} != {profile.annotation.profile.value}"
         )
     # Runtime binding is authoritative for identity.  Keep all other manifest
     # provenance fields, but overwrite values consumed by RoboTwinDataset.
@@ -1358,12 +1858,29 @@ def bind_dataset(
         manifest_data["camera"] = binding.camera
         manifest_data["smoke_episode_ids"] = list(smoke)
         manifest_data["regression_episode_ids"] = list(regression)
-        if "episode_indices" in manifest_data:
-            manifest_data["episode_indices"] = list(regression)
+        # Keep every historical spelling synchronized when an explicit
+        # runtime selection narrows a manifest.  Leaving ``episode_ids`` (or
+        # another alias) stale would let a downstream compatibility reader
+        # resurrect the original, broader episode universe.
+        for key in ("episode_indices", "regression_episode_ids", "episode_ids"):
+            if key in manifest_data:
+                manifest_data[key] = list(regression)
         if task_kind is not None:
             manifest_data["task_kind"] = (
                 task_kind.value if isinstance(task_kind, TargetOnlyTaskKind) else str(task_kind)
             )
+        # Do not add a new key to ordinary pick-place manifests.  For target
+        # semantic variants (and explicit profile metadata), retain the
+        # canonical profile so downstream routing and resume checks are
+        # independent of the original alias spelling.
+        if selected_target_profile is not None and (
+            selected_target_profile is not TargetProfile.GRASP_MANIPULATION
+            or manifest_data.get("target_profile") is not None
+            or manifest_data.get("profile")
+            in {"origin", "grasp_manipulation", "grasp-manipulation"}
+            or task_kind is not None
+        ):
+            manifest_data["target_profile"] = selected_target_profile.value
     dataset = DatasetConfig(
         root=binding.root,
         manifest=manifest_path,

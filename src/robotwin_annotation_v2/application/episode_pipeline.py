@@ -26,6 +26,10 @@ from robotwin_annotation_v2.adapters.sam3_adapter import (
     sam3_video_resource,
 )
 from robotwin_annotation_v2.application.mask_qc_artifacts import save_mask_qc_artifacts
+from robotwin_annotation_v2.application.provenance import (
+    prompt_bundle_for_config,
+    target_profile_from_config,
+)
 from robotwin_annotation_v2.application.sam_artifacts import save_sam_artifacts
 from robotwin_annotation_v2.config import PipelineConfig, load_config
 from robotwin_annotation_v2.domain import AnnotationMode, ObjectRole, annotation_spec
@@ -320,7 +324,19 @@ def _load_saved_semantic_plan(
 
 
 def _default_gripper_qc_prompt(config: PipelineConfig) -> Path:
-    return config.config_path.parent / "prompts" / "gripper_seed_candidate_qc.txt"
+    # Keep the prompt an explicit part of the runtime contract when a newer
+    # config object exposes it, while retaining the historical sibling-path
+    # fallback for hand-built/legacy PipelineConfig instances.  The provenance
+    # helper resolves the same fallback path, so the prompt included in the
+    # bundle hash is exactly the one consumed by this stage.
+    configured = getattr(config, "gripper_qc_prompt_template", None)
+    if configured is not None:
+        return Path(configured).expanduser().resolve()
+    return (
+        config.config_path.parent
+        / "prompts"
+        / "gripper_seed_candidate_qc.txt"
+    )
 
 
 def _load_bool_png(path: Path) -> NDArray:
@@ -523,6 +539,8 @@ def _execute_gripper_episode(
         sam_result,
         seed_images=seed_images,
         gripper_result=gripper_result,
+        target_profile=target_profile_from_config(config),
+        prompt_bundle=prompt_bundle_for_config(config),
     )
     episode_dir = store.episode_dir(run_id, ref)
     (episode_dir / "gripper_failure.json").unlink(missing_ok=True)
@@ -591,6 +609,8 @@ def _execute_sam_episode(
         plan,
         result,
         seed_images=seed_images,
+        target_profile=target_profile_from_config(config),
+        prompt_bundle=prompt_bundle_for_config(config),
     )
     (store.episode_dir(run_id, ref) / "sam_failure.json").unlink(missing_ok=True)
     return SamEpisodeExecution(mask_run, qc_path, context.annotation_mode)

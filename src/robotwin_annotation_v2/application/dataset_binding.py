@@ -121,6 +121,14 @@ def dataset_binding_from_target(
         kwargs["episode_ids"] = normalized_ids
     if task_kind is not None:
         kwargs["task_kind"] = TargetOnlyTaskKind(task_kind)
+    target_profile = getattr(target, "target_profile", None)
+    if target_profile is None:
+        # ``profile`` is the public compatibility property on older target
+        # doubles.  Preserve it when it is an actual semantic profile, while
+        # leaving pick-place targets at the historical default.
+        target_profile = getattr(target, "profile", None)
+    if target_profile is not None:
+        kwargs["target_profile"] = target_profile
     return DatasetBinding(**kwargs)
 
 

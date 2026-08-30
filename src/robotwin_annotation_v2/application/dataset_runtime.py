@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections.abc import Callable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
@@ -16,12 +17,19 @@ from robotwin_annotation_v2.adapters.robotwin_dataset import RoboTwinDataset
 from robotwin_annotation_v2.application.dataset_binding import dataset_binding_from_target
 from robotwin_annotation_v2.application.dataset_input import (
     DatasetTarget,
+    discover_task_episode_ids,
     read_dataset_task_kind,
     resolve_dataset_input,
 )
 from robotwin_annotation_v2.application.dataset_pipeline import (
     DatasetBackendRunner,
     DatasetPipeline,
+)
+from robotwin_annotation_v2.application.provenance import (
+    prompt_bundle_for_config,
+    prompt_bundle_from_manifest,
+    target_profile_from_manifest,
+    validate_profile_provenance_pair,
 )
 from robotwin_annotation_v2.application.sam_workflow import (
     PROCESS_SUMMARY_FORMAT_VERSION,
@@ -57,7 +65,9 @@ from robotwin_annotation_v2.config import (
 from robotwin_annotation_v2.domain import (
     AnnotationMode,
     GripperBackend,
+    TargetOnlyTaskKind,
     TargetProfile,
+    target_profile_for_task_kind,
 )
 from robotwin_annotation_v2.models import ProcessRequest
 from robotwin_annotation_v2.terminal_ui import UI_MODES, ProcessUI, create_process_ui
@@ -68,6 +78,11 @@ from robotwin_annotation_v2.urdf_gripper_publisher import (
 )
 
 GRIPPER_BACKENDS = ("sam", "urdf")
+TARGET_ONLY_PROFILE_SELECTORS: dict[str, TargetProfile] = {
+    "origin": TargetProfile.GRASP_MANIPULATION,
+    "contact_press": TargetProfile.CONTACT_PRESS,
+    "door_open": TargetProfile.DOOR_OPEN,
+}
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_BUNDLED_URDF_PATH = (
     PROJECT_ROOT
@@ -95,6 +110,17 @@ PATH_MODE_CONFIGS = {
 CONTACT_PRESS_CONFIGS = {
     "local": PROJECT_ROOT / "configs" / "pilot_contact_press_target_only.yaml",
     "api": PROJECT_ROOT / "configs" / "process_contact_press_qwen38_api.yaml",
+}
+# ``target_profile`` is orthogonal to the target-only timeline.  Keep the
+# overlay names in one place so path-mode dispatch cannot accidentally fall
+# back to the generic target-only prompts when a new semantic profile is
+# introduced.  ``origin`` is the canonical shared-profile selector for the
+# historical grasp-manipulation target-only behavior; ``target_only`` remains
+# a backwards-compatible mode key accepted by ``load_profile``.
+TARGET_ONLY_PROFILE_OVERLAYS: dict[TargetProfile, str] = {
+    TargetProfile.GRASP_MANIPULATION: "origin",
+    TargetProfile.CONTACT_PRESS: "contact_press",
+    TargetProfile.DOOR_OPEN: "door_open",
 }
 CHUNK_PATTERN = _discovery.CHUNK_PATTERN
 EPISODE_FILE_PATTERN = _discovery.EPISODE_FILE_PATTERN
@@ -161,23 +187,236 @@ _summary_gripper_backend = summary_gripper_backend
 _validate_sam_run_ownership = validate_sam_run_ownership
 
 
+def _read_runtime_manifest(root: Path) -> Mapping[str, Any] | None:
+    """Read a child extract manifest for semantic conflict checks."""
+
+    path = root.expanduser().resolve() / "EXTRACT_MANIFEST.json"
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        # The canonical discovery helper keeps malformed optional provenance
+        # compatible with native datasets.  Do the same here; a bound parent
+        # contract is still validated and propagated below.
+        return None
+    return payload if isinstance(payload, Mapping) else None
+
+
+def _task_kind_from_manifest(
+    manifest: Mapping[str, Any] | None,
+    *,
+    label: str,
+) -> TargetOnlyTaskKind | None:
+    """Parse optional task-kind metadata at the runtime boundary."""
+
+    if manifest is None or manifest.get("task_kind") is None:
+        return None
+    try:
+        return TargetOnlyTaskKind(manifest["task_kind"])
+    except (TypeError, ValueError) as exc:
+        choices = ", ".join(item.value for item in TargetOnlyTaskKind)
+        raise ValueError(
+            f"{label} task_kind must be one of: {choices}"
+        ) from exc
+
+
+def _validate_bound_semantics(
+    bound_manifest: Mapping[str, Any],
+    child_manifest: Mapping[str, Any] | None,
+) -> tuple[TargetOnlyTaskKind | None, str | None, Mapping[str, Any] | None]:
+    """Validate child metadata against a collection-level bound contract.
+
+    Collection records are often the only source of semantic metadata because
+    native child directories may not contain ``EXTRACT_MANIFEST.json``.  If a
+    child does provide metadata, it may narrow identity but cannot silently
+    change the target profile, task kind, or immutable prompt bundle.
+    """
+
+    parent_kind = _task_kind_from_manifest(bound_manifest, label="bound manifest")
+    child_kind = _task_kind_from_manifest(child_manifest, label="child manifest")
+    if parent_kind is not None and child_kind is not None and parent_kind is not child_kind:
+        raise ValueError(
+            "child manifest task_kind differs from bound manifest task_kind: "
+            f"{child_kind.value} != {parent_kind.value}"
+        )
+
+    parent_profile = target_profile_from_manifest(bound_manifest)
+    child_profile = target_profile_from_manifest(child_manifest)
+    if parent_profile is not None and child_profile is not None and child_profile != parent_profile:
+        raise ValueError(
+            "child manifest target_profile differs from bound manifest target_profile: "
+            f"{child_profile!r} != {parent_profile!r}"
+        )
+
+    # A task kind is itself a semantic declaration.  Check it even when the
+    # corresponding target_profile field was omitted by an older manifest.
+    if parent_profile is not None and child_kind is not None:
+        child_kind_profile = target_profile_for_task_kind(child_kind).value
+        if child_kind_profile != parent_profile:
+            raise ValueError(
+                "child manifest task_kind conflicts with bound target_profile: "
+                f"{child_kind_profile!r} != {parent_profile!r}"
+            )
+    if child_profile is not None and parent_kind is not None:
+        parent_kind_profile = target_profile_for_task_kind(parent_kind).value
+        if parent_kind_profile != child_profile:
+            raise ValueError(
+                "child manifest target_profile conflicts with bound task_kind: "
+                f"{child_profile!r} != {parent_kind_profile!r}"
+            )
+
+    parent_bundle = prompt_bundle_from_manifest(bound_manifest, strict=True)
+    child_bundle = prompt_bundle_from_manifest(child_manifest, strict=True)
+    if parent_bundle is not None and child_bundle is not None:
+        # Reuse the content-addressed provenance contract so prompt paths may
+        # differ after relocation while template bytes remain authoritative.
+        validate_profile_provenance_pair(
+            {
+                "target_profile": parent_profile,
+                "prompt_bundle": parent_bundle,
+            },
+            {
+                "target_profile": child_profile or parent_profile,
+                "prompt_bundle": child_bundle,
+            },
+            label="bound/child prompt provenance",
+        )
+
+    # ``profile`` historically doubled as a semantic alias.  If the parent
+    # uses that legacy spelling, a child explicitly replacing it with the
+    # generic workflow name is ambiguous and must not fall back to origin.
+    parent_raw_profile = bound_manifest.get("profile")
+    child_raw_profile = None if child_manifest is None else child_manifest.get("profile")
+    semantic_aliases = {
+        "origin",
+        "grasp_manipulation",
+        "graspmanipulation",
+        "contact_press",
+        "contactpress",
+        "door_open",
+        "dooropen",
+    }
+    if (
+        isinstance(parent_raw_profile, str)
+        and parent_raw_profile.strip().lower().replace("-", "_") in semantic_aliases
+        and isinstance(child_raw_profile, str)
+        and child_raw_profile.strip().lower().replace("-", "_")
+        in {AnnotationMode.PICK_PLACE.value, AnnotationMode.TARGET_ONLY.value}
+        and child_raw_profile.strip().lower().replace("-", "_")
+        != parent_raw_profile.strip().lower().replace("-", "_")
+    ):
+        raise ValueError(
+            "child manifest workflow profile overrides bound semantic profile"
+        )
+
+    effective_kind = parent_kind or child_kind
+    effective_profile = parent_profile or child_profile
+    effective_bundle = parent_bundle or child_bundle
+    return effective_kind, effective_profile, effective_bundle
+
+
 def build_dynamic_manifest(
     root: Path,
     *,
     task: str,
     camera: str,
     episodes: Sequence[DiscoveredEpisode],
+    bound_manifest_data: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Compatibility delegate for the canonical discovery module."""
+    """Build a runtime manifest while retaining bound semantic metadata."""
 
-    return _discovery.build_dynamic_manifest(
+    if bound_manifest_data is not None and not isinstance(bound_manifest_data, Mapping):
+        raise TypeError("bound_manifest_data must be a mapping")
+    child_manifest = _read_runtime_manifest(root)
+    bound_manifest = {} if bound_manifest_data is None else dict(bound_manifest_data)
+    effective_kind, effective_profile, effective_bundle = _validate_bound_semantics(
+        bound_manifest,
+        child_manifest,
+    )
+    # Without a bound collection record, preserve the historical local-manifest
+    # discovery path.  With one, parent metadata is authoritative and fills in
+    # children that have no local extract manifest.
+    local_kind = read_dataset_task_kind(root)
+    if effective_kind is None:
+        effective_kind = local_kind
+    elif local_kind is not None and local_kind is not effective_kind:
+        raise ValueError(
+            "local manifest task_kind differs from bound task_kind: "
+            f"{local_kind.value} != {effective_kind.value}"
+        )
+    manifest = _discovery.build_dynamic_manifest(
         root,
         task=task,
         camera=camera,
         episodes=episodes,
         measure_episode_fn=_measure_episode,
-        task_kind=read_dataset_task_kind(root),
+        task_kind=effective_kind,
+        target_profile=effective_profile,
+        prompt_bundle=effective_bundle,
     )
+    # Keep extract provenance alongside the runtime-normalized identity.  The
+    # downstream binder rewrites ``dataset_root`` to the bound path; retaining
+    # the original value prevents dynamic manifests from becoming detached
+    # from the source extract (especially for materialized/relocated datasets).
+    resolved_root = root.expanduser().resolve()
+    manifest.setdefault("source_dataset_root", str(resolved_root))
+    manifest.setdefault(
+        "target_profile",
+        target_profile_for_task_kind(manifest.get("task_kind")).value,
+    )
+    extract_manifest = resolved_root / "EXTRACT_MANIFEST.json"
+    if extract_manifest.is_file():
+        manifest.setdefault("source_manifest_path", str(extract_manifest))
+        try:
+            payload = json.loads(extract_manifest.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            payload = None
+        if isinstance(payload, Mapping):
+            source_root = payload.get("dataset_root")
+            if isinstance(source_root, str) and source_root.strip():
+                manifest["source_dataset_root"] = source_root
+            # Dynamic discovery is authoritative for task/camera/episodes, but
+            # preserve task-kind metadata when the resolver was not able to
+            # infer it (for example an older manifest shape).
+            if "task_kind" not in manifest and payload.get("task_kind") is not None:
+                manifest["task_kind"] = payload["task_kind"]
+                manifest["target_profile"] = target_profile_for_task_kind(
+                    manifest["task_kind"]
+                ).value
+    # Carry collection-level provenance into a child runtime manifest when no
+    # local file supplied it.  ``setdefault`` keeps a real child source path
+    # authoritative while preserving the parent contract for native children.
+    for key in ("source_dataset_root", "source_manifest_path"):
+        if key in bound_manifest:
+            manifest.setdefault(key, deepcopy(bound_manifest[key]))
+    if effective_kind is not None:
+        manifest["task_kind"] = effective_kind.value
+    if effective_profile is not None:
+        actual_profile = target_profile_from_manifest(manifest)
+        if actual_profile != effective_profile:
+            raise ValueError(
+                "dynamic manifest target_profile differs from bound target_profile: "
+                f"{actual_profile!r} != {effective_profile!r}"
+            )
+        manifest["target_profile"] = effective_profile
+    if effective_bundle is not None:
+        actual_bundle = prompt_bundle_from_manifest(manifest, strict=True)
+        if actual_bundle is None:
+            manifest["prompt_bundle"] = deepcopy(dict(effective_bundle))
+        else:
+            validate_profile_provenance_pair(
+                {
+                    "target_profile": effective_profile,
+                    "prompt_bundle": effective_bundle,
+                },
+                {
+                    "target_profile": target_profile_from_manifest(manifest),
+                    "prompt_bundle": actual_bundle,
+                },
+                label="bound/dynamic prompt provenance",
+            )
+    return manifest
 
 
 def _dynamic_config(
@@ -343,10 +582,27 @@ def process_dataset(
         if object_source_only is None
         else bool(object_source_only)
     )
+    def build_bound_dynamic_manifest(
+        root: Path,
+        *,
+        task: str,
+        camera: str,
+        episodes: Sequence[DiscoveredEpisode],
+    ) -> dict[str, Any]:
+        """Pass bound collection metadata into the legacy manifest hook."""
+
+        return build_dynamic_manifest(
+            root,
+            task=task,
+            camera=camera,
+            episodes=episodes,
+            bound_manifest_data=config.dataset.manifest_data,
+        )
+
     hooks = SamWorkflowHooks(
         runtime_loader=_load_sam_runtime,
         discover_episodes=discover_episodes,
-        build_dynamic_manifest=build_dynamic_manifest,
+        build_dynamic_manifest=build_bound_dynamic_manifest,
         build_dynamic_config=_dynamic_config,
         capture_stage_output=_captured_stage_output,
         render_processed=_render_processed,
@@ -476,9 +732,12 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         choices=(
             AnnotationMode.PICK_PLACE.value,
             AnnotationMode.TARGET_ONLY.value,
-            "contact_press",
+            *TARGET_ONLY_PROFILE_SELECTORS,
         ),
-        help="Annotation profile for --data-path (pick_place, target_only, or contact_press)",
+        help=(
+            "Workflow/profile for --data-path (pick_place, target_only, origin, "
+            "contact_press, or door_open)"
+        ),
     )
     parser.add_argument(
         "--config",
@@ -642,6 +901,56 @@ def _optional_cli_path(value: str | None) -> Path | None:
     return Path(value)
 
 
+def _semantic_path_selector(payload: Mapping[str, Any]) -> str | None:
+    """Return a target-only selector implied by semantic manifest fields.
+
+    ``profile`` is overloaded in historical manifests, while newer records
+    may carry only ``target_profile`` or ``task_kind``.  Keep this inference
+    deliberately narrow: an unknown value returns ``None`` and is left for
+    the canonical dataset resolver to report.  Generic target-only kinds use
+    the workflow selector itself; contact/door kinds retain their dedicated
+    selectors when the whole input is homogeneous.
+    """
+
+    def normalize(value: Any) -> str | None:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        return value.strip().lower().replace("-", "_")
+
+    raw_profile = normalize(payload.get("profile"))
+    if raw_profile in {AnnotationMode.PICK_PLACE.value, "pickplace"}:
+        return AnnotationMode.PICK_PLACE.value
+    if raw_profile in {AnnotationMode.TARGET_ONLY.value, "targetonly"}:
+        return AnnotationMode.TARGET_ONLY.value
+    if raw_profile in {"contact_press", "contactpress"}:
+        return "contact_press"
+    if raw_profile in {"door_open", "dooropen"}:
+        return "door_open"
+    if raw_profile in {"origin", "grasp_manipulation", "graspmanipulation"}:
+        return "origin"
+
+    raw_target_profile = normalize(payload.get("target_profile"))
+    if raw_target_profile in {"contact_press", "contactpress"}:
+        return "contact_press"
+    if raw_target_profile in {"door_open", "dooropen"}:
+        return "door_open"
+    if raw_target_profile in {"origin", "grasp_manipulation", "graspmanipulation"}:
+        return "origin"
+
+    raw_task_kind = normalize(payload.get("task_kind"))
+    if raw_task_kind is None:
+        return None
+    try:
+        task_kind = TargetOnlyTaskKind(raw_task_kind)
+    except ValueError:
+        return None
+    if task_kind is TargetOnlyTaskKind.CONTACT_ACTION_SITE:
+        return "contact_press"
+    if task_kind is TargetOnlyTaskKind.DOOR_OPEN_ACTION_SITE:
+        return "door_open"
+    return AnnotationMode.TARGET_ONLY.value
+
+
 def _infer_path_mode(path: Path) -> str:
     """Infer the annotation mode from an extract manifest when available."""
 
@@ -652,34 +961,33 @@ def _infer_path_mode(path: Path) -> str:
         except (OSError, json.JSONDecodeError) as exc:
             raise ValueError(f"cannot infer annotation mode from {manifest_path}: {exc}") from exc
         if isinstance(payload, dict):
-            profile = payload.get("profile")
-            if profile in {
-                AnnotationMode.PICK_PLACE.value,
-                AnnotationMode.TARGET_ONLY.value,
-                "contact_press",
-            }:
-                return str(profile)
+            direct_selector = _semantic_path_selector(payload)
+            if direct_selector is not None:
+                return direct_selector
             # A few collection manifests omit the top-level profile while
-            # retaining it on every task record.  If those records are
-            # homogeneous, infer the mode here as well as in the resolver so
-            # ``just process COLLECTION`` remains path-only and does not need
-            # a redundant mode flag.  Mixed or incomplete records stay
-            # fail-closed in ``resolve_dataset_input`` with its detailed
-            # diagnostic (and the native-layout fallback remains pick-place).
+            # retaining workflow/semantic metadata on every task record.  If
+            # all records are target-only (even when their semantic profiles
+            # differ), infer the shared target-only workflow.  A homogeneous
+            # contact/door collection keeps its dedicated selector; mixed
+            # semantic profiles must stay on ``target_only`` so each target
+            # can be routed independently by ``_target_profile_overlay_key``.
             datasets = payload.get("datasets")
             if isinstance(datasets, list) and datasets:
-                record_profiles = {
-                    record.get("profile")
+                record_selectors = [
+                    _semantic_path_selector(record)
                     for record in datasets
-                    if isinstance(record, Mapping) and record.get("profile") is not None
-                }
-                if len(record_profiles) == 1:
-                    inferred = next(iter(record_profiles))
-                    if inferred in {
-                        AnnotationMode.PICK_PLACE.value,
-                        AnnotationMode.TARGET_ONLY.value,
-                    }:
-                        return str(inferred)
+                    if isinstance(record, Mapping)
+                ]
+                if len(record_selectors) == len(datasets) and all(
+                    selector is not None for selector in record_selectors
+                ):
+                    selectors = {selector for selector in record_selectors if selector is not None}
+                    if selectors == {AnnotationMode.PICK_PLACE.value}:
+                        return AnnotationMode.PICK_PLACE.value
+                    if AnnotationMode.PICK_PLACE.value not in selectors:
+                        if len(selectors) == 1:
+                            return next(iter(selectors))
+                        return AnnotationMode.TARGET_ONLY.value
     # Native RoboTwin directories have historically been pick-place inputs;
     # callers can select target-only explicitly with --mode/--target-only.
     return AnnotationMode.PICK_PLACE.value
@@ -712,19 +1020,119 @@ def _path_target_args(
     return argparse.Namespace(**values)
 
 
+def _target_profile_of(target: DatasetTarget) -> TargetProfile:
+    """Return a validated target profile from a resolver target.
+
+    ``DatasetTarget.profile`` is an enum in the canonical resolver, but the
+    path runtime is also used with small adapter/test doubles.  Normalizing at
+    this boundary keeps routing fail-closed for malformed metadata instead of
+    silently selecting the generic target-only prompt bundle.
+    """
+
+    raw_profile = getattr(target, "profile", TargetProfile.GRASP_MANIPULATION)
+    try:
+        return TargetProfile(raw_profile)
+    except (TypeError, ValueError) as exc:
+        choices = ", ".join(profile.value for profile in TargetProfile)
+        raise ValueError(
+            f"dataset target {getattr(target, 'task', '<unknown>')!r} has unsupported "
+            f"target profile {raw_profile!r}; choose {choices}"
+        ) from exc
+
+
+def _target_profile_overlay_key(
+    target: DatasetTarget,
+    *,
+    requested_path_mode: str,
+    mode: AnnotationMode,
+) -> str:
+    """Resolve the shared-profile overlay for one target.
+
+    ``contact_press`` is retained as a CLI compatibility selector, but all
+    three semantic variants run under the target-only timeline.  Pick-place
+    inputs are intentionally restricted to the grasp profile so a malformed
+    manifest cannot receive a target-only prompt bundle by accident.
+    """
+
+    target_profile = _target_profile_of(target)
+    if requested_path_mode in TARGET_ONLY_PROFILE_SELECTORS and requested_path_mode != "target_only":
+        expected_profile = TARGET_ONLY_PROFILE_SELECTORS[requested_path_mode]
+        if target_profile is not expected_profile:
+            requirement = (
+                "contact_action_site task metadata"
+                if requested_path_mode == "contact_press"
+                else f"{expected_profile.value} task metadata"
+            )
+            raise ValueError(
+                f"--mode {requested_path_mode} requires {requirement}; "
+                f"{target.task!r} declares {target_profile.value}"
+            )
+        return TARGET_ONLY_PROFILE_OVERLAYS[expected_profile]
+
+    if mode is AnnotationMode.PICK_PLACE:
+        if target_profile is not TargetProfile.GRASP_MANIPULATION:
+            raise ValueError(
+                f"{target_profile.value} profile requires target_only mode; "
+                f"{target.task!r} was selected with --pick-place"
+            )
+        return AnnotationMode.PICK_PLACE.value
+
+    if mode is AnnotationMode.TARGET_ONLY:
+        try:
+            return TARGET_ONLY_PROFILE_OVERLAYS[target_profile]
+        except KeyError as exc:  # pragma: no cover - enum exhaustiveness guard
+            raise ValueError(
+                f"no target-only overlay is registered for {target_profile.value}"
+            ) from exc
+
+    raise ValueError(f"unsupported annotation mode for path routing: {mode.value}")
+
+
 def _path_profile_config(
     profile: PipelineConfig,
     target: DatasetTarget,
 ) -> Path:
-    """Resolve a task-kind-derived profile without inspecting the task name."""
+    """Resolve a legacy task-bound config for a target profile.
+
+    The reusable ``configs/process.yaml`` path is handled by
+    :func:`_target_profile_overlay_key`.  This compatibility helper is only
+    used when callers explicitly provide an older task-bound YAML.  There is
+    no checked-in legacy door-open config yet, so refusing that combination is
+    safer than silently loading ordinary target-only prompts.
+    """
 
     mode = profile.annotation.mode
-    if target.profile is profile.annotation.profile:
+    target_profile = _target_profile_of(target)
+    if target_profile is profile.annotation.profile:
         return profile.config_path
-    if target.profile is TargetProfile.CONTACT_PRESS:
+    # A legacy config that explicitly carries a semantic target profile is
+    # not a safe generic fallback for a different target.  Without this guard
+    # a contact/door config could silently route an ordinary target-only task
+    # through the origin prompts (or vice versa).
+    if profile.annotation.profile is not TargetProfile.GRASP_MANIPULATION:
+        raise ValueError(
+            f"legacy config {profile.config_path} declares "
+            f"{profile.annotation.profile.value}, but target {target.task!r} "
+            f"declares {target_profile.value}"
+        )
+    if mode is AnnotationMode.PICK_PLACE:
+        if target_profile is not TargetProfile.GRASP_MANIPULATION:
+            raise ValueError(
+                f"{target_profile.value} profile requires target_only mode; "
+                f"legacy config {profile.config_path} declares pick_place"
+            )
+        return PATH_MODE_CONFIGS[profile.qwen.runtime][mode]
+    if target_profile is TargetProfile.CONTACT_PRESS:
         if mode is not AnnotationMode.TARGET_ONLY:
             raise ValueError("contact_press profile requires target_only mode")
         return CONTACT_PRESS_CONFIGS[profile.qwen.runtime]
+    if target_profile is TargetProfile.DOOR_OPEN:
+        if mode is not AnnotationMode.TARGET_ONLY:
+            raise ValueError("door_open profile requires target_only mode")
+        raise ValueError(
+            "door_open target profile requires the shared process profile with a "
+            "modes.door_open overlay; no legacy task-bound door_open config is available"
+        )
     return PATH_MODE_CONFIGS[profile.qwen.runtime][mode]
 
 
@@ -745,7 +1153,7 @@ def _load_path_config(
     selector = mode.value if isinstance(mode, AnnotationMode) else str(mode)
     expected_annotation_mode = (
         AnnotationMode.TARGET_ONLY
-        if selector == "contact_press"
+        if selector in TARGET_ONLY_PROFILE_SELECTORS
         else AnnotationMode(selector)
     )
     try:
@@ -823,11 +1231,10 @@ def _run_path_input(args: argparse.Namespace, reporter: ProcessUI) -> dict[str, 
         if args.path_mode is not None
         else _infer_path_mode(args.data_path)
     )
-    if _optional_cli_path(args.source_run_dir) is not None:
-        raise ValueError("--source-run-dir is not supported with --data-path")
+    source_run_dir = _optional_cli_path(args.source_run_dir)
     mode = (
         AnnotationMode.TARGET_ONLY
-        if requested_path_mode == "contact_press"
+        if requested_path_mode in TARGET_ONLY_PROFILE_SELECTORS
         else AnnotationMode(requested_path_mode)
     )
     resolved = resolve_dataset_input(
@@ -836,6 +1243,11 @@ def _run_path_input(args: argparse.Namespace, reporter: ProcessUI) -> dict[str, 
         task=requested_task,
         camera=requested_camera,
     )
+    if source_run_dir is not None and resolved.is_collection:
+        raise ValueError(
+            "--source-run-dir with --data-path requires selecting one task; "
+            "collection runs do not have a per-task frozen source mapping"
+        )
     if resolved.is_collection and args.episode_ids is not None and len(resolved.targets) != 1:
         raise ValueError("collection --episode-ids requires selecting one --task")
 
@@ -845,14 +1257,34 @@ def _run_path_input(args: argparse.Namespace, reporter: ProcessUI) -> dict[str, 
 
     def selected_episode_ids(target: DatasetTarget) -> tuple[int, ...]:
         if getattr(args, "all_episodes", False):
-            discovery = discover_episodes(
+            selected = discover_task_episode_ids(
                 target.root,
+                task=target.task,
                 camera=target.camera,
                 require_depth=args.gripper_backend == "urdf",
             )
-            selected = discovery.episode_ids
         elif args.episode_ids is not None:
             selected = tuple(args.episode_ids)
+            if getattr(target, "discovered_all_episodes", False):
+                # Native targets already carry the resolver's complete,
+                # task-scoped universe.  Use it for membership only; the CLI
+                # selection itself remains authoritative.
+                task_episode_ids = set(target.episode_ids)
+                foreign_ids = tuple(
+                    episode_id for episode_id in selected if episode_id not in task_episode_ids
+                )
+                if foreign_ids:
+                    rendered = ", ".join(str(value) for value in foreign_ids)
+                    raise ValueError(
+                        f"episode ids do not belong to task {target.task!r}: {rendered}"
+                    )
+        elif getattr(target, "discovered_all_episodes", False):
+            selected = discover_task_episode_ids(
+                target.root,
+                task=target.task,
+                camera=target.camera,
+                require_depth=args.gripper_backend == "urdf",
+            )
         else:
             selected = target.episode_ids
         selected = tuple(dict.fromkeys(int(value) for value in selected))
@@ -861,17 +1293,11 @@ def _run_path_input(args: argparse.Namespace, reporter: ProcessUI) -> dict[str, 
         return selected
 
     def target_profile_key(target: DatasetTarget) -> str:
-        target_profile = getattr(target, "profile", TargetProfile.GRASP_MANIPULATION)
-        if requested_path_mode == "contact_press":
-            if target_profile is not TargetProfile.CONTACT_PRESS:
-                raise ValueError(
-                    f"--mode contact_press requires contact_action_site task metadata; "
-                    f"{target.task!r} declares {target_profile.value}"
-                )
-            return "contact_press"
-        if target_profile is TargetProfile.CONTACT_PRESS:
-            return "contact_press"
-        return mode.value
+        return _target_profile_overlay_key(
+            target,
+            requested_path_mode=requested_path_mode,
+            mode=mode,
+        )
 
     profile_cache: dict[str, PipelineProfile] = {}
     if isinstance(base_profile, PipelineProfile):
@@ -907,10 +1333,10 @@ def _run_path_input(args: argparse.Namespace, reporter: ProcessUI) -> dict[str, 
         # Keep the legacy loader call per target for compatibility with tools
         # that monkeypatch or audit task-specific YAML selection.  The shared
         # profile path never enters this branch.
-        if requested_path_mode == "contact_press":
-            # Keep explicit contact mode fail-closed for legacy task-bound
-            # configs too.  Otherwise an ordinary target-only task would be
-            # silently routed through the generic target-only YAML below.
+        if requested_path_mode in TARGET_ONLY_PROFILE_SELECTORS:
+            # Keep explicit semantic selectors fail-closed for legacy
+            # task-bound configs too.  Otherwise a task could be silently
+            # routed through a generic target-only YAML.
             target_profile_key(target)
         target_config = load_config(target_config_path)
         return target_config, selected
@@ -974,24 +1400,34 @@ def _run_path_input(args: argparse.Namespace, reporter: ProcessUI) -> dict[str, 
                     "run_id": task_run_id,
                     "status": "failed",
                     "error": f"{type(exc).__name__}: {exc}",
+                    "target_profile": _target_profile_of(target).value,
                 }
             )
         else:
-            records.append(
-                {
-                    "task": target.task,
-                    "run_id": task_run_id,
-                    "status": "completed" if summary["passed"] else "failed",
-                    "artifact": summary.get("artifact"),
-                }
-            )
+            record: dict[str, Any] = {
+                "task": target.task,
+                "run_id": task_run_id,
+                "status": "completed" if summary["passed"] else "failed",
+                "artifact": summary.get("artifact"),
+                "target_profile": target_config.annotation.profile.value,
+            }
+            bundle = summary.get("prompt_bundle")
+            if isinstance(bundle, Mapping):
+                record["prompt_bundle"] = dict(bundle)
+            else:
+                derived_bundle = prompt_bundle_for_config(target_config)
+                if derived_bundle is not None:
+                    record["prompt_bundle"] = derived_bundle
+            records.append(record)
     result: dict[str, Any] = {
         "format_version": "robotwin_process_collection_summary_v1",
         "run_id": collection_run_id,
         "dataset_root": str(resolved.root),
         "annotation_mode": mode.value,
         "profile": (
-            "contact_press" if requested_path_mode == "contact_press" else "shared"
+            requested_path_mode
+            if requested_path_mode in TARGET_ONLY_PROFILE_SELECTORS
+            else "shared"
         ),
         "records": records,
         "passed": all(record["status"] == "completed" for record in records),

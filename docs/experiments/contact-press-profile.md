@@ -1,7 +1,8 @@
 # Contact-press target-only profile
 
-本页记录 `target_only` 中接触/按压类任务的独立 profile 实验。实现保持
-`annotation_mode=target_only` 不变，只把 target 的语义合同作为正交 profile；因此不会把
+本页记录 target-only 业务集合中接触/按压类任务的独立 profile 实验。实现为兼容既有
+loop/artifact 合同仍写 `annotation.mode=target_only`，但这不是把 target-only 业务分类定义成
+annotation mode；真正变化的是 target 语义合同（正交的 `contact_press` profile）。因此不会把
 按压目标误当成被夹爪抓取并搬运的物体。
 
 ## 问题与假设
@@ -25,11 +26,12 @@ action site，但尚无同口径 profile A/B，因此本次 8+3 决策不切换�
 | `single_movable_target`（含 conditional） | `grasp_manipulation` | 首次闭合后抓取/持有的 target |
 | `contact_action_site` | `contact_press` | 即将接触、按压或驱动的功能部件 |
 | `articulated_action_site` | `grasp_manipulation` | 保持普通 target-only，等待独立 A/B 决策 |
+| `door_open_action_site` | `door_open` | 未来开门数据显式选择，仅复用时间线并切换 prompt |
 | 缺失 | `grasp_manipulation` | 兼容旧 manifest，保留旧行为 |
 
 只有 `contact_action_site` 自动选择 `contact_press`，即当前 11-task 集合中的
-`click_alarmclock`、`click_bell`、`press_stapler`。`contact_press` 只允许与 `target_only`
-mode 组合；`pick_place` 和未声明 task kind 的旧 target-only 数据不改变。
+`click_alarmclock`、`click_bell`、`press_stapler`。`contact_press` 只允许与兼容字段
+`annotation.mode=target_only` 组合；`pick_place` 和未声明 task kind 的旧 target-only 数据不改变。
 
 ## Prompt 合同
 
@@ -104,7 +106,8 @@ contact profile 使用三份专用模板：
 `target_only_20_v2_contact_press/<task>` 数据根。普通 target-only 强制加载
 `configs/process_target_only_qwen38_api.yaml`，contact-press 强制加载
 `configs/process_contact_press_qwen38_api.yaml`；没有使用会按 `task_kind` 自动切 profile 的
-`--data-path` 入口。60/60 原始视频 SHA-256 一致，60/60 rendered prompt SHA-256 不同，符合
+`--data-path` 入口（这是当时实验的可比性控制，不是对当前统一入口的否定）。60/60 原始视频
+SHA-256 一致，60/60 rendered prompt SHA-256 不同，符合
 只改变 profile prompt 合同的预期。
 
 这是有效的完整 profile A/B，但不是冻结模型响应和候选的严格确定性单变量实验：两臂使用

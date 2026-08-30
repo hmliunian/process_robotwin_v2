@@ -53,11 +53,15 @@ just process /DATA/disk8/xuran/add_mask_robotwin/dataset/pick_place_20/move_pill
 just process /DATA/disk8/xuran/add_mask_robotwin/dataset/pick_place_20 \
   --task move_pillbottle_pad --gripper-backend sam
 
-# target-only collection（根 manifest 自动推断 mode）
-just process /DATA/disk8/xuran/add_mask_robotwin/dataset/target_only_20_v2
+# target-only collection（根 manifest 自动选择 target contract；显式 camera 更稳妥）
+just process /DATA/disk8/xuran/add_mask_robotwin/dataset/target_only_20_v2 \
+  --camera cam_high
 
-# 原生 RoboTwin 目录没有 manifest 时，target-only 需显式声明 mode
+# 原生 RoboTwin 目录没有 manifest 时，需显式选择 target-only contract
 just process /DATA/.../target_only_task --target-only
+
+# 开门任务仍走 target-only 流程；manifest 声明 door_open_action_site 后自动选专用 prompt
+just process /DATA/.../door_open_task --target-only
 
 # 忽略 extract manifest 中记录的固定子集，处理目录下全部完整 episode
 just process /DATA/.../task --all-episodes
@@ -77,6 +81,8 @@ camera 及 episode 选择由 `--data-path` 在运行时绑定。因此新增任�
 `configs/prompts/target_receiver_semantic_open_set.txt` 和
 `configs/prompts/mask_candidate_qc_open_set.txt`）；旧 pilot 配置仍可能使用不带
 `_open_set` 后缀的模板。物体名称和视觉属性不能写死在 Python 或 YAML 中。
+`origin`、`contact_press` 和 `door_open` 是 target-only 下的 semantic profile；它们共享同一
+state timeline，只切换语义/QC prompt，并由 manifest 的 `task_kind`/`target_profile` 路由。
 旧的 `configs/pilot_*.yaml`、`configs/process_*_qwen38_api.yaml` 仍可通过 `--config` 作为
 兼容入口；它们适合分阶段调试或固定回归集，不是每个任务都必须新建的配置。
 Stage 2 会写出 `loop.json`、`semantic_plan.json`、rendered prompt 和 Qwen raw response；

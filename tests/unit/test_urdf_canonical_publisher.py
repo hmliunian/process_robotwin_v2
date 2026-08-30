@@ -688,6 +688,33 @@ def _incremental_fixture(tmp_path: Path) -> PublishFixture:
     return PublishFixture(source, backend, destination, record, source_masks, track)
 
 
+def test_source_contract_rejects_profile_mismatch_with_dynamic_manifest(
+    tmp_path: Path,
+) -> None:
+    source_run = tmp_path / SOURCE_RUN_ID
+    dataset_root = tmp_path / "dataset"
+    dynamic = {
+        "format_version": "robotwin_dataset_manifest_dynamic_v1",
+        "task": TASK,
+        "camera": CAMERA,
+        "dataset_root": str(dataset_root.resolve()),
+        "regression_episode_ids": [EPISODE_INDEX],
+        "target_profile": "origin",
+    }
+
+    with pytest.raises(UrdfGripperPublishError, match="target_profile"):
+        write_source_run_contract(
+            source_run,
+            run_id=SOURCE_RUN_ID,
+            dataset_root=dataset_root,
+            task=TASK,
+            camera=CAMERA,
+            dynamic_manifest=dynamic,
+            requested_episode_ids=[EPISODE_INDEX],
+            target_profile="contact_press",
+        )
+
+
 def test_public_lineage_and_publication_owners_cover_the_full_contract(
     tmp_path: Path,
 ) -> None:

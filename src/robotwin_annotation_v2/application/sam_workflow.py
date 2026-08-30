@@ -24,7 +24,20 @@ from robotwin_annotation_v2.domain import AnnotationMode
 from robotwin_annotation_v2.models import EpisodeRecord, EpisodeRef, ProcessSummary
 from robotwin_annotation_v2.terminal_ui import ProcessUI
 
-from .discovery import DiscoveryResult, build_dynamic_manifest, discover_episodes
+from .discovery import (
+    DiscoveryResult,
+    build_dynamic_manifest,
+    discover_episodes,
+    select_manifest_episodes,
+)
+from .provenance import (
+    attach_profile_provenance,
+    prompt_bundle_for_config,
+    prompt_bundle_from_manifest,
+    target_profile_from_config,
+    target_profile_from_manifest,
+    validate_profile_provenance_pair,
+)
 
 PROCESS_SUMMARY_FORMAT_VERSION = "robotwin_process_dataset_summary_v1"
 
@@ -272,18 +285,91 @@ class SamWorkflow[BackendT: SamBackend, SamExecutionT, GripperExecutionT]:
         discovery = self.hooks.discover_episodes(dataset_root, camera=camera)
         if not discovery.episodes:
             raise ValueError(f"no complete episodes found under {dataset_root}")
+        manifest_episodes = select_manifest_episodes(
+            discovery.episodes,
+            manifest=self.config.dataset.manifest_data,
+            episode_ids=self.config.dataset.regression_episode_ids,
+        )
+        if not manifest_episodes:
+            raise ValueError("bound dataset manifest contains no discovered episodes")
+        bound_manifest = self.config.dataset.manifest_data
+        has_bound_selection = isinstance(bound_manifest, Mapping) and any(
+            bound_manifest.get(key) is not None
+            for key in ("regression_episode_ids", "episode_indices", "episode_ids")
+        )
+        manifest_scope_ids = {episode.episode_id for episode in manifest_episodes}
         manifest = self.hooks.build_dynamic_manifest(
             dataset_root,
             task=task,
             camera=camera,
-            episodes=discovery.episodes,
+            episodes=manifest_episodes,
+        )
+        # Hooks are kept as a compatibility seam, so enrich their result here
+        # rather than requiring every lightweight hook double to learn the new
+        # keyword arguments.  This is the canonical point where algorithm
+        # profile identity meets a concrete dataset selection.
+        manifest = dict(manifest)
+        manifest_profile = target_profile_from_manifest(manifest)
+        config_profile = target_profile_from_config(self.config)
+        if (
+            manifest_profile is not None
+            and config_profile is not None
+            and manifest_profile != config_profile
+        ):
+            raise ValueError(
+                "dynamic manifest target_profile differs from config: "
+                f"{manifest_profile!r} != {config_profile!r}"
+            )
+        selected_profile = manifest_profile or config_profile
+        prompt_bundle = prompt_bundle_for_config(
+            self.config,
+            target_profile=selected_profile,
+        )
+        manifest_bundle = prompt_bundle_from_manifest(manifest, strict=True)
+        if manifest_bundle is not None and prompt_bundle is not None:
+            validate_profile_provenance_pair(
+                {
+                    "target_profile": selected_profile,
+                    "prompt_bundle": manifest_bundle,
+                },
+                {
+                    "target_profile": selected_profile,
+                    "prompt_bundle": prompt_bundle,
+                },
+                label="dynamic manifest and configured prompt provenance",
+            )
+        elif manifest_bundle is not None:
+            # Lightweight/legacy config doubles may not expose prompt files;
+            # retain the immutable bundle supplied by the bound manifest so
+            # all run-level and episode-level artifacts still agree.
+            prompt_bundle = manifest_bundle
+        attach_profile_provenance(
+            manifest,
+            target_profile=selected_profile,
+            prompt_bundle=prompt_bundle,
+        )
+        manifest.setdefault(
+            "runtime_dataset_root",
+            str(dataset_root.expanduser().resolve()),
         )
         discovered_ids = set(discovery.episode_ids)
+        # ``manifest_episodes`` is already narrowed to a bound dataset
+        # selection when one exists.  Use it as the implicit request so a
+        # caller that omits ``episode_ids`` cannot accidentally expand a task
+        # slice back to every episode in a mixed root.  For an unbound legacy
+        # input it is the complete discovery result, preserving old behavior.
         selected_ids = (
-            discovery.episode_ids
+            tuple(episode.episode_id for episode in manifest_episodes)
             if episode_ids is None
             else tuple(dict.fromkeys(int(value) for value in episode_ids))
         )
+        if episode_ids is not None:
+            outside_scope = sorted(set(selected_ids) - manifest_scope_ids)
+            if outside_scope and manifest_scope_ids != set(discovery.episode_ids):
+                raise ValueError(
+                    "requested episodes fall outside the bound dataset manifest: "
+                    f"{outside_scope}"
+                )
         if not selected_ids:
             raise ValueError("process_dataset requires at least one selected episode")
         unknown = sorted(set(selected_ids) - discovered_ids)
@@ -351,7 +437,15 @@ class SamWorkflow[BackendT: SamBackend, SamExecutionT, GripperExecutionT]:
             reporter.phase_finished("qwen_health")
             reporter.phase_started("resume_scan", total=len(selected_ids))
 
-        records: list[dict[str, Any]] = list(discovery.skipped)
+        records: list[dict[str, Any]] = [
+            record
+            for record in discovery.skipped
+            if not has_bound_selection
+            or (
+                record.get("episode") is not None
+                and int(record["episode"]) in manifest_scope_ids
+            )
+        ]
         pending: list[int] = []
         completion_check = (
             runtime.sam_episode_complete
@@ -587,7 +681,9 @@ class SamWorkflow[BackendT: SamBackend, SamExecutionT, GripperExecutionT]:
             dataset_root=str(dataset_root.expanduser().resolve()),
             task=task,
             camera=camera,
-            discovered_episode_ids=tuple(discovery.episode_ids),
+            discovered_episode_ids=tuple(
+                episode.episode_id for episode in manifest_episodes
+            ),
             requested_episode_ids=tuple(selected_ids),
             dynamic_manifest=manifest,
             qwen_health=health,
@@ -597,6 +693,12 @@ class SamWorkflow[BackendT: SamBackend, SamExecutionT, GripperExecutionT]:
             backend=backend_record,
             passed=passed,
             stage_mode="object_source_only" if source_only else "full_sam",
+            # Persist the complete semantic contract for every fresh run,
+            # including ordinary pick/place.  Frozen and incremental URDF
+            # validation can then compare summaries, dynamic manifests and
+            # per-episode artifacts without a mode-dependent omission.
+            target_profile=selected_profile,
+            prompt_bundle=prompt_bundle,
         )
         persisted_summary = summary_model.to_json()
         summary_path = store.write_json(

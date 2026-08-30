@@ -26,6 +26,10 @@ from typing import Any
 
 from robotwin_annotation_v2.application import streaming
 from robotwin_annotation_v2.application.dataset_pipeline import DatasetPipeline
+from robotwin_annotation_v2.application.provenance import (
+    target_profile_from_manifest,
+    validate_profile_provenance,
+)
 from robotwin_annotation_v2.application.sam_workflow import (
     PROCESS_SUMMARY_FORMAT_VERSION,
     read_json_object,
@@ -36,7 +40,12 @@ from robotwin_annotation_v2.application.urdf_workflow import (
     UrdfWorkflowRuntime,
 )
 from robotwin_annotation_v2.config import PipelineConfig
-from robotwin_annotation_v2.domain import AnnotationMode, annotation_spec
+from robotwin_annotation_v2.domain import (
+    AnnotationMode,
+    TargetProfile,
+    annotation_spec,
+    target_profile_for_task_kind,
+)
 from robotwin_annotation_v2.terminal_ui import ProcessUI
 from robotwin_annotation_v2.urdf_gripper_publisher import (
     UrdfGripperPublishError,
@@ -912,6 +921,40 @@ def select_urdf_source_episodes(
             "source process summary required_object_roles differ from annotation_mode"
         )
 
+    # ``dynamic_manifest`` was introduced after the original source-summary
+    # contract.  Keep old pick-place summaries readable while using it as the
+    # profile/task-kind authority whenever it is present.
+    dynamic_value = summary.get("dynamic_manifest")
+    dynamic = dynamic_value if isinstance(dynamic_value, Mapping) else None
+    source_profile = target_profile_from_manifest(summary)
+    dynamic_profile = target_profile_from_manifest(dynamic)
+    if source_profile is None:
+        source_profile = dynamic_profile
+    elif dynamic_profile is not None and source_profile != dynamic_profile:
+        raise ValueError(
+            "source process summary target_profile differs from dynamic_manifest"
+        )
+    if source_annotation_mode is AnnotationMode.PICK_PLACE:
+        if source_profile not in {None, TargetProfile.GRASP_MANIPULATION.value}:
+            raise ValueError("pick_place source summary cannot use a target-only profile")
+        # Keep an explicitly recorded default profile for fresh runs.  Older
+        # pick/place summaries omitted it and remain readable with ``None``.
+    elif source_profile is None and dynamic is not None:
+        source_profile = target_profile_for_task_kind(dynamic.get("task_kind")).value
+    source_bundle = summary.get("prompt_bundle")
+    if not isinstance(source_bundle, Mapping) and dynamic is not None:
+        source_bundle = dynamic.get("prompt_bundle")
+    if source_bundle is not None and not isinstance(source_bundle, Mapping):
+        raise ValueError("source prompt_bundle must be an object")
+    if source_bundle is not None and source_profile is None:
+        # A legacy/third-party envelope may carry only the bundle.  Derive its
+        # semantic profile so episode validation still checks the cross-field
+        # contract; ordinary pick/place defaults to grasp semantics when the
+        # bundle itself does not declare a profile.
+        source_profile = target_profile_from_manifest(source_bundle)
+        if source_profile is None and source_annotation_mode is AnnotationMode.PICK_PLACE:
+            source_profile = TargetProfile.GRASP_MANIPULATION.value
+
     discovered = set(discovered_episode_ids)
     selected = (
         discovered_episode_ids
@@ -972,6 +1015,34 @@ def select_urdf_source_episodes(
                 }
             )
             continue
+        if source_profile is not None:
+            try:
+                strict_profile = source_bundle is not None or source_profile not in {
+                    None,
+                    TargetProfile.GRASP_MANIPULATION.value,
+                }
+                validate_profile_provenance(
+                    validated.manifest,
+                    expected_profile=source_profile,
+                    expected_prompt_bundle=source_bundle,
+                    strict=strict_profile,
+                )
+                validate_profile_provenance(
+                    validated.provenance,
+                    expected_profile=source_profile,
+                    expected_prompt_bundle=source_bundle,
+                    strict=strict_profile,
+                )
+            except (TypeError, ValueError) as exc:
+                excluded.append(
+                    {
+                        "episode": episode_id,
+                        "status": "source_excluded",
+                        "reason": "source_contract_error:ProfileMismatch",
+                        "error": str(exc),
+                    }
+                )
+                continue
         accepted.append(episode_id)
         source_lineages[episode_id] = validated.lineage
 
@@ -989,6 +1060,8 @@ def select_urdf_source_episodes(
         source_lineages=source_lineages,
         annotation_mode=source_annotation_mode,
         required_object_roles=source_spec.required_object_roles,
+        target_profile=source_profile,
+        prompt_bundle=(None if source_bundle is None else dict(source_bundle)),
     )
 
 

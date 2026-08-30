@@ -4,6 +4,12 @@
 > close/open loop 的 `cam_high` pipeline；不代表所有 episode 都有完整 depth，也不代表
 > Qwen/SAM mask 一定通过。
 
+2026-08-30 对完整根目录的复核见 [current-project-state.md](current-project-state.md)：该根目录
+确实包含 50 task × 550 episode 的 RGB/state 全量，但 `cam_high` depth 只有 26,304/27,500。
+resolver 已可用显式 `--task` 按 `meta/episodes.jsonl` 过滤；未指定 task 时会 fail closed。
+由于原生 metadata 不含 `task_kind`，生产运行仍优先使用带 profile/provenance 的 task-level
+manifest。
+
 ## 0. 真实 P&P MCAP 转换
 
 真实采集的 `/DATA/disk8/xuran/add_mask_robotwin/dataset/pick_and_place_real` 是原始 MCAP
@@ -212,18 +218,19 @@ configs/datasets/place_empty_cup_full550.json
 configs/pilot_place_empty_cup.yaml
 ```
 
-默认 SAM：
+显式 SAM gripper（当前 CLI 默认是 URDF，不能省略 backend）：
 
 ```bash
-just config=configs/pilot_place_empty_cup.yaml \
-  process ../dataset/place_empty_cup_full550_original
+just process ../dataset/place_empty_cup_full550_original \
+  --config configs/pilot_place_empty_cup.yaml \
+  --gripper-backend sam
 ```
 
 live URDF：
 
 ```bash
-just config=configs/pilot_place_empty_cup.yaml \
-  process ../dataset/place_empty_cup_full550_original \
+just process ../dataset/place_empty_cup_full550_original \
+  --config configs/pilot_place_empty_cup.yaml \
   --gripper-backend urdf
 ```
 
@@ -245,8 +252,8 @@ configs/pilot_place_container_plate.yaml
 live URDF 全量运行无需再传 `--episode-ids` 或 `--allow-partial-source`：
 
 ```bash
-just config=configs/pilot_place_container_plate.yaml \
-  process ../dataset/place_container_plate_full547_original \
+just process ../dataset/place_container_plate_full547_original \
+  --config configs/pilot_place_container_plate.yaml \
   --gripper-backend urdf
 ```
 
@@ -298,7 +305,8 @@ press_stapler
 这三组都属于 Target-only coarse 语义。当前运行时合同固定为 8+3：5 个 movable task 和
 3 个 articulated task 使用普通 `grasp_manipulation` target-only；只有
 `click_alarmclock`、`click_bell`、`press_stapler` 使用 `contact_press`。articulated
-`task_kind` 继续保留 provenance，但在独立 A/B 完成前不自动切换 profile。
+`task_kind` 继续保留 provenance，但现有 `articulated_action_site` 不自动切换 profile。未来开门
+任务可显式标记 `door_open_action_site`，复用 target-only 流程并仅切换 `door_open` prompt。
 `handover_mic`、`grab_roller`、`lift_pot` 等虽然有时只有一个场景物体，却是双臂执行，因此
 不进入本版；`move_stapler_pad`、`place_empty_cup` 等有 receiver 的任务也不进入本版。
 
@@ -368,12 +376,12 @@ episode：`click_alarmclock`、`click_bell`、`press_stapler`。`open_laptop`、
 /DATA/disk8/xuran/add_mask_robotwin/dataset/target_only_20_v2_contact_press
 ```
 
-使用可复现 split 工具生成并校验：
+使用可复现 split 工具生成并校验（通过 `just process` 由 launcher 负责读取
+`secrets/qwen_api_key.txt`；若直接调用 Python 脚本，需预先设置 `QWEN_API_KEY`）：
 
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/split_target_only_extract.py
-PYTHONPATH=src .venv/bin/python scripts/process_dataset.py \
-  --data-path /DATA/disk8/xuran/add_mask_robotwin/dataset/target_only_20_v2_contact_press \
+just process /DATA/disk8/xuran/add_mask_robotwin/dataset/target_only_20_v2_contact_press \
   --target-only --task press_stapler \
   --config configs/process_target_only_qwen38_api.yaml
 ```

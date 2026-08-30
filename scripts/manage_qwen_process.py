@@ -205,7 +205,13 @@ def _process_mode(arguments: Sequence[str]) -> str:
     """Return the mode needed to inspect a shared profile for service setup."""
 
     mode = _option_value(arguments, "--mode")
-    if mode in {"pick_place", "target_only", "contact_press"}:
+    if mode in {
+        "pick_place",
+        "target_only",
+        "origin",
+        "contact_press",
+        "door_open",
+    }:
         return mode
     if mode is None:
         if "--target-only" in arguments or "--target_only" in arguments:

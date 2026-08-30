@@ -589,12 +589,15 @@ just process DATASET_ROOT OUTPUT_ROOT --run-id NEW_RUN
 just process DATASET_ROOT OUTPUT_ROOT \
   --gripper-backend urdf --run-id NEW_RUN
 
-# frozen source + URDF gripper
+# frozen source + URDF gripper（单任务，或 collection 显式加 --task）
 just process DATASET_ROOT OUTPUT_ROOT \
   --gripper-backend urdf \
   --source-run-dir SOURCE_RUN \
   --run-id NEW_RUN
 ```
+
+共享 profile 会在运行时校验 source run 的 task、camera、annotation mode、target profile、
+prompt bundle 和 episode/lineage 合同；collection 未选择单一 task 时会拒绝。
 
 需要重现某个历史实验的逐帧中间量时，应 checkout 文中对应 commit/branch；当前主线已删除
 `generate_gripper_mask_video_*`、ROI sweep 和独立 review-sheet 脚本，其结论已固化到配置、

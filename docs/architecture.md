@@ -11,9 +11,10 @@
 输入是 RoboTwin 格式的单次 episode。当前 pipeline 假设：
 
 - 一个 active arm；
-- 一个由 annotation mode 声明的 loop：pick-place 为
+- 一个由任务/输出合同声明的 loop：pick-place 为
   approach → close → transport → open，target-only 为 remove/approach → 首次稳定 close → hold；
-  target-only 后续是否 reopen 不影响准入；
+  target-only 后续是否 reopen 不影响准入。当前代码仍用 `AnnotationMode.TARGET_ONLY` 作为
+  兼容实现字段，但业务文档不把它当作与 `contact_press` 同层的语义 profile；
 - pick-place 需要一个 `target_0` 和一个 `receiver_0`；target-only 只需要 `target_0`，
   `receiver_0` 保留为全零的 canonical `not_applicable` channel；
 - 固定 `cam_high` 视角；
@@ -93,17 +94,20 @@ Parquet 的连续 `frame_index` 是所有 mask 和 URDF 几何计算的有效帧
 验收。动态发现不会修改原数据集。
 
 Target-only extract 可以在 task manifest 中声明 `task_kind`，运行时据此选择 target prompt
-profile，不按任务名猜测：
+profile，不按任务名猜测。`contact_press` 只适用于三个 `contact_action_site` task：
+`click_alarmclock`、`click_bell`、`press_stapler`；它不是第三种 annotation mode。
 
 | `task_kind` | runtime profile |
 | --- | --- |
 | `contact_action_site` | `contact_press` |
 | `single_movable_target`、`single_movable_target_conditional` | `grasp_manipulation` |
 | `articulated_action_site` 或字段缺失 | `grasp_manipulation` |
+| `door_open_action_site` | `door_open` |
 
 当前 `target_only_20_v2` 固定为 8+3：只有 `click_alarmclock`、`click_bell`、
-`press_stapler` 三类使用 `contact_press`；其余 8 类保持普通 target-only。articulated task
-保留独立 provenance，但在完成专门 A/B 前不自动切换 profile。
+`press_stapler` 三类使用 `contact_press`；其余 8 类保持普通 target-only。现有
+`articulated_action_site` 仍不自动切换；新的开门数据只有显式声明
+`door_open_action_site` 才选择 `door_open` prompt bundle。
 
 ### 2.4 Pipeline profile 与 DatasetBinding
 
@@ -116,19 +120,31 @@ profile，不按任务名猜测：
 PipelineProfile + DatasetBinding -> PipelineConfig -> DatasetPipeline
 ```
 
-这一步只在内存中完成，不会为每个 task 复制或写入 JSON/YAML。`EXTRACT_MANIFEST.json` 若
-存在，仍然是输入数据的 provenance/selection 合同；它不是算法配置。没有 manifest 的原生
-RoboTwin task 会根据标准目录自动发现 camera 和完整 episode；原生 collection 会扫描直接
-子目录。默认 mode 是 pick-place，target-only 必须显式传 `--target-only` 或
-`--mode target_only`。`--all-episodes` 可覆盖 manifest 中的固定 episode selection。
+profile 复用不等于任务语义兼容：当前严格 P&P 只覆盖审计确定的 10/50 个 task，target-only
+只覆盖 11 个单臂验证 slice；多对象、双臂、动态 receiver、工具接触和 articulated task 不能
+因为能绑定同一 profile 就直接批处理。
+
+这一步只在内存中完成，不会为每个 task 复制或写入 JSON/YAML。根级 `EXTRACT_MANIFEST.json`
+若存在，仍然是输入数据的 provenance/selection 合同；它不是算法配置。只有根 manifest 的
+task records 同质时才会从 records 推断 profile。没有根 manifest 的原生 RoboTwin task 会根据
+标准目录自动发现 camera 和完整 episode；原生 collection 会扫描直接子目录并默认按 pick-place
+处理，即使子目录各自有 manifest 也不会自动推断 collection contract。target-only 必须显式传
+`--target-only` 或兼容参数 `--mode target_only`。`--all-episodes` 可覆盖 manifest 中的固定
+episode selection。
 
 推荐调用：
 
 ```bash
 just process DATASET_OR_TASK [--task TASK_NAME] [--camera cam_high] [--all-episodes]
 just process DATASET_OR_TASK --target-only
-just process DATASET_OR_TASK --gripper-backend sam
+just process DATASET_OR_TASK --gripper-backend sam  # 仅适用于 pick-place；target-only 会拒绝
 ```
+
+完整根目录统计、混合 native root 的过滤行为、`contact_press` 与 `target_only` 的正交语义、
+root provenance 和配置类型校验建议见 [current-project-state.md](current-project-state.md)。
+下文的通用 path 示例优先使用已经按 task 拆分并带 manifest 的输入。多 task 原生根目录也可在
+显式 `--task` 时按 `meta/episodes.jsonl` 过滤；但原生 metadata 不携带 `task_kind`，生产批处理
+仍建议物化 task-level manifest。
 
 输入路径可以是 task（例如 `pick_place_20/move_pillbottle_pad`）或 collection（例如
 `pick_place_20`、`target_only_20_v2`）。collection 默认按 task 逐项运行；`--episode-ids`
@@ -555,13 +571,15 @@ just process --data-path DATASET_OR_COLLECTION --task TASK_NAME \
 
 path 模式使用 profile 确定 Qwen runtime/model 和基础 mode；manifest 替换 dataset root、task、
 camera 和 episode ids，并按 `task_kind` 选择 target profile。普通 target-only task 保留共享配置，
-`contact_action_site` 改用同一 runtime 类别的 contact-press 配置；articulated task 不切换。
+`contact_action_site` 使用 contact-press overlay；普通 `articulated_action_site` 不切换，显式
+`door_open_action_site` 使用 door-open overlay。
 bundled local profile 使用 18086，API profile 使用 Qwen API。特殊的
 `runtime_target_only_v2_qwen18087.yaml` 是单任务 pilot，不作为 mixed 11-task collection 配置。
 
-带 manifest 的 extract 必须声明与 mode 匹配的 `profile`。原生 RoboTwin layout 可以没有
+新的 task-level extract manifest 应声明与 mode 匹配的 `profile`；历史 legacy manifest 会由
+兼容适配器按显式 mode 补齐 profile，二者不要混为同一合同。原生 RoboTwin layout 可以没有
 manifest：程序会从标准目录发现完整 episode，默认按 pick-place；target-only 原生目录请传
-`--target-only` 或 `--mode target_only`。`--all-episodes` 会忽略 manifest 中的固定
+`--target-only` 或兼容参数 `--mode target_only`。`--all-episodes` 会忽略 manifest 中的固定
 `episode_indices`，改用实际发现的完整 episode。整个过程不会在数据根写入动态配置文件。
 
 live URDF：
@@ -573,7 +591,7 @@ just process DATASET_ROOT [OUTPUT_ROOT] \
   [--episode-ids ID...]
 ```
 
-frozen-source URDF：
+frozen-source URDF（单任务 path，或 collection 加 `--task`）：
 
 ```bash
 just process DATASET_ROOT OUTPUT_ROOT \
@@ -582,6 +600,10 @@ just process DATASET_ROOT OUTPUT_ROOT \
   [--urdf-path ROBOT.urdf] \
   --run-id RUN_ID
 ```
+
+共享 profile 会在运行时绑定单任务 identity，并与 frozen source 的 task、camera、annotation
+mode、target profile、prompt bundle 和 episode 合同交叉校验。未指定 `--task` 的 collection
+没有唯一 source 映射，因此会明确拒绝。
 
 URDF-only 参数：
 

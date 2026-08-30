@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -12,7 +12,18 @@ import av
 import numpy as np
 import pandas as pd
 
-from robotwin_annotation_v2.domain import TargetOnlyTaskKind
+from robotwin_annotation_v2.domain import (
+    TargetOnlyTaskKind,
+    TargetProfile,
+    target_profile_for_task_kind,
+)
+
+from .provenance import (
+    attach_profile_provenance,
+    prompt_bundle_from_manifest,
+    target_profile_from_manifest,
+    validate_profile_provenance,
+)
 
 CHUNK_PATTERN = re.compile(r"chunk-(\d{3})$")
 EPISODE_FILE_PATTERN = re.compile(r"episode_(\d+)\.parquet$")
@@ -136,6 +147,32 @@ def discover_episodes(
     )
 
 
+def select_manifest_episodes(
+    episodes: Sequence[DiscoveredEpisode],
+    *,
+    manifest: Mapping[str, Any] | None,
+    episode_ids: Sequence[int],
+) -> tuple[DiscoveredEpisode, ...]:
+    """Apply a bound manifest's episode scope while preserving discovery order.
+
+    A runtime request may process only a subset while its dynamic manifest
+    continues to describe the complete discovery result.  Narrow the manifest
+    only when dataset binding has explicitly carried an episode selection.
+    """
+
+    selection_keys = (
+        "regression_episode_ids",
+        "episode_indices",
+        "episode_ids",
+    )
+    if not isinstance(manifest, Mapping) or not any(
+        manifest.get(key) is not None for key in selection_keys
+    ):
+        return tuple(episodes)
+    selected = set(episode_ids)
+    return tuple(episode for episode in episodes if episode.episode_id in selected)
+
+
 def _parquet_frame_count(parquet: Path) -> int:
     frame = pd.read_parquet(parquet, columns=["frame_index"])
     if frame.empty:
@@ -168,6 +205,8 @@ def build_dynamic_manifest(
     episodes: Sequence[DiscoveredEpisode],
     measure_episode_fn: Callable[[DiscoveredEpisode], EpisodeMeasurement] | None = None,
     task_kind: TargetOnlyTaskKind | str | None = None,
+    target_profile: str | None = None,
+    prompt_bundle: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the manifest contract expected by RoboTwinDataset in memory."""
 
@@ -193,14 +232,131 @@ def build_dynamic_manifest(
             "sidecars/episode_{episode_id}.hdf5",
         ],
     }
+    declared_kind: TargetOnlyTaskKind | None = None
     if task_kind is not None:
         try:
-            manifest["task_kind"] = TargetOnlyTaskKind(task_kind).value
+            declared_kind = TargetOnlyTaskKind(task_kind)
         except (TypeError, ValueError) as exc:
             choices = ", ".join(item.value for item in TargetOnlyTaskKind)
             raise ValueError(
                 f"unsupported dynamic-manifest task_kind {task_kind!r}; choose {choices}"
             ) from exc
+        manifest["task_kind"] = declared_kind.value
+    # Preserve extract identity when discovery is run directly (the public
+    # DatasetPipeline path does not go through the legacy dataset_runtime
+    # wrapper).  The file is optional for native task directories and malformed
+    # provenance must not make otherwise discoverable inputs unusable.
+    resolved_root = root.expanduser().resolve()
+    extract_manifest = resolved_root / "EXTRACT_MANIFEST.json"
+    source_manifest: Mapping[str, Any] | None = None
+    if extract_manifest.is_file():
+        try:
+            import json
+
+            raw_source = json.loads(extract_manifest.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            raw_source = None
+        if isinstance(raw_source, Mapping):
+            source_manifest = raw_source
+            manifest["source_manifest_path"] = str(extract_manifest)
+            source_root = raw_source.get("dataset_root")
+            if isinstance(source_root, str) and source_root.strip():
+                manifest["source_dataset_root"] = source_root
+            source_bundle = prompt_bundle_from_manifest(raw_source, strict=True)
+            if source_bundle is not None and prompt_bundle is None:
+                prompt_bundle = source_bundle
+            source_profile = target_profile_from_manifest(raw_source)
+            if source_profile is not None:
+                if target_profile is not None:
+                    explicit_profile = target_profile_from_manifest(
+                        {"target_profile": target_profile}
+                    )
+                    if explicit_profile != source_profile:
+                        raise ValueError(
+                            "dynamic manifest target_profile conflicts with source metadata"
+                        )
+                else:
+                    target_profile = source_profile
+            if "task_kind" not in manifest and raw_source.get("task_kind") is not None:
+                try:
+                    source_kind = TargetOnlyTaskKind(raw_source["task_kind"])
+                except (TypeError, ValueError) as exc:
+                    choices = ", ".join(item.value for item in TargetOnlyTaskKind)
+                    raise ValueError(
+                        "unsupported source task_kind "
+                        f"{raw_source['task_kind']!r}; choose {choices}"
+                    ) from exc
+                manifest["task_kind"] = source_kind.value
+                declared_kind = source_kind
+            elif raw_source.get("task_kind") is not None:
+                try:
+                    source_kind = TargetOnlyTaskKind(raw_source["task_kind"])
+                except (TypeError, ValueError) as exc:
+                    choices = ", ".join(item.value for item in TargetOnlyTaskKind)
+                    raise ValueError(
+                        "unsupported source task_kind "
+                        f"{raw_source['task_kind']!r}; choose {choices}"
+                    ) from exc
+                if declared_kind is not None and source_kind is not declared_kind:
+                    raise ValueError(
+                        "dynamic manifest task_kind conflicts with source metadata"
+                    )
+    manifest.setdefault("source_dataset_root", str(resolved_root))
+    if source_manifest is not None:
+        manifest.setdefault("source_manifest_path", str(extract_manifest))
+    # A declared task kind is the authoritative profile selector.  Explicit
+    # profile metadata is retained for native/converted manifests that predate
+    # task_kind.
+    kind_profile = (
+        None
+        if declared_kind is None
+        else target_profile_for_task_kind(declared_kind).value
+    )
+    if manifest.get("task_kind") is not None and declared_kind is None:
+        try:
+            declared_kind = TargetOnlyTaskKind(manifest["task_kind"])
+        except (TypeError, ValueError) as exc:
+            choices = ", ".join(item.value for item in TargetOnlyTaskKind)
+            raise ValueError(
+                "unsupported dynamic-manifest task_kind "
+                f"{manifest['task_kind']!r}; choose {choices}"
+            ) from exc
+        kind_profile = target_profile_for_task_kind(declared_kind).value
+    if target_profile is None:
+        target_profile = kind_profile or TargetProfile.GRASP_MANIPULATION.value
+    else:
+        target_profile = target_profile_from_manifest(
+            {"target_profile": target_profile}
+        )
+    if kind_profile is not None and target_profile != kind_profile:
+        raise ValueError(
+            "dynamic manifest target_profile conflicts with task_kind: "
+            f"{target_profile!r} != {kind_profile!r}"
+        )
+    if prompt_bundle is not None:
+        bundle_profile = target_profile_from_manifest(prompt_bundle)
+        if bundle_profile is not None and bundle_profile != target_profile:
+            raise ValueError(
+                "dynamic manifest prompt_bundle target_profile conflicts with "
+                "task profile"
+            )
+        try:
+            validate_profile_provenance(
+                {
+                    "target_profile": target_profile,
+                    "prompt_bundle": prompt_bundle,
+                },
+                expected_profile=target_profile,
+                expected_prompt_bundle=prompt_bundle,
+                strict=True,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"invalid dynamic manifest prompt_bundle: {exc}") from exc
+    attach_profile_provenance(
+        manifest,
+        target_profile=target_profile,
+        prompt_bundle=prompt_bundle,
+    )
     return manifest
 
 
@@ -211,4 +367,5 @@ __all__ = [
     "DiscoveryResult",
     "build_dynamic_manifest",
     "discover_episodes",
+    "select_manifest_episodes",
 ]

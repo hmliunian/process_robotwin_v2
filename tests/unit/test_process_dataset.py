@@ -101,6 +101,9 @@ def _write_source_summary(
     *,
     task: str = "task",
     camera: str = "cam_high",
+    annotation_mode: str = "pick_place",
+    target_profile: str | None = None,
+    prompt_bundle: dict[str, Any] | None = None,
 ) -> None:
     source_run.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -109,6 +112,10 @@ def _write_source_summary(
         "dataset_root": str(dataset_root.resolve()),
         "task": task,
         "camera": camera,
+        "annotation_mode": annotation_mode,
+        "required_object_roles": (
+            ["target"] if annotation_mode == "target_only" else ["target", "receiver"]
+        ),
         "dynamic_manifest": {
             "format_version": "robotwin_dataset_manifest_dynamic_v1",
             "task": task,
@@ -125,6 +132,12 @@ def _write_source_summary(
         },
         "records": records,
     }
+    if target_profile is not None:
+        payload["target_profile"] = target_profile
+        payload["dynamic_manifest"]["target_profile"] = target_profile
+    if prompt_bundle is not None:
+        payload["prompt_bundle"] = prompt_bundle
+        payload["dynamic_manifest"]["prompt_bundle"] = prompt_bundle
     (source_run / "process_summary.json").write_text(
         json.dumps(payload),
         encoding="utf-8",
@@ -405,6 +418,66 @@ def test_dynamic_manifest_preserves_typed_task_kind(tmp_path: Path) -> None:
     assert manifest["task_kind"] == "contact_action_site"
 
 
+@pytest.mark.parametrize(
+    ("task_kind", "target_profile"),
+    (
+        (TargetOnlyTaskKind.CONTACT_ACTION_SITE, TargetProfile.DOOR_OPEN.value),
+        (TargetOnlyTaskKind.DOOR_OPEN_ACTION_SITE, TargetProfile.CONTACT_PRESS.value),
+    ),
+)
+def test_dynamic_manifest_rejects_task_kind_profile_conflict(
+    tmp_path: Path,
+    task_kind: TargetOnlyTaskKind,
+    target_profile: str,
+) -> None:
+    episode = DiscoveredEpisode(
+        episode_id=7,
+        parquet=tmp_path / "episode_000007.parquet",
+        video=tmp_path / "episode_000007.mp4",
+        sidecar=tmp_path / "episode_000007.hdf5",
+    )
+
+    with pytest.raises(ValueError, match="target_profile conflicts with task_kind"):
+        build_dynamic_manifest(
+            tmp_path,
+            task="task",
+            camera="cam_high",
+            episodes=(episode,),
+            measure_episode_fn=lambda _episode: (24, (240, 320), 1),
+            task_kind=task_kind,
+            target_profile=target_profile,
+        )
+
+
+def test_dynamic_manifest_rejects_source_task_kind_profile_conflict(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "EXTRACT_MANIFEST.json").write_text(
+        json.dumps(
+            {
+                "task_kind": "contact_action_site",
+                "target_profile": "door_open",
+            }
+        ),
+        encoding="utf-8",
+    )
+    episode = DiscoveredEpisode(
+        episode_id=7,
+        parquet=tmp_path / "episode_000007.parquet",
+        video=tmp_path / "episode_000007.mp4",
+        sidecar=tmp_path / "episode_000007.hdf5",
+    )
+
+    with pytest.raises(ValueError, match="target_profile conflicts with task_kind"):
+        build_dynamic_manifest(
+            tmp_path,
+            task="task",
+            camera="cam_high",
+            episodes=(episode,),
+            measure_episode_fn=lambda _episode: (24, (240, 320), 1),
+        )
+
+
 def test_runtime_dynamic_manifest_copies_extract_task_kind(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -433,6 +506,253 @@ def test_runtime_dynamic_manifest_copies_extract_task_kind(
     )
 
     assert manifest["task_kind"] == "articulated_action_site"
+
+
+def test_runtime_dynamic_manifest_preserves_source_provenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    extract = tmp_path / "EXTRACT_MANIFEST.json"
+    extract.write_text(
+        json.dumps(
+            {
+                "dataset_root": "/original/extract",
+                "task_kind": "articulated_action_site",
+            }
+        ),
+        encoding="utf-8",
+    )
+    episode = DiscoveredEpisode(
+        episode_id=7,
+        parquet=tmp_path / "episode_000007.parquet",
+        video=tmp_path / "episode_000007.mp4",
+        sidecar=tmp_path / "episode_000007.hdf5",
+    )
+    monkeypatch.setattr(
+        process_module,
+        "_measure_episode",
+        lambda _episode: (24, (240, 320), 1),
+    )
+
+    manifest = process_module.build_dynamic_manifest(
+        tmp_path,
+        task="task",
+        camera="cam_high",
+        episodes=(episode,),
+    )
+
+    assert manifest["source_dataset_root"] == "/original/extract"
+    assert manifest["source_manifest_path"] == str(extract.resolve())
+
+
+def test_runtime_dynamic_manifest_inherits_bound_semantic_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A child without an extract manifest keeps its collection profile."""
+
+    episode = DiscoveredEpisode(
+        episode_id=2200,
+        parquet=tmp_path / "episode_002200.parquet",
+        video=tmp_path / "episode_002200.mp4",
+        sidecar=tmp_path / "episode_002200.hdf5",
+    )
+    monkeypatch.setattr(
+        process_module,
+        "_measure_episode",
+        lambda _episode: (24, (240, 320), 1),
+    )
+
+    manifest = process_module.build_dynamic_manifest(
+        tmp_path,
+        task="click_alarmclock",
+        camera="cam_high",
+        episodes=(episode,),
+        bound_manifest_data={
+            "profile": "target_only",
+            "target_profile": "contact_press",
+            "task_kind": "contact_action_site",
+        },
+    )
+
+    assert manifest["target_profile"] == "contact_press"
+    assert manifest["task_kind"] == "contact_action_site"
+
+
+def test_runtime_dynamic_manifest_rejects_child_workflow_profile_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "EXTRACT_MANIFEST.json").write_text(
+        json.dumps({"profile": "target_only"}),
+        encoding="utf-8",
+    )
+    episode = DiscoveredEpisode(
+        episode_id=2200,
+        parquet=tmp_path / "episode_002200.parquet",
+        video=tmp_path / "episode_002200.mp4",
+        sidecar=tmp_path / "episode_002200.hdf5",
+    )
+    monkeypatch.setattr(
+        process_module,
+        "_measure_episode",
+        lambda _episode: (24, (240, 320), 1),
+    )
+
+    with pytest.raises(ValueError, match="workflow profile overrides"):
+        process_module.build_dynamic_manifest(
+            tmp_path,
+            task="click_alarmclock",
+            camera="cam_high",
+            episodes=(episode,),
+            bound_manifest_data={
+                "profile": "contact_press",
+                "target_profile": "contact_press",
+                "task_kind": "contact_action_site",
+            },
+        )
+
+
+def test_sam_dynamic_manifest_uses_bound_task_scope_but_keeps_legacy_subset_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dataset = tmp_path / "mixed-root"
+    _touch_episode(dataset, 0)
+    _touch_episode(dataset, 1000)
+    measured: list[int] = []
+
+    def measure(episode: DiscoveredEpisode) -> tuple[int, tuple[int, int], int]:
+        measured.append(episode.episode_id)
+        return 6, (2, 3), 0
+
+    monkeypatch.setattr(process_module, "_measure_episode", measure)
+    runtime = SimpleNamespace(
+        qwen_client_factory=lambda **_kwargs: SimpleNamespace(
+            health=lambda: {"status": "ok"}
+        ),
+        backend_factory=lambda **_kwargs: pytest.fail("completed episodes need no backend"),
+        execution_errors=(RuntimeError,),
+        emit_gripper_result=lambda *_args: True,
+        emit_sam_result=lambda *_args: True,
+        execute_gripper_episode=lambda *_args: object(),
+        execute_sam_episode=lambda *_args: object(),
+        fatal_cuda_error=lambda _exc: False,
+        gripper_episode_complete=lambda *_args: True,
+        sam_episode_complete=lambda *_args: True,
+        run_qwen=lambda *_args: None,
+    )
+    monkeypatch.setattr(process_module, "_load_sam_runtime", lambda: runtime)
+    base = process_module.load_config(Path("configs/pilot_move_pillbottle_pad.yaml"))
+    bound = replace(
+        base,
+        dataset=replace(
+            base.dataset,
+            smoke_episode_ids=(1000,),
+            regression_episode_ids=(1000,),
+            manifest_data={
+                "profile": "pick_place",
+                "task": "beta",
+                "camera": "cam_high",
+                "smoke_episode_ids": [1000],
+                "regression_episode_ids": [1000],
+            },
+        ),
+    )
+
+    scoped = process_module.process_dataset(
+        bound,
+        dataset_root=dataset,
+        task="beta",
+        camera="cam_high",
+        output_root=tmp_path / "scoped-output",
+        run_id="scoped",
+        episode_ids=(1000,),
+        skip_render=True,
+    )
+    legacy = process_module.process_dataset(
+        base,
+        dataset_root=dataset,
+        task="beta",
+        camera="cam_high",
+        output_root=tmp_path / "legacy-output",
+        run_id="legacy",
+        episode_ids=(1000,),
+        skip_render=True,
+    )
+
+    assert scoped["discovered_episode_ids"] == [1000]
+    assert scoped["dynamic_manifest"]["regression_episode_ids"] == [1000]
+    assert scoped["dynamic_manifest"]["smoke_episode_ids"] == [1000]
+    assert legacy["dynamic_manifest"]["regression_episode_ids"] == [0, 1000]
+    assert legacy["discovered_episode_ids"] == [0, 1000]
+    assert legacy["requested_episode_ids"] == [1000]
+    assert measured == [1000, 0]
+
+    measured.clear()
+    scoped_implicit = process_module.process_dataset(
+        bound,
+        dataset_root=dataset,
+        task="beta",
+        camera="cam_high",
+        output_root=tmp_path / "scoped-implicit-output",
+        run_id="scoped-implicit",
+        episode_ids=None,
+        skip_render=True,
+    )
+    legacy_implicit = process_module.process_dataset(
+        base,
+        dataset_root=dataset,
+        task="beta",
+        camera="cam_high",
+        output_root=tmp_path / "legacy-implicit-output",
+        run_id="legacy-implicit",
+        episode_ids=None,
+        skip_render=True,
+    )
+
+    assert scoped_implicit["requested_episode_ids"] == [1000]
+    assert scoped_implicit["discovered_episode_ids"] == [1000]
+    assert legacy_implicit["requested_episode_ids"] == [0, 1000]
+    assert legacy_implicit["discovered_episode_ids"] == [0, 1000]
+    assert measured == [1000, 0]
+
+
+def test_sam_dynamic_manifest_rejects_config_target_profile_conflict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dataset = tmp_path / "dataset"
+    _touch_episode(dataset, 7)
+    monkeypatch.setattr(
+        process_module,
+        "_measure_episode",
+        lambda _episode: (6, (2, 3), 0),
+    )
+    runtime = SimpleNamespace()
+    monkeypatch.setattr(process_module, "_load_sam_runtime", lambda: runtime)
+    canonical_builder = process_module.build_dynamic_manifest
+
+    def conflicting_builder(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        manifest = canonical_builder(*args, **kwargs)
+        manifest["target_profile"] = "contact_press"
+        return manifest
+
+    monkeypatch.setattr(process_module, "build_dynamic_manifest", conflicting_builder)
+
+    with pytest.raises(
+        ValueError,
+        match="dynamic manifest target_profile differs from config",
+    ):
+        process_module.process_dataset(
+            process_module.load_config(Path("configs/pilot_move_pillbottle_pad.yaml")),
+            dataset_root=dataset,
+            task="task",
+            camera="cam_high",
+            output_root=tmp_path / "output",
+            episode_ids=(7,),
+            skip_render=True,
+        )
 
 
 def test_process_dataset_reports_sam_stages_without_embedded_json(
@@ -923,6 +1243,66 @@ def test_infer_path_mode_uses_homogeneous_collection_records_without_top_level_p
     assert process_module._infer_path_mode(tmp_path) == "target_only"
 
 
+@pytest.mark.parametrize(
+    ("manifest", "expected"),
+    (
+        ({"task_kind": "single_movable_target"}, "target_only"),
+        ({"task_kind": "articulated_action_site"}, "target_only"),
+        ({"task_kind": "contact_action_site"}, "contact_press"),
+        ({"target_profile": "contact_press"}, "contact_press"),
+        ({"target_profile": "door_open"}, "door_open"),
+    ),
+)
+def test_infer_path_mode_uses_semantic_fields_without_workflow_profile(
+    tmp_path: Path,
+    manifest: dict[str, str],
+    expected: str,
+) -> None:
+    (tmp_path / "EXTRACT_MANIFEST.json").write_text(
+        json.dumps(manifest),
+        encoding="utf-8",
+    )
+
+    assert process_module._infer_path_mode(tmp_path) == expected
+
+
+def test_infer_path_mode_keeps_mixed_target_only_semantics_on_shared_workflow(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "EXTRACT_MANIFEST.json").write_text(
+        json.dumps(
+            {
+                "datasets": [
+                    {"task": "alpha", "task_kind": "contact_action_site"},
+                    {"task": "beta", "target_profile": "door_open"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert process_module._infer_path_mode(tmp_path) == "target_only"
+
+
+def test_infer_path_mode_uses_collection_task_kind_without_record_profiles(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "EXTRACT_MANIFEST.json").write_text(
+        json.dumps(
+            {
+                "datasets": [
+                    {"task": "alpha"},
+                    {"task": "beta"},
+                ],
+                "task_kind": "single_movable_target",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert process_module._infer_path_mode(tmp_path) == "target_only"
+
+
 def test_path_loader_does_not_fallback_malformed_shared_profile(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1032,6 +1412,136 @@ def test_contact_press_profile_uses_action_site_prompts() -> None:
     assert config.mask.qc_bbox_prompt_template.name == (
         "target_only_contact_press_bbox_localization.txt"
     )
+
+
+@pytest.mark.parametrize(
+    ("target_profile", "expected_overlay"),
+    (
+        (TargetProfile.GRASP_MANIPULATION, "origin"),
+        (TargetProfile.CONTACT_PRESS, "contact_press"),
+        (TargetProfile.DOOR_OPEN, "door_open"),
+    ),
+)
+def test_target_only_profile_routing_selects_semantic_overlay(
+    target_profile: TargetProfile,
+    expected_overlay: str,
+) -> None:
+    target = SimpleNamespace(task="task", profile=target_profile)
+
+    assert process_module._target_profile_overlay_key(
+        target,
+        requested_path_mode="target_only",
+        mode=process_module.AnnotationMode.TARGET_ONLY,
+    ) == expected_overlay
+
+
+def test_target_only_profile_routing_rejects_contact_alias_for_other_task() -> None:
+    target = SimpleNamespace(task="adjust_bottle", profile=TargetProfile.GRASP_MANIPULATION)
+
+    with pytest.raises(ValueError, match="requires contact_action_site task metadata"):
+        process_module._target_profile_overlay_key(
+            target,
+            requested_path_mode="contact_press",
+            mode=process_module.AnnotationMode.TARGET_ONLY,
+        )
+
+
+def test_legacy_door_open_config_fails_closed_instead_of_generic_target_only(
+    tmp_path: Path,
+) -> None:
+    profile = _cli_config(
+        tmp_path,
+        mode=process_module.AnnotationMode.TARGET_ONLY,
+        runtime="api",
+    )
+    target = SimpleNamespace(task="open_door", profile=TargetProfile.DOOR_OPEN)
+
+    with pytest.raises(ValueError, match="shared process profile.*modes[.]door_open"):
+        process_module._path_profile_config(profile, target)
+
+
+def test_legacy_semantic_config_cannot_fallback_to_origin_for_other_target(
+    tmp_path: Path,
+) -> None:
+    profile = _cli_config(
+        tmp_path,
+        mode=process_module.AnnotationMode.TARGET_ONLY,
+        runtime="api",
+    )
+    profile.annotation = AnnotationConfig(
+        process_module.AnnotationMode.TARGET_ONLY,
+        TargetProfile.CONTACT_PRESS,
+    )
+    target = SimpleNamespace(task="adjust_bottle", profile=TargetProfile.GRASP_MANIPULATION)
+
+    with pytest.raises(ValueError, match="declares contact_press"):
+        process_module._path_profile_config(profile, target)
+
+
+def test_shared_profile_path_dispatch_loads_door_open_overlay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = SimpleNamespace(
+        root=tmp_path / "open_door",
+        task="open_door",
+        camera="cam_high",
+        episode_ids=(7,),
+        profile=TargetProfile.DOOR_OPEN,
+        task_kind=TargetOnlyTaskKind.DOOR_OPEN_ACTION_SITE,
+        manifest_data={
+            "profile": "target_only",
+            "task": "open_door",
+            "camera": "cam_high",
+            "task_kind": "door_open_action_site",
+            "episode_indices": [7],
+        },
+        manifest_path=None,
+    )
+    resolved = SimpleNamespace(root=target.root, targets=(target,), is_collection=False)
+    monkeypatch.setattr(
+        process_module,
+        "resolve_dataset_input",
+        lambda *_args, **_kwargs: resolved,
+    )
+
+    real_load_profile = process_module.load_profile
+    loaded_modes: list[str] = []
+
+    def recording_load_profile(path: Path, *, mode: str | None = None, **kwargs: Any) -> Any:
+        del kwargs
+        loaded_modes.append(str(mode))
+        return real_load_profile(path, mode=mode)
+
+    monkeypatch.setattr(process_module, "load_profile", recording_load_profile)
+    calls: dict[str, Any] = {}
+
+    def fake_live(**kwargs: Any) -> dict[str, Any]:
+        calls.update(kwargs)
+        return {"passed": True}
+
+    monkeypatch.setattr(process_module, "process_live_urdf_pipeline", fake_live)
+    args = process_module._parse_args(
+        [
+            "--data-path",
+            str(target.root),
+            "--target-only",
+            "--config",
+            str(process_module.DEFAULT_PROFILE_CONFIG),
+            "--episode-ids",
+            "7",
+            "--skip-render",
+        ]
+    )
+
+    summary = process_module._run_from_args(
+        args,
+        process_module.ProcessUI(emit_json_summary=False, verbose=False),
+    )
+
+    assert summary["passed"] is True
+    assert loaded_modes == ["target_only", "door_open"]
+    assert calls["pipeline_config"].annotation.profile is TargetProfile.DOOR_OPEN
 
 
 def test_path_mode_does_not_silently_replace_selected_config(
@@ -1168,6 +1678,126 @@ def test_path_only_single_task_dispatches_from_manifest(
     assert calls["dataset_root"] == dataset
     assert calls["task"] == "adjust_bottle"
     assert calls["episode_ids"] == (0,)
+
+
+def test_path_only_native_full_root_honors_explicit_episode_ids(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dataset = tmp_path / "full-root"
+    target = SimpleNamespace(
+        root=dataset,
+        task="beta",
+        camera="cam_high",
+        episode_ids=(1000, 1001),
+        profile=TargetProfile.GRASP_MANIPULATION,
+        discovered_all_episodes=True,
+        manifest_data={
+            "profile": "pick_place",
+            "task": "beta",
+            "camera": "cam_high",
+            "episode_indices": [1000, 1001],
+        },
+        manifest_path=None,
+    )
+    monkeypatch.setattr(
+        process_module,
+        "resolve_dataset_input",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            root=dataset,
+            targets=(target,),
+            is_collection=False,
+        ),
+    )
+    monkeypatch.setattr(
+        process_module,
+        "discover_task_episode_ids",
+        lambda *_args, **_kwargs: pytest.fail(
+            "explicit --episode-ids must not be replaced by native discovery"
+        ),
+    )
+    config = _cli_config(tmp_path)
+    monkeypatch.setattr(process_module, "load_config", lambda _path: config)
+    calls: dict[str, Any] = {}
+
+    def fake_live(**kwargs: Any) -> dict[str, Any]:
+        calls.update(kwargs)
+        return {"passed": True}
+
+    monkeypatch.setattr(process_module, "process_live_urdf_pipeline", fake_live)
+    args = process_module._parse_args(
+        [
+            "--data-path",
+            str(dataset),
+            "--pick-place",
+            "--config",
+            str(config.config_path),
+            "--task",
+            "beta",
+            "--episode-ids",
+            "1001",
+            "--skip-render",
+        ]
+    )
+
+    summary = process_module._run_from_args(
+        args,
+        process_module.ProcessUI(emit_json_summary=False, verbose=False),
+    )
+
+    assert summary["passed"] is True
+    assert calls["episode_ids"] == (1001,)
+
+
+def test_path_only_native_full_root_rejects_episode_from_another_task(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dataset = tmp_path / "full-root"
+    target = SimpleNamespace(
+        root=dataset,
+        task="beta",
+        camera="cam_high",
+        episode_ids=(1000,),
+        profile=TargetProfile.GRASP_MANIPULATION,
+        discovered_all_episodes=True,
+    )
+    monkeypatch.setattr(
+        process_module,
+        "resolve_dataset_input",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            root=dataset,
+            targets=(target,),
+            is_collection=False,
+        ),
+    )
+    monkeypatch.setattr(
+        process_module,
+        "discover_task_episode_ids",
+        lambda *_args, **_kwargs: (1000, 1001),
+    )
+    config = _cli_config(tmp_path)
+    monkeypatch.setattr(process_module, "load_config", lambda _path: config)
+    args = process_module._parse_args(
+        [
+            "--data-path",
+            str(dataset),
+            "--pick-place",
+            "--config",
+            str(config.config_path),
+            "--task",
+            "beta",
+            "--episode-ids",
+            "0",
+            "--skip-render",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="do not belong to task 'beta': 0"):
+        process_module._run_from_args(
+            args,
+            process_module.ProcessUI(emit_json_summary=False, verbose=False),
+        )
 
 
 def test_path_only_collection_runs_each_task_and_writes_summary(
@@ -1540,6 +2170,65 @@ def test_live_urdf_pipeline_runs_target_receiver_source_before_derived_urdf(
     assert urdf_calls["skip_render"] is True
     assert urdf_calls["source_release"] == release_report
     assert summary["gripper_backend"] == "urdf"
+
+
+def test_live_urdf_pipeline_scopes_mixed_root_to_bound_task(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dataset = tmp_path / "mixed-root"
+    _touch_episode(dataset, 7)
+    _touch_episode(dataset, 1000)
+    base = process_module.load_config(Path("configs/pilot_move_pillbottle_pad.yaml"))
+    config = replace(
+        base,
+        dataset=replace(
+            base.dataset,
+            smoke_episode_ids=(1000,),
+            regression_episode_ids=(1000,),
+            manifest_data={
+                "profile": "pick_place",
+                "task": "beta",
+                "camera": "cam_high",
+                "regression_episode_ids": [1000],
+            },
+        ),
+    )
+    source_calls: dict[str, Any] = {}
+    canonical_calls: dict[str, Any] = {}
+
+    def fake_source(_config: Any, **kwargs: Any) -> dict[str, Any]:
+        source_calls.update(kwargs)
+        (Path(kwargs["output_root"]) / str(kwargs["run_id"])).mkdir(parents=True)
+        return {"passed": True, "records": [{"episode": 1000, "status": "completed"}]}
+
+    def fake_canonical(**kwargs: Any) -> dict[str, Any]:
+        canonical_calls.update(kwargs)
+        return {"passed": True, "gripper_backend": "urdf"}
+
+    monkeypatch.setattr(process_module, "process_dataset", fake_source)
+    monkeypatch.setattr(
+        process_module,
+        "_release_sam_cuda_cache",
+        lambda _gpus: {"gc_collected": 0, "cuda_available": False, "gpus": []},
+    )
+    monkeypatch.setattr(process_module, "process_urdf_source_run", fake_canonical)
+
+    process_module.process_live_urdf_pipeline(
+        pipeline_config=config,
+        dataset_root=dataset,
+        task="beta",
+        camera="cam_high",
+        output_root=tmp_path / "output",
+        urdf_path=process_module.DEFAULT_BUNDLED_URDF_PATH,
+        run_id="mixed-root-live",
+        skip_render=True,
+        backend_factory=lambda **_kwargs: object(),
+    )
+
+    assert source_calls["episode_ids"] == (1000,)
+    assert canonical_calls["episode_ids"] is None
+    assert canonical_calls["pipeline_episode_ids"] == (1000,)
 
 
 def test_live_urdf_pipeline_streams_by_default_and_reuses_backend_result(
@@ -2049,6 +2738,53 @@ def test_process_urdf_source_run_rejects_unsafe_run_id_before_output_paths(
     assert not output_root.exists()
 
 
+def test_frozen_source_rejects_target_profile_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dataset = tmp_path / "dataset"
+    source = tmp_path / "source-run"
+    _touch_episode(dataset, 7)
+    _write_source_summary(
+        source,
+        dataset,
+        [{"episode": 7, "status": "completed"}],
+        annotation_mode="target_only",
+        target_profile="grasp_manipulation",
+    )
+    selection = SimpleNamespace(
+        episode_ids=(7,),
+        excluded=(),
+        source_summary={},
+        source_lineages={},
+        annotation_mode=process_module.AnnotationMode.TARGET_ONLY,
+        required_object_roles=(),
+        target_profile="grasp_manipulation",
+        prompt_bundle=None,
+    )
+    monkeypatch.setattr(
+        process_module,
+        "select_urdf_source_episodes",
+        lambda *_args, **_kwargs: selection,
+    )
+    config = process_module.load_config(
+        Path("configs/process_contact_press_qwen38_api.yaml")
+    )
+
+    with pytest.raises(ValueError, match="target profile differs"):
+        process_module.process_urdf_source_run(
+            pipeline_config=config,
+            dataset_root=dataset,
+            source_run_dir=source,
+            task="task",
+            camera="cam_high",
+            output_root=tmp_path / "output",
+            urdf_path=tmp_path / "aloha.urdf",
+            episode_ids=(7,),
+            dry_run=True,
+        )
+
+
 def test_urdf_run_ownership_rejects_existing_non_resume_and_foreign_resume(
     tmp_path: Path,
 ) -> None:
@@ -2300,6 +3036,70 @@ def test_process_urdf_source_run_records_incomplete_dataset_inputs(
     assert explicit["backend"]["dataset_excluded"] == []
     assert explicit["backend"]["source_excluded"] == []
     assert explicit["backend"]["source_selection_complete"] is True
+
+
+def test_frozen_urdf_scopes_mixed_root_discovery_to_bound_task(
+    tmp_path: Path,
+) -> None:
+    dataset = tmp_path / "mixed-root"
+    source = tmp_path / "source-run"
+    _touch_episode(dataset, 7, depth=False)
+    _touch_episode(dataset, 1000)
+    _write_source_summary(
+        source,
+        dataset,
+        [{"episode": 1000, "status": "completed"}],
+        task="beta",
+    )
+    _write_source_episode(source, 1000, task="beta")
+    base = process_module.load_config(Path("configs/pilot_move_pillbottle_pad.yaml"))
+    bound = replace(
+        base,
+        dataset=replace(
+            base.dataset,
+            smoke_episode_ids=(1000,),
+            regression_episode_ids=(1000,),
+            manifest_data={
+                "profile": "pick_place",
+                "task": "beta",
+                "camera": "cam_high",
+                "regression_episode_ids": [1000],
+            },
+        ),
+    )
+
+    def fake_experiment(config: Any) -> dict[str, Any]:
+        return {"dry_run": True, "episode_count": len(config.episode_ids)}
+
+    common = {
+        "dataset_root": dataset,
+        "source_run_dir": source,
+        "task": "beta",
+        "camera": "cam_high",
+        "output_root": tmp_path / "output",
+        "urdf_path": tmp_path / "aloha.urdf",
+        "dry_run": True,
+        "experiment_runner": fake_experiment,
+    }
+    scoped = process_module.process_urdf_source_run(
+        **common,
+        pipeline_config=bound,
+        run_id="scoped",
+    )
+    legacy = process_module.process_urdf_source_run(
+        **common,
+        pipeline_config=base,
+        run_id="legacy",
+    )
+
+    assert scoped["discovered_episode_ids"] == [1000]
+    assert scoped["requested_episode_ids"] == [1000]
+    assert scoped["backend"]["selected_episode_ids"] == [1000]
+    assert scoped["backend"]["dataset_excluded"] == []
+    assert [record["episode"] for record in scoped["records"]] == [1000]
+    assert legacy["discovered_episode_ids"] == [7, 1000]
+    assert legacy["requested_episode_ids"] == [7, 1000]
+    assert [record["episode"] for record in legacy["backend"]["dataset_excluded"]] == [7]
 
 
 def test_process_urdf_source_run_records_shared_render_failure(

@@ -15,6 +15,11 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from robotwin_annotation_v2.adapters.artifact_store import ArtifactStore
+from robotwin_annotation_v2.application.provenance import (
+    prompt_bundle_for_config,
+    target_profile_from_config,
+    validate_profile_provenance_pair,
+)
 from robotwin_annotation_v2.config import PipelineConfig
 from robotwin_annotation_v2.domain import AnnotationMode, ObjectRole
 from robotwin_annotation_v2.models import EpisodeRecord, ProcessSummary
@@ -24,10 +29,37 @@ from robotwin_annotation_v2.urdf_gripper_publisher import (
     UrdfGripperPublishError,
 )
 
-from .discovery import DiscoveryResult
+from .discovery import DiscoveryResult, select_manifest_episodes
 
 DEFAULT_URDF_DEPTH_TOLERANCE_MM = 8.0
 DEFAULT_URDF_PIPELINE_BUFFER_SIZE = 2
+
+
+def _select_manifest_discovery(
+    discovery: DiscoveryResult,
+    pipeline_config: PipelineConfig | None,
+) -> DiscoveryResult:
+    """Scope mixed-root discovery only when dataset binding declares episodes."""
+
+    if pipeline_config is None:
+        return discovery
+    manifest = getattr(pipeline_config.dataset, "manifest_data", None)
+    episode_ids = getattr(pipeline_config.dataset, "regression_episode_ids", ())
+    episodes = select_manifest_episodes(
+        discovery.episodes,
+        manifest=manifest,
+        episode_ids=episode_ids,
+    )
+    selection_keys = ("regression_episode_ids", "episode_indices", "episode_ids")
+    if not isinstance(manifest, Mapping) or not any(
+        manifest.get(key) is not None for key in selection_keys
+    ):
+        return DiscoveryResult(episodes, discovery.skipped)
+    selected = set(episode_ids)
+    return DiscoveryResult(
+        episodes,
+        tuple(record for record in discovery.skipped if int(record["episode"]) in selected),
+    )
 
 
 class UrdfRunConfig(Protocol):
@@ -50,6 +82,8 @@ class UrdfSourceSelection:
     source_lineages: Mapping[int, Mapping[str, Any]]
     annotation_mode: AnnotationMode
     required_object_roles: tuple[ObjectRole, ...]
+    target_profile: str | None = None
+    prompt_bundle: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -143,8 +177,14 @@ class UrdfWorkflow:
 
         runtime = self.hooks.runtime_loader()
 
-        public_discovery = self.hooks.discover_episodes(dataset_root, camera=camera)
-        discovery = self.hooks.discover_episodes(dataset_root, camera=camera, require_depth=True)
+        public_discovery = _select_manifest_discovery(
+            self.hooks.discover_episodes(dataset_root, camera=camera),
+            pipeline_config,
+        )
+        discovery = _select_manifest_discovery(
+            self.hooks.discover_episodes(dataset_root, camera=camera, require_depth=True),
+            pipeline_config,
+        )
         dataset_excluded: list[dict[str, Any]] = [
             {
                 "episode": int(record["episode"]),
@@ -216,6 +256,43 @@ class UrdfWorkflow:
                 "pipeline config annotation mode differs from the frozen source run: "
                 f"{pipeline_config.annotation.mode.value} != {selection.annotation_mode.value}"
             )
+        if pipeline_config is not None:
+            config_profile = target_profile_from_config(pipeline_config)
+            if (
+                config_profile is not None
+                and selection.target_profile is not None
+                and config_profile != selection.target_profile
+            ):
+                raise ValueError(
+                    "pipeline config target profile differs from the frozen source run: "
+                    f"{config_profile} != {selection.target_profile}"
+                )
+            if selection.prompt_bundle is not None:
+                config_bundle = prompt_bundle_for_config(
+                    pipeline_config,
+                    target_profile=config_profile or selection.target_profile,
+                )
+                if config_bundle is None:
+                    raise ValueError(
+                        "pipeline config has no prompt bundle for the frozen source run"
+                    )
+                try:
+                    validate_profile_provenance_pair(
+                        {
+                            "target_profile": config_profile,
+                            "prompt_bundle": config_bundle,
+                        },
+                        {
+                            "target_profile": selection.target_profile,
+                            "prompt_bundle": selection.prompt_bundle,
+                        },
+                        label="pipeline config and frozen source prompt provenance",
+                    )
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        "pipeline config prompt bundle differs from the frozen source run: "
+                        f"{exc}"
+                    ) from exc
         all_excluded = sorted(
             [*relevant_dataset_excluded, *selection.excluded],
             key=lambda record: int(record["episode"]),
@@ -308,6 +385,10 @@ class UrdfWorkflow:
                 "source process summary has no dynamic_manifest object"
             )
         dynamic_manifest = dict(source_dynamic_manifest)
+        if selection.target_profile is not None:
+            dynamic_manifest.setdefault("target_profile", selection.target_profile)
+        if selection.prompt_bundle is not None:
+            dynamic_manifest.setdefault("prompt_bundle", dict(selection.prompt_bundle))
         source_annotation_mode = selection.annotation_mode.value
         source_required_roles = [role.value for role in selection.required_object_roles]
         records: list[dict[str, Any]] = list(public_discovery.skipped)
@@ -833,6 +914,10 @@ class UrdfWorkflow:
             },
             passed=passed,
             plan=result if dry_run else None,
+            target_profile=selection.target_profile,
+            prompt_bundle=(
+                None if selection.prompt_bundle is None else dict(selection.prompt_bundle)
+            ),
         )
         if dry_run:
             return summary_model.to_json()
@@ -888,10 +973,13 @@ class UrdfWorkflow:
         if source_run_dir.exists():
             raise FileExistsError(f"live object-source run already exists: {source_run_dir}")
 
-        depth_discovery = self.hooks.discover_episodes(
-            resolved_dataset_root,
-            camera=camera,
-            require_depth=True,
+        depth_discovery = _select_manifest_discovery(
+            self.hooks.discover_episodes(
+                resolved_dataset_root,
+                camera=camera,
+                require_depth=True,
+            ),
+            pipeline_config,
         )
         depth_eligible_ids = depth_discovery.episode_ids
         if not depth_eligible_ids:

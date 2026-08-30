@@ -1,11 +1,19 @@
 # 文档总览
 
-> 更新时间：2026-08-25。本文是 `docs/` 的入口；当前实现契约以
+> 更新时间：2026-08-30。本文是 `docs/` 的入口；当前实现契约以
 > [architecture.md](architecture.md) 为准，实验数字以
 > [experiments.md](experiments.md) 为准。
 
-本项目为 RoboTwin 单 active-arm、单 loop episode 生成 visible-only mask，正式支持
-pick-place 与 target-only 两种 annotation mode：
+当前分支的数据边界、统一配置实际行为和已知入口限制，请先看
+[current-project-state.md](current-project-state.md)。该文档以 2026-08-30 的代码与实测目录为
+准，专门标出了历史文档仍可能沿用的命令和语义命名。
+
+本项目为 RoboTwin 单 active-arm、单 loop episode 生成 visible-only mask。当前代码为了兼容
+既有 loop/artifact 合同，仍用 `AnnotationMode.PICK_PLACE` 和
+`AnnotationMode.TARGET_ONLY` 表示两种 pipeline contract；业务分类上，`target-only` 是只要求
+target 语义角色的任务/输出合同（最终仍保留固定四通道），不是与 `contact_press` 并列的语义
+profile。`contact_press` 仅路由
+`click_alarmclock`、`click_bell`、`press_stapler` 三个任务：
 
 ```text
 mode-specific state loop
@@ -66,6 +74,10 @@ just process DATASET_ROOT [OUTPUT_ROOT] --gripper-backend sam
 会修改输入数据目录。旧的 task-bound `pilot_*.yaml` 仍可通过 `--config` 使用，主要用于分
 阶段调试和固定回归。
 
+这里的“可复用”只表示参数可以复用，不表示语义覆盖扩大到 50 个 task：当前严格 P&P 的直接
+兼容集是 10 个 task，target-only 是 11 个单臂验证 slice；多对象、双臂、动态 receiver、工具
+接触和 articulated 任务仍需各自的 task contract。
+
 支持单任务目录和 collection：
 
 ```bash
@@ -77,18 +89,28 @@ just process /DATA/disk8/xuran/add_mask_robotwin/dataset/pick_place_20/move_pill
 just process /DATA/disk8/xuran/add_mask_robotwin/dataset/pick_place_20 \
   --task move_pillbottle_pad --gripper-backend sam
 
-# target-only collection（根 EXTRACT_MANIFEST.json 自动推断 mode）
-just process /DATA/disk8/xuran/add_mask_robotwin/dataset/target_only_20_v2
+# target-only collection（根 EXTRACT_MANIFEST.json 自动选择 target contract；显式 camera 更稳妥）
+just process /DATA/disk8/xuran/add_mask_robotwin/dataset/target_only_20_v2 \
+  --camera cam_high
 ```
 
-带 `EXTRACT_MANIFEST.json` 的输入会自动读取 `profile`、task、camera 和 episode selection；
-原生 RoboTwin layout 没有 manifest 时，程序会扫描标准 `data/`、`videos/`、`sidecars/`、
-`meta/` 目录，并默认按 pick-place 处理。原生 target-only 需要显式传
-`--target-only`（或 `--mode target_only`）。`--all-episodes` 会忽略 manifest 中记录的固定
+带根级 `EXTRACT_MANIFEST.json` 的输入会自动读取 `profile`、task、camera 和 episode selection；
+只有根 manifest 中的 task records 同质时才会从 records 推断 profile。原生 RoboTwin layout
+没有根 manifest 时，程序会扫描标准 `data/`、`videos/`、`sidecars/`、`meta/` 目录，并默认按
+pick-place 处理，即使子目录各自有 manifest 也不会自动推断 collection contract。原生 target-only 需要显式传
+`--target-only`（或兼容参数 `--mode target_only`）。`--all-episodes` 会忽略 manifest 中记录的固定
 子集，重新发现并处理所选 task 下全部完整 episode。collection 还可用 `--task NAME` 缩小范围。
 
 若 collection 的 task manifest 带有 `task_kind=contact_action_site`，运行时会自动选择同一
-runtime 下的 `contact_press` semantic/QC profile；不会依据 task 名称硬编码路由。
+runtime 下的 `contact_press` semantic/QC profile；当前这一路由只适用于上述三个 contact task，
+不会依据 task 名称硬编码路由。普通 `articulated_action_site` 继续使用 origin/
+`grasp_manipulation`；未来开门任务可显式声明 `door_open_action_site`，复用同一 target-only
+时间线并切换到 `door_open` prompt bundle。
+
+混合原生全量根目录可在显式 `--task` 时按 `meta/episodes.jsonl` 的
+`full_structured_tasks[0]` 过滤；未指定 task 且 metadata 含多个 task 时会 fail closed。原生
+metadata 不含 `task_kind`，所以生产运行仍建议先物化带 profile/provenance 的 task-level
+manifest。
 
 Qwen API 配置下使用多 GPU SAM worker：
 
@@ -113,7 +135,9 @@ OUTPUT_ROOT/_sources/<run-id>-object-source/
 完成整个 source run、释放 SAM/CUDA，再串行运行 URDF。两条路径都会发布最终 run。内部 source
 是最终 lineage 的组成部分，不能删除、移动或修改。
 
-复用已有 frozen source，可跳过 Qwen/SAM：
+复用已有 frozen source，可跳过 Qwen/SAM。单任务数据路径可以直接和
+`--source-run-dir` 组合；collection 必须先用 `--task` 收敛到一个 task，因为一个 collection
+没有唯一的 frozen-source 映射：
 
 ```bash
 just process DATASET_ROOT OUTPUT_ROOT \
@@ -121,6 +145,9 @@ just process DATASET_ROOT OUTPUT_ROOT \
   --source-run-dir SOURCE_RUN \
   --run-id RUN_ID
 ```
+
+运行时会校验 task、camera、annotation mode、target profile、prompt bundle 和 episode/source
+lineage；任一项不一致都会拒绝派生。
 
 恢复已开始的 immutable URDF run：
 
@@ -177,6 +204,7 @@ canonical episode 目录和 `process_summary.json`。
 | 文档 | 内容 | 适合什么时候看 |
 | --- | --- | --- |
 | [architecture.md](architecture.md) | 当前 pipeline、CLI、数据与 artifact 契约 | 实现、运行或排障 |
+| [current-project-state.md](current-project-state.md) | 当前分支实测边界、配置绑定审计和改进建议 | 判断输入是否安全、规划下一轮修改 |
 | [experiments.md](experiments.md) | Qwen/SAM、tracking、SAM gripper、URDF 和 active-wrist 实验结论 | 查参数依据和证据边界 |
 | [datasets.md](datasets.md) | RoboTwin pick-and-place 兼容任务、深度完整性和迁移顺序 | 选择新数据集 |
 | [robotwin_50_task_taxonomy.md](robotwin_50_task_taxonomy.md) | 50 个 coarse task 的语义、单/双臂分类和 11-task runtime profile | 查任务归类与 8+3 路由 |

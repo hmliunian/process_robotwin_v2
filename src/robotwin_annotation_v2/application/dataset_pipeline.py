@@ -7,7 +7,7 @@ using the public pipeline does not depend on that compatibility module.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -20,7 +20,9 @@ from .discovery import (
     DiscoveryResult,
     build_dynamic_manifest,
     discover_episodes,
+    select_manifest_episodes,
 )
+from .provenance import prompt_bundle_for_config, target_profile_from_config
 from .sam_workflow import (
     SamWorkflow,
     SamWorkflowHooks,
@@ -100,11 +102,53 @@ class DatasetPipeline:
         Failure policy: malformed paths raise; incomplete episodes are recorded.
         """
 
-        return discover_episodes(
-            dataset_root,
-            camera=self.config.dataset.camera,
-            require_depth=require_depth,
+        return self._scope_discovery(
+            discover_episodes(
+                dataset_root,
+                camera=self.config.dataset.camera,
+                require_depth=require_depth,
+            )
         )
+
+    def _scope_discovery(self, discovery: DiscoveryResult) -> DiscoveryResult:
+        """Apply a bound manifest's episode universe to public discovery."""
+
+        manifest = self.config.dataset.manifest_data
+        selection_keys = ("regression_episode_ids", "episode_indices", "episode_ids")
+        if not isinstance(manifest, Mapping) or not any(
+            manifest.get(key) is not None for key in selection_keys
+        ):
+            return discovery
+        configured_ids = self.config.dataset.regression_episode_ids
+        if configured_ids is None:
+            # Keep the public coordinator tolerant of lightweight config
+            # doubles and older callers that only carried manifest metadata.
+            # A real PipelineConfig normally resolves this field during
+            # binding, but the manifest remains a valid fallback boundary.
+            for key in selection_keys:
+                raw_ids = manifest.get(key)
+                if raw_ids is not None:
+                    configured_ids = tuple(raw_ids)
+                    break
+        if configured_ids is None:
+            return discovery
+        selected_episodes = select_manifest_episodes(
+            discovery.episodes,
+            manifest=manifest,
+            episode_ids=configured_ids,
+        )
+        # Keep skipped records for the bound selection as well as complete
+        # episodes.  A missing video/depth file is exactly why a record is in
+        # ``discovery.skipped``; deriving the scope from ``selected_episodes``
+        # would drop that diagnostic and make a bound manifest look complete.
+        selected_ids = set(configured_ids)
+        skipped = tuple(
+            record
+            for record in discovery.skipped
+            if record.get("episode") is not None
+            and int(record["episode"]) in selected_ids
+        )
+        return DiscoveryResult(selected_episodes, skipped)
 
     def build_manifest(
         self,
@@ -119,11 +163,21 @@ class DatasetPipeline:
         Failure policy: reject empty or inconsistent episode metadata.
         """
 
+        scoped = self._scope_discovery(discovery)
+        manifest_data = self.config.dataset.manifest_data
+        task_kind = (
+            manifest_data.get("task_kind")
+            if isinstance(manifest_data, Mapping)
+            else None
+        )
         return build_dynamic_manifest(
             dataset_root,
             task=self.config.dataset.task,
             camera=self.config.dataset.camera,
-            episodes=discovery.episodes,
+            episodes=scoped.episodes,
+            task_kind=task_kind,
+            target_profile=target_profile_from_config(self.config),
+            prompt_bundle=prompt_bundle_for_config(self.config),
         )
 
     def run_sam(

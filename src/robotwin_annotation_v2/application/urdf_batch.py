@@ -26,6 +26,7 @@ from robotwin_annotation_v2.adapters.canonical_masks import (
     CanonicalMaskError,
     read_canonical_masks,
 )
+from robotwin_annotation_v2.application.provenance import target_profile_from_manifest
 from robotwin_annotation_v2.mask_schema import (
     MASK_FORMAT_VERSION,
     TARGET_HOLD_COLOR_RGB,
@@ -1681,7 +1682,7 @@ def _run_contract(
         else _file_identity(config.fit_config_json)
     )
     episode_plans = [plan.to_json() for plan in plans]
-    return {
+    contract: dict[str, Any] = {
         "run_id": config.run_id,
         "dataset_root": str(config.dataset_root),
         "source_run_dir": str(config.source_run_dir),
@@ -1706,6 +1707,34 @@ def _run_contract(
         "assets": collect_asset_identity(config.urdf_path, config.mesh_root),
         "implementation": _implementation_identity(),
     }
+    # The source run is the immutable semantic authority for URDF derivation.
+    # Include its profile/prompt identity in the private contract so a resume
+    # cannot silently switch from (say) contact-press to origin prompts.
+    source_metadata: Mapping[str, Any] | None = None
+    for metadata_path in (
+        config.source_run_dir / "source_run_contract.json",
+        config.source_run_dir / "process_summary.json",
+    ):
+        try:
+            candidate = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(candidate, Mapping):
+            source_metadata = candidate
+            break
+    if source_metadata is not None:
+        profile = target_profile_from_manifest(source_metadata)
+        dynamic = source_metadata.get("dynamic_manifest")
+        if profile is None and isinstance(dynamic, Mapping):
+            profile = target_profile_from_manifest(dynamic)
+        bundle = source_metadata.get("prompt_bundle")
+        if not isinstance(bundle, Mapping) and isinstance(dynamic, Mapping):
+            bundle = dynamic.get("prompt_bundle")
+        if profile is not None:
+            contract["target_profile"] = profile
+        if isinstance(bundle, Mapping):
+            contract["prompt_bundle"] = _jsonable(bundle)
+    return contract
 
 
 def _checkpoint_manifest(path: Path, manifest: dict[str, Any]) -> None:
@@ -1986,7 +2015,7 @@ def _new_run_manifest(
     plans: Sequence[EpisodePlan],
     contract: Mapping[str, Any],
 ) -> dict[str, Any]:
-    return {
+    manifest: dict[str, Any] = {
         "format_version": RUN_FORMAT_VERSION,
         "created_at": datetime.now(UTC).isoformat(),
         "updated_at": datetime.now(UTC).isoformat(),
@@ -2004,6 +2033,10 @@ def _new_run_manifest(
         "failed_episode_count": 0,
         "failure_attempt_count": 0,
     }
+    for key in ("target_profile", "prompt_bundle"):
+        if key in contract:
+            manifest[key] = _jsonable(contract[key])
+    return manifest
 
 
 def _resume_manifest(

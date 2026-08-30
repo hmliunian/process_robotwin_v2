@@ -9,6 +9,10 @@ import pytest
 
 import robotwin_annotation_v2.application.dataset_pipeline as pipeline_module
 from robotwin_annotation_v2.application.dataset_pipeline import DatasetPipeline
+from robotwin_annotation_v2.application.discovery import (
+    DiscoveredEpisode,
+    DiscoveryResult,
+)
 from robotwin_annotation_v2.application.sam_workflow import SamWorkflowHooks
 from robotwin_annotation_v2.config import PipelineConfig
 from robotwin_annotation_v2.domain import GripperBackend
@@ -234,3 +238,40 @@ def test_deprecated_source_only_alias_is_not_in_canonical_pipeline_api() -> None
     assert "target_receiver_only" not in inspect.signature(
         pipeline_module.SamWorkflow.run
     ).parameters
+
+
+def test_dataset_pipeline_scope_keeps_selected_skipped_episode_diagnostics(
+    tmp_path: Path,
+) -> None:
+    """A bound selection must retain incomplete episodes in ``skipped``."""
+
+    config = cast(
+        PipelineConfig,
+        SimpleNamespace(
+            dataset=SimpleNamespace(
+                manifest_data={"regression_episode_ids": [1, 2, 3]},
+                regression_episode_ids=(1, 2, 3),
+            )
+        ),
+    )
+    complete = tuple(
+        DiscoveredEpisode(
+            episode_id=episode_id,
+            parquet=tmp_path / f"episode_{episode_id}.parquet",
+            video=tmp_path / f"episode_{episode_id}.mp4",
+            sidecar=tmp_path / f"episode_{episode_id}.hdf5",
+        )
+        for episode_id in (1, 3, 4)
+    )
+    discovery = DiscoveryResult(
+        episodes=complete,
+        skipped=(
+            {"episode": 2, "status": "discovery_skipped"},
+            {"episode": 99, "status": "discovery_skipped"},
+        ),
+    )
+
+    scoped = DatasetPipeline(config)._scope_discovery(discovery)
+
+    assert scoped.episode_ids == (1, 3)
+    assert scoped.skipped == ({"episode": 2, "status": "discovery_skipped"},)

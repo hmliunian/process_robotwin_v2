@@ -1,4 +1,6 @@
-# Shared pipeline profile for every RoboTwin task.
+# Shared pipeline profile for supported RoboTwin task contracts.  Reusing this
+# profile does not make unsupported multi-object, dual-arm, or articulated
+# tasks compatible with the pipeline.
 #
 # Dataset identity is supplied at runtime (``just process DATA_PATH``).  Do not
 # add a dataset block here: keeping paths, task names and episode selections out
@@ -74,6 +76,18 @@ modes:
     mask:
       qc_prompt_template: prompts/target_only_mask_candidate_qc_open_set.txt
       qc_bbox_prompt_template: prompts/open_set_bbox_localization.txt
+  # ``origin`` is the descriptive name for the standard target-only profile.
+  # Keep ``target_only`` above as a backwards-compatible selector.
+  origin:
+    annotation:
+      mode: target_only
+      profile: grasp_manipulation
+    qwen:
+      prompt_template: prompts/target_only_semantic_open_set.txt
+      max_tokens: 400
+    mask:
+      qc_prompt_template: prompts/target_only_mask_candidate_qc_open_set.txt
+      qc_bbox_prompt_template: prompts/open_set_bbox_localization.txt
   # The contact-press variant is selected from task provenance
   # (task_kind=contact_action_site), never from a task-name heuristic.
   contact_press:
@@ -86,3 +100,15 @@ modes:
     mask:
       qc_prompt_template: prompts/target_only_contact_press_mask_candidate_qc_open_set.txt
       qc_bbox_prompt_template: prompts/target_only_contact_press_bbox_localization.txt
+  # Articulated target-only actions (for example opening a door) reuse the
+  # target-only timeline and differ only in their semantic/QC prompt bundle.
+  door_open:
+    annotation:
+      mode: target_only
+      profile: door_open
+    qwen:
+      prompt_template: prompts/target_only_door_open_semantic_open_set.txt
+      max_tokens: 400
+    mask:
+      qc_prompt_template: prompts/target_only_door_open_mask_candidate_qc_open_set.txt
+      qc_bbox_prompt_template: prompts/target_only_door_open_bbox_localization.txt

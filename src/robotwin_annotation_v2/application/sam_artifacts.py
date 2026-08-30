@@ -27,6 +27,7 @@ from ..models import (
     SemanticPlan,
 )
 from ..pipeline.sam_stage import RoleMaskData, SamStageError, SamStageResult
+from .provenance import attach_profile_provenance
 
 if TYPE_CHECKING:
     from ..pipeline.gripper.sam.annotator import GripperStageResult
@@ -66,6 +67,8 @@ def save_sam_artifacts(
     seed_images: Mapping[int, Image.Image],
     gripper_result: GripperStageResult | None = None,
     canonical_mask_publisher: CanonicalMaskPublisher | None = None,
+    target_profile: str | None = None,
+    prompt_bundle: Mapping[str, Any] | None = None,
 ) -> MaskRun:
     """Persist Stage-3 diagnostics, compatible masks, and provenance."""
 
@@ -333,6 +336,16 @@ def save_sam_artifacts(
         "frame_encoding": encoding_metadata,
         "channels": provenance_channels,
     }
+    attach_profile_provenance(
+        provenance,
+        target_profile=target_profile,
+        prompt_bundle=prompt_bundle,
+        # Keep ordinary pick/place provenance explicit as well.  Source URDF
+        # validation compares this envelope with the run summary and dynamic
+        # manifest, so conditional omission would make an otherwise valid run
+        # impossible to freeze.
+        include_default_profile=True,
+    )
     if gripper_result is not None and gripper_role_name is not None:
         provenance["composition"] = (
             "target/receiver native_track clipped_to role_output_window; "
@@ -450,6 +463,12 @@ def save_sam_artifacts(
                 ),
             },
         }
+    )
+    attach_profile_provenance(
+        manifest,
+        target_profile=target_profile,
+        prompt_bundle=prompt_bundle,
+        include_default_profile=True,
     )
     store.write_json(episode_dir / "run_manifest.json", manifest)
     return mask_run

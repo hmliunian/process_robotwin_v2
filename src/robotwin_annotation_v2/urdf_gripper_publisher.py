@@ -24,6 +24,11 @@ from .adapters.canonical_masks import (
     read_canonical_masks,
 )
 from .adapters.canonical_publication import CanonicalMaskPublisher
+from .application.provenance import (
+    target_profile_from_manifest,
+    validate_profile_provenance,
+    validate_profile_provenance_pair,
+)
 from .domain import AnnotationMode, ObjectRole, annotation_spec
 from .mask_schema import (
     FRAME_ENCODING_LEGEND,
@@ -817,10 +822,15 @@ def _validate_source_run_contract(
         "contract_sha256",
     }
     format_version = contract.get("format_version")
+    optional_provenance_keys = {
+        key for key in ("target_profile", "prompt_bundle") if key in contract
+    }
     expected_keys = (
         common_keys
         if format_version == LEGACY_SOURCE_RUN_CONTRACT_FORMAT_VERSION
-        else common_keys | {"annotation_mode", "required_object_roles"}
+        else common_keys
+        | {"annotation_mode", "required_object_roles"}
+        | optional_provenance_keys
     )
     if set(contract) != expected_keys:
         raise UrdfGripperPublishError(
@@ -899,6 +909,30 @@ def _validate_source_run_contract(
             raise UrdfGripperPublishError(
                 f"source dynamic manifest {key} differs from the source run contract"
             )
+    try:
+        validate_profile_provenance_pair(
+            contract,
+            dynamic,
+            label="source contract and dynamic manifest",
+        )
+        validate_profile_provenance(
+            contract,
+            expected_profile=contract.get("target_profile")
+            if contract.get("target_profile") is not None
+            else dynamic.get("target_profile"),
+            expected_prompt_bundle=(
+                contract.get("prompt_bundle")
+                if isinstance(contract.get("prompt_bundle"), Mapping)
+                else (
+                    dynamic.get("prompt_bundle")
+                    if isinstance(dynamic.get("prompt_bundle"), Mapping)
+                    else None
+                )
+            ),
+            strict=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise UrdfGripperPublishError(str(exc)) from exc
     regression_ids = _strict_integer_ids(
         dynamic.get("regression_episode_ids"),
         label="source dynamic manifest regression_episode_ids",
@@ -921,6 +955,8 @@ def write_source_run_contract(
     requested_episode_ids: Sequence[int],
     annotation_mode: AnnotationMode | str = AnnotationMode.PICK_PLACE,
     required_object_roles: Sequence[ObjectRole | str] | None = None,
+    target_profile: str | None = None,
+    prompt_bundle: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Atomically create the immutable metadata anchor for a streaming source run."""
 
@@ -965,6 +1001,58 @@ def write_source_run_contract(
         raise UrdfGripperPublishError(
             "required_object_roles differ from source annotation_mode"
         )
+    dynamic_payload = _json_clone(dynamic_manifest)
+    if not isinstance(dynamic_payload, dict):
+        raise UrdfGripperPublishError("dynamic_manifest must be an object")
+    try:
+        supplied_profile = (
+            target_profile_from_manifest({"target_profile": target_profile})
+            if target_profile is not None
+            else None
+        )
+        dynamic_profile = target_profile_from_manifest(dynamic_payload)
+    except (TypeError, ValueError) as exc:
+        raise UrdfGripperPublishError(str(exc)) from exc
+    if (
+        supplied_profile is not None
+        and dynamic_profile is not None
+        and supplied_profile != dynamic_profile
+    ):
+        raise UrdfGripperPublishError(
+            "target_profile differs from the dynamic manifest"
+        )
+    if supplied_profile is not None and dynamic_profile is None:
+        dynamic_payload["target_profile"] = supplied_profile
+        dynamic_profile = supplied_profile
+
+    supplied_bundle = None if prompt_bundle is None else _json_clone(prompt_bundle)
+    dynamic_bundle = dynamic_payload.get("prompt_bundle")
+    if dynamic_bundle is not None and not isinstance(dynamic_bundle, Mapping):
+        raise UrdfGripperPublishError("dynamic manifest prompt_bundle must be an object")
+    if supplied_bundle is not None and not isinstance(supplied_bundle, Mapping):
+        raise UrdfGripperPublishError("prompt_bundle must be an object")
+    if supplied_bundle is not None:
+        try:
+            validate_profile_provenance(
+                {"target_profile": dynamic_profile, "prompt_bundle": supplied_bundle},
+                expected_profile=dynamic_profile,
+                expected_prompt_bundle=supplied_bundle,
+                strict=True,
+            )
+        except (TypeError, ValueError) as exc:
+            raise UrdfGripperPublishError(str(exc)) from exc
+        if dynamic_bundle is not None:
+            try:
+                validate_profile_provenance_pair(
+                    {"target_profile": dynamic_profile, "prompt_bundle": supplied_bundle},
+                    {"target_profile": dynamic_profile, "prompt_bundle": dynamic_bundle},
+                    label="supplied and dynamic prompt provenance",
+                )
+            except (TypeError, ValueError) as exc:
+                raise UrdfGripperPublishError(str(exc)) from exc
+        else:
+            dynamic_payload["prompt_bundle"] = supplied_bundle
+
     contract: dict[str, Any] = {
         "format_version": SOURCE_RUN_CONTRACT_FORMAT_VERSION,
         "annotation_mode": resolved_mode.value,
@@ -973,9 +1061,16 @@ def write_source_run_contract(
         "dataset_root": str(dataset_root.expanduser().resolve()),
         "task": task,
         "camera": camera,
-        "dynamic_manifest": _json_clone(dynamic_manifest),
+        "dynamic_manifest": dynamic_payload,
         "requested_episode_ids": requested,
     }
+    # New dynamic manifests already carry these fields; explicit arguments are
+    # accepted for callers that construct a contract without one.  Keep them
+    # optional to preserve the immutable key set of legacy source runs.
+    if dynamic_profile is not None:
+        contract["target_profile"] = dynamic_profile
+    if isinstance(dynamic_payload.get("prompt_bundle"), Mapping):
+        contract["prompt_bundle"] = _json_clone(dynamic_payload["prompt_bundle"])
     contract["contract_sha256"] = _canonical_json_sha256(contract)
     probe_episode = requested[0] if requested else -1
     _validate_source_run_contract(
@@ -1142,6 +1237,14 @@ def _validate_source_summary(
             raise UrdfGripperPublishError(
                 f"source dynamic manifest {key} differs from the source run"
             )
+    try:
+        validate_profile_provenance_pair(
+            summary,
+            dynamic,
+            label="source summary and dynamic manifest",
+        )
+    except (TypeError, ValueError) as exc:
+        raise UrdfGripperPublishError(str(exc)) from exc
     regression_ids = dynamic.get("regression_episode_ids")
     if not isinstance(regression_ids, list) or episode_index not in regression_ids:
         raise UrdfGripperPublishError(
@@ -1544,6 +1647,34 @@ def _validate_derivation_source_episode(
         source_mask_format=str(source["format_version"]),
         target_hold=target_hold,
     )
+
+    expected_profile = target_profile_from_manifest(source_metadata)
+    if expected_profile is None:
+        expected_profile = target_profile_from_manifest(source_metadata["dynamic_manifest"])
+    expected_bundle = source_metadata.get("prompt_bundle")
+    if not isinstance(expected_bundle, Mapping):
+        dynamic_bundle = source_metadata["dynamic_manifest"].get("prompt_bundle")
+        expected_bundle = dynamic_bundle if isinstance(dynamic_bundle, Mapping) else None
+    if expected_profile is not None:
+        strict_profile = expected_bundle is not None or expected_profile not in {
+            None,
+            "grasp_manipulation",
+        }
+        try:
+            validate_profile_provenance(
+                manifest,
+                expected_profile=expected_profile,
+                expected_prompt_bundle=expected_bundle,
+                strict=strict_profile,
+            )
+            validate_profile_provenance(
+                provenance,
+                expected_profile=expected_profile,
+                expected_prompt_bundle=expected_bundle,
+                strict=strict_profile,
+            )
+        except (TypeError, ValueError) as exc:
+            raise UrdfGripperPublishError(str(exc)) from exc
 
     dynamic = source_metadata["dynamic_manifest"]
     raw_shape = dynamic.get("frame_shape_hw")
@@ -2202,6 +2333,18 @@ def _build_public_payloads(
         "derivation": derivation,
     }
 
+    source_profile = target_profile_from_manifest(validated_source.summary)
+    source_dynamic = validated_source.summary.get("dynamic_manifest")
+    if source_profile is None and isinstance(source_dynamic, Mapping):
+        source_profile = target_profile_from_manifest(source_dynamic)
+    source_bundle = validated_source.summary.get("prompt_bundle")
+    if not isinstance(source_bundle, Mapping) and isinstance(source_dynamic, Mapping):
+        source_bundle = source_dynamic.get("prompt_bundle")
+    if source_profile is not None:
+        run_manifest["target_profile"] = source_profile
+    if isinstance(source_bundle, Mapping):
+        run_manifest["prompt_bundle"] = _json_clone(source_bundle)
+
     source_channels = source_provenance.get("channels")
     if not isinstance(source_channels, Mapping):
         raise UrdfGripperPublishError("source frame provenance has no channel map")
@@ -2259,6 +2402,10 @@ def _build_public_payloads(
         "frame_encoding": public_encoding_metadata,
         "channels": provenance_channels,
     }
+    if source_profile is not None:
+        frame_provenance["target_profile"] = source_profile
+    if isinstance(source_bundle, Mapping):
+        frame_provenance["prompt_bundle"] = _json_clone(source_bundle)
     return masks_bundle, run_manifest, frame_provenance
 
 

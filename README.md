@@ -48,15 +48,21 @@ just process /DATA/disk8/xuran/add_mask_robotwin/dataset/pick_place_20/move_pill
 just process /DATA/disk8/xuran/add_mask_robotwin/dataset/pick_place_20 \
   --task move_pillbottle_pad --gripper-backend sam
 
-# target-only collection；根 manifest 会自动选择 target-only mode
+# target-only collection；根 manifest 会自动选择 target-only contract
 just process /DATA/disk8/xuran/add_mask_robotwin/dataset/target_only_20_v2
 ```
 
-带 extract manifest 的目录会自动推断 mode；原生 RoboTwin 目录没有 manifest 时默认按
-pick-place 处理，运行 target-only 时显式加 `--target-only`（或 `--mode target_only`）。
+带根级 extract manifest 的目录会自动选择 contract；只有 task records 同质的 collection 才会从
+records 推断。原生 RoboTwin 目录没有根 manifest 时默认按 pick-place 处理，运行 target-only
+时显式加 `--target-only`（或兼容参数 `--mode target_only`）；子目录 manifest 不会替 collection
+推断 contract。
 `--all-episodes` 可忽略 manifest 中固定的 episode 子集，重新从目录发现全部完整 episode。
 旧的 task-bound 配置仍可通过 `--config` 运行，作为兼容入口；新任务优先复用
 `configs/process.yaml`，只在命令行指定数据路径和必要的 mode/backend 覆盖。
+
+Target-only 的时间线只有一套，semantic profile 可独立切换：普通任务使用 `origin`
+（`grasp_manipulation`），三个 contact task 使用 `contact_press`；未来开门数据声明
+`task_kind=door_open_action_site` 后使用 `door_open`，只替换 prompt bundle，不复制流程。
 
 ## 目录
 
@@ -70,6 +76,7 @@ scripts/                         server 和运行入口
 tests/                           unit + integration
 docs/README.md                   文档入口与当前状态
 docs/architecture.md             当前架构、CLI 和产物契约
+docs/current-project-state.md    当前分支实测边界、入口限制和改进建议
 docs/experiments.md              实验结论与参数依据
 docs/datasets.md                 兼容任务与数据完整性
 ```
