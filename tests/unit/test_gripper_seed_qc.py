@@ -147,6 +147,7 @@ class FakeQwenClient:
         return QwenCompletion(
             content=json.dumps(payload),
             model=self.model_id,
+            finish_reason="length" if self.decision == "length" else "stop",
         )
 
 
@@ -318,6 +319,27 @@ def test_gripper_qwen_qc_forces_one_candidate_when_qwen_rejects(tmp_path: Path) 
     assert result.selected_candidate == "A"
     assert result.forced_fallback
     assert "forced fallback candidate A" in result.reason
+
+
+def test_gripper_qwen_qc_reports_truncated_completion(tmp_path: Path) -> None:
+    candidate = _candidate("A")
+    rgb = Image.fromarray(np.zeros((*SHAPE, 3), dtype=np.uint8))
+    prompt = tmp_path / "prompt.txt"
+    _write_qc_prompt(prompt)
+
+    result = run_gripper_seed_qc(
+        _context(),
+        (candidate,),
+        {"A": render_gripper_candidate_panel(rgb, candidate, _roi())},
+        {1: rgb, 22: rgb},
+        prompt_template_path=prompt,
+        client=FakeQwenClient(decision="length"),
+        max_tokens=100,
+    )
+
+    assert result.status is MaskQCStatus.PASSED
+    assert result.forced_fallback
+    assert "finish_reason='length'" in result.reason
 
 
 def test_gripper_qwen_qc_rejects_when_no_fallback_candidate_exists(tmp_path: Path) -> None:

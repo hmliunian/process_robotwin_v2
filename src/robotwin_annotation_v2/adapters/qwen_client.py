@@ -105,6 +105,7 @@ class QwenServiceError(RuntimeError):
 class QwenCompletion:
     content: str
     model: str
+    finish_reason: str | None = None
 
 
 def image_data_url(image: Image.Image | NDArray) -> str:
@@ -138,6 +139,7 @@ class OpenAICompatibleQwenClient:
         probe: str = "health",
         temperature: float = 0.0,
         enable_thinking: bool = False,
+        json_object_response: bool = False,
     ) -> None:
         if not endpoint.strip():
             raise ValueError("Qwen endpoint must be non-empty")
@@ -158,6 +160,7 @@ class OpenAICompatibleQwenClient:
         self.probe = probe
         self.temperature = temperature
         self.enable_thinking = enable_thinking
+        self.json_object_response = json_object_response
 
     @classmethod
     def from_config(cls, config: QwenConfig) -> OpenAICompatibleQwenClient:
@@ -171,6 +174,7 @@ class OpenAICompatibleQwenClient:
             probe=config.probe,
             temperature=config.temperature,
             enable_thinking=config.enable_thinking,
+            json_object_response=config.runtime == "api",
         )
 
     @property
@@ -268,17 +272,17 @@ class OpenAICompatibleQwenClient:
             raise ValueError("Qwen messages must not be empty")
         if max_tokens < 1:
             raise ValueError("Qwen max_tokens must be positive")
-        body = json.dumps(
-            {
-                "model": self.model_id,
-                "messages": messages,
-                "max_tokens": max_tokens,
-                "temperature": self.temperature,
-                "enable_thinking": self.enable_thinking,
-                "stream": False,
-            },
-            ensure_ascii=False,
-        ).encode("utf-8")
+        payload: dict[str, Any] = {
+            "model": self.model_id,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": self.temperature,
+            "enable_thinking": self.enable_thinking,
+            "stream": False,
+        }
+        if self.json_object_response:
+            payload["response_format"] = {"type": "json_object"}
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         request = urllib.request.Request(
             self.endpoint,
             data=body,
@@ -287,12 +291,36 @@ class OpenAICompatibleQwenClient:
         )
         payload = self._read_json(request)
         try:
-            content = payload["choices"][0]["message"]["content"]
+            choice = payload["choices"][0]
         except (KeyError, IndexError, TypeError) as exc:
             raise QwenServiceError("Qwen response has no assistant content") from exc
+        try:
+            finish_reason = choice.get("finish_reason")
+        except AttributeError as exc:
+            raise QwenServiceError("Qwen response has no assistant content") from exc
+        if finish_reason is not None and not isinstance(finish_reason, str):
+            raise QwenServiceError("Qwen response has an invalid finish_reason field")
+        try:
+            content = choice["message"]["content"]
+        except (KeyError, TypeError) as exc:
+            if finish_reason not in {None, "stop"}:
+                raise QwenServiceError(
+                    "Qwen response has no assistant content; "
+                    f"finish_reason={finish_reason!r}"
+                ) from exc
+            raise QwenServiceError("Qwen response has no assistant content") from exc
         if not isinstance(content, str) or not content.strip():
+            if finish_reason not in {None, "stop"}:
+                raise QwenServiceError(
+                    "Qwen returned empty assistant content; "
+                    f"finish_reason={finish_reason!r}"
+                )
             raise QwenServiceError("Qwen returned empty assistant content")
         model = payload.get("model", self.model_id)
         if not isinstance(model, str) or not model.strip():
             raise QwenServiceError("Qwen response has an invalid model field")
-        return QwenCompletion(content=content.strip(), model=model.strip())
+        return QwenCompletion(
+            content=content.strip(),
+            model=model.strip(),
+            finish_reason=finish_reason,
+        )

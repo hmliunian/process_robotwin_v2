@@ -365,6 +365,16 @@ def _visual_report_from_completion(
     """Convert one visual-QC completion into the normal fail-closed report."""
 
     info_tuple = tuple(candidate.info for candidate in candidates)
+    if completion.finish_reason not in {None, "stop"}:
+        return error_report(
+            role,
+            MaskQCStatus.ERROR,
+            f"mask QC response ended with finish_reason={completion.finish_reason!r}",
+            model=completion.model,
+            raw_response=completion.content,
+            rendered_prompt=rendered_prompt,
+            candidates=info_tuple,
+        )
     try:
         decision, selected_id, confidence, reason = parse_mask_qc_response(
             completion.content,
@@ -808,8 +818,26 @@ def _run_bbox_qc_at_seed(
             "localization_model": completion.model,
             "localization_raw_response": completion.content,
             "localization_rendered_prompt": rendered_prompt,
+            "localization_finish_reason": completion.finish_reason,
         }
     )
+    if completion.finish_reason not in {None, "stop"}:
+        return RoleAttemptExecution(
+            seed_frame_id,
+            error_report(
+                role,
+                MaskQCStatus.ERROR,
+                "bbox localization response ended with "
+                f"finish_reason={completion.finish_reason!r}",
+                model=completion.model,
+                raw_response=completion.content,
+                rendered_prompt=rendered_prompt,
+            ),
+            (),
+            (),
+            method,
+            provenance,
+        )
     try:
         localization = parse_bbox_localization(completion.content)
     except BboxLocalizationError as exc:

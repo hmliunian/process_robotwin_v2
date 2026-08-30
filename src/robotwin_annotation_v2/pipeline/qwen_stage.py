@@ -429,6 +429,12 @@ def run_qwen_stage(
             f"Qwen request failed: {exc}",
             rendered_prompt=request.rendered_prompt,
         ) from exc
+    if completion.finish_reason not in {None, "stop"}:
+        raise QwenStageError(
+            f"Qwen response ended with finish_reason={completion.finish_reason!r}",
+            rendered_prompt=request.rendered_prompt,
+            raw_response=completion.content,
+        )
     try:
         plan = parse_semantic_plan(
             completion.content,

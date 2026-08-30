@@ -687,11 +687,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             else args.max_tokens
         ),
     )
-    client = OpenAICompatibleQwenClient(
-        endpoint=config.qwen.endpoint,
-        model=config.qwen.model,
-        timeout_seconds=config.qwen.timeout_seconds,
-    )
+    client = OpenAICompatibleQwenClient.from_config(config.qwen)
     report = replay_archive(
         audit_path=args.audit,
         artifact_root=args.artifact_root,

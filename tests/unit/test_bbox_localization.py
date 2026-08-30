@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
 from robotwin_annotation_v2.pipeline.bbox_localization import (
     BboxLocalizationError,
     parse_bbox_localization,
+    render_bbox_prompt,
 )
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _response(**overrides: object) -> str:
@@ -28,6 +32,24 @@ def test_parser_preserves_raw_normalized_coordinates_without_clamping() -> None:
     assert result.bbox_xyxy == (0.0, 0.125, 1.0, 0.875)
     assert result.confidence == 0.75
     assert result.reason == "full object visible"
+
+
+def test_door_open_bbox_prompt_satisfies_render_contract() -> None:
+    template = (
+        PROJECT_ROOT / "configs/prompts/target_only_door_open_bbox_localization.txt"
+    ).read_text(encoding="utf-8")
+
+    rendered = render_bbox_prompt(
+        template,
+        task="open_microwave",
+        task_text="Open the microwave by pulling its handle.",
+        episode_id="009350",
+        role="target",
+        seed_frame_id=15,
+    )
+
+    assert "Task name: open_microwave" in rendered
+    assert "Episode: 009350" in rendered
 
 
 @pytest.mark.parametrize("status", ("ambiguous", "not_visible"))

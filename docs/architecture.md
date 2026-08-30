@@ -237,10 +237,20 @@ pick-place 的 target 和 receiver 在一次 semantic request 中联合判断，
 退出；只有显式选择 `qwen.runtime=local` 的配置时，外层 launcher 才会在 endpoint 不可用时
 选卡并启动本地 server，并只回收自己启动的进程。已有健康服务保持外部所有权。
 
+API runtime 的 completion 请求启用 OpenAI-compatible JSON object mode；本地 runtime 不发送
+该参数，继续由 prompt 和 strict parser 约束。JSON object mode 只保证语法，不替代各 stage 的
+exact-field/schema 校验。client 同时保留 `finish_reason`；API completion 只有 `stop`（以及兼容
+旧 client 的空值）可进入 parser，其他终止原因均带原值拒绝。semantic、object visual QC 和
+bbox localization fail closed；SAM gripper QC 继续遵循其既有、显式记录的 availability fallback
+policy。本地 server 尚不提供可靠的 token-limit 终止原因，local runtime 仍以 strict parser
+结果为准。
+
 ### 4.2 角色语义
 
 - target：`grasp_manipulation` profile 中是随后被 gripper 抓取并移动的完整物体；
-  `contact_press` profile 中是即将被接触或驱动的最小完整功能部件/action site。
+  `contact_press` profile 中是即将被接触或驱动的最小完整功能部件/action site；`door_open`
+  优先可分离的 handle/latch/knob，视角无法分离该部件时才允许用完整可动门板作 visible proxy，
+  且必须排除固定机身、控制面板和按钮。
 - receiver：任务完成时与 target 直接接触的完整物体或目标区域；不要求承托 target，也不
   要求位于其下方。
 - receiver 身份先由 `place_context` 确认，再回到合法 seed 帧中选择同一对象的清晰视图。

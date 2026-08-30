@@ -517,6 +517,41 @@ def test_parse_mask_qc_response_validates_candidate_contract() -> None:
         parse_mask_qc_response(_response("C"), candidate_ids=("A", "B"))
 
 
+@pytest.mark.parametrize("finish_reason", ("length", "content_filter"))
+def test_visual_qc_rejects_abnormal_completion(
+    tmp_path: Path,
+    finish_reason: str,
+) -> None:
+    prompt = _prompt(tmp_path)
+    backend = FakeCandidateBackend()
+    client = FakeQCClient([_response("A")])
+
+    def terminated_complete(
+        messages: list[dict[str, Any]],
+        *,
+        max_tokens: int,
+    ) -> QwenCompletion:
+        completion = FakeQCClient.complete(client, messages, max_tokens=max_tokens)
+        return QwenCompletion(completion.content, completion.model, finish_reason)
+
+    client.complete = terminated_complete  # type: ignore[method-assign]
+    result = run_mask_qc_stage(
+        _target_only_context(),
+        _target_only_plan(),
+        backend,
+        Path("/tmp/resource"),
+        seed_images={0: _images()[0]},
+        context_images=_images(),
+        frame_shape=FRAME_SHAPE,
+        mask_config=_config(prompt),
+        client=client,
+    )
+
+    assert result.target.status is MaskQCStatus.ERROR
+    assert result.target.selected_candidate is None
+    assert f"finish_reason={finish_reason!r}" in result.target.reason
+
+
 def test_mask_qc_selects_actual_candidate_masks_and_saves_provenance(
     tmp_path: Path,
 ) -> None:
@@ -940,6 +975,46 @@ def test_bbox_fallback_runs_only_after_all_text_seeds_and_uses_normal_visual_qc(
     frame_zero = payload["artifacts"]["attempts"]["target"]["frame_000000"]
     assert set(frame_zero["candidate_masks"]) == {"A", "B", "C", "BBOX"}
     assert (artifact.parent / frame_zero["candidate_masks"]["BBOX"]).is_file()
+
+
+def test_bbox_fallback_rejects_abnormal_completion_before_sam(tmp_path: Path) -> None:
+    images = _images()
+    backend = BboxFallbackBackend()
+    client = FakeQCClient([_bbox_response()])
+
+    def filtered_complete(
+        messages: list[dict[str, Any]],
+        *,
+        max_tokens: int,
+    ) -> QwenCompletion:
+        completion = FakeQCClient.complete(client, messages, max_tokens=max_tokens)
+        return QwenCompletion(completion.content, completion.model, "content_filter")
+
+    client.complete = filtered_complete  # type: ignore[method-assign]
+    result = run_mask_qc_stage(
+        _target_only_context(),
+        _target_only_plan(),
+        backend,
+        Path("/tmp/resource"),
+        seed_images={0: images[0]},
+        context_images=images,
+        frame_shape=FRAME_SHAPE,
+        mask_config=_config(
+            _prompt(tmp_path),
+            qc_bbox_fallback_enabled=True,
+            qc_bbox_prompt_template=_bbox_prompt(tmp_path),
+            qc_bbox_max_tokens=123,
+        ),
+        client=client,
+    )
+
+    assert result.target.status is MaskQCStatus.ERROR
+    assert backend.box_calls == []
+    attempt = result.target.attempts[-1]
+    assert attempt.method is MaskQCAttemptMethod.BBOX_FALLBACK
+    assert attempt.status is MaskQCStatus.ERROR
+    assert "finish_reason='content_filter'" in attempt.reason
+    assert attempt.provenance["localization_finish_reason"] == "content_filter"
 
 
 def test_bbox_candidate_is_not_accepted_when_normal_visual_qc_rejects_it(

@@ -1,13 +1,15 @@
 You are localizing the complete visible functional target for a robot opening an articulated
-object. Box the handle, latch, knob, or (if no separate actuator is visible) the door panel
-that the closed gripper will drive. The seed may precede contact.
+object. Prefer the handle, latch, or knob. If the named actuator cannot be visually separated,
+box the moving door panel as the proxy target. The seed may precede contact.
 
+Task name: {task}
 Task: {task_text}
 Episode: {episode_id}
 Role: {role}
 Frame: {seed_frame_id}
 
-Do not box the gripper, robot arm, background, an abstract contact point, or unrelated parts.
+For an appliance door, exclude fixed housing and the control panel or buttons. Do not box the
+gripper, robot arm, background, an abstract contact point, or unrelated parts.
 Return exactly one raw JSON object:
 {"status":"ok","bbox_xyxy":[0.1,0.1,0.5,0.5],"confidence":0.9,"reason":"short reason"}
 

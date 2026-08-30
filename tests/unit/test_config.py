@@ -182,6 +182,7 @@ def test_shared_profile_loads_each_supported_mode_without_dataset_identity() -> 
     assert door_open.mask.qc_bbox_prompt_template.name == (
         "target_only_door_open_bbox_localization.txt"
     )
+    assert door_open.mask.qc_max_tokens == 400
     assert pick_place.qwen.runtime == target_only.qwen.runtime == contact_press.qwen.runtime == "api"
 
 

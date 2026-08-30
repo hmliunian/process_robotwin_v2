@@ -24,6 +24,7 @@ from robotwin_annotation_v2.adapters.qwen_client import (
     FileRequestGate,
     install_qwen_request_gate,
 )
+from robotwin_annotation_v2.config import QwenConfig
 
 
 class FakeHTTPResponse(io.BytesIO):
@@ -66,10 +67,13 @@ def test_openai_client_health_and_completion(monkeypatch: Any) -> None:
         return FakeHTTPResponse(json.dumps(payload).encode("utf-8"))
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    client = OpenAICompatibleQwenClient(
-        endpoint="http://127.0.0.1:18086/v1/chat/completions",
-        model="fake-qwen",
-        timeout_seconds=5,
+    client = OpenAICompatibleQwenClient.from_config(
+        QwenConfig(
+            endpoint="http://127.0.0.1:18086/v1/chat/completions",
+            model="fake-qwen",
+            prompt_template=Path("prompt.txt"),
+            timeout_seconds=5,
+        )
     )
 
     health = client.health()
@@ -85,6 +89,8 @@ def test_openai_client_health_and_completion(monkeypatch: Any) -> None:
     assert body["max_tokens"] == 20
     assert body["temperature"] == 0
     assert body["enable_thinking"] is False
+    assert not client.json_object_response
+    assert "response_format" not in body
 
 
 def test_api_client_authenticates_models_probe_and_completion(monkeypatch: Any) -> None:
@@ -100,7 +106,9 @@ def test_api_client_authenticates_models_probe_and_completion(monkeypatch: Any) 
             if request.full_url.endswith("/models")
             else {
                 "model": "qwen3.8-max",
-                "choices": [{"message": {"content": "ok"}}],
+                "choices": [
+                    {"message": {"content": "ok"}, "finish_reason": "stop"}
+                ],
             }
         )
         return FakeHTTPResponse(json.dumps(payload).encode("utf-8"))
@@ -114,6 +122,7 @@ def test_api_client_authenticates_models_probe_and_completion(monkeypatch: Any) 
         probe="models",
         temperature=0.25,
         enable_thinking=False,
+        json_object_response=True,
     )
 
     assert client.health() == {
@@ -121,12 +130,66 @@ def test_api_client_authenticates_models_probe_and_completion(monkeypatch: Any) 
         "model": "qwen3.8-max",
         "probe": "models",
     }
-    assert client.complete([{"role": "user", "content": "test"}], max_tokens=32).content == "ok"
+    completion = client.complete([{"role": "user", "content": "test"}], max_tokens=32)
+    assert completion.content == "ok"
+    assert completion.finish_reason == "stop"
     assert client.models_endpoint == "https://maas.example/compatible-mode/v1/models"
     body = json.loads(requests[1].data)
     assert body["model"] == "qwen3.8-max"
     assert body["temperature"] == 0.25
     assert body["enable_thinking"] is False
+    assert body["response_format"] == {"type": "json_object"}
+
+
+@pytest.mark.parametrize("content", (None, ""))
+def test_client_preserves_abnormal_finish_reason_when_content_is_empty(
+    monkeypatch: Any,
+    content: str | None,
+) -> None:
+    monkeypatch.setenv("QWEN_TEST_API_KEY", "test-secret")
+
+    def fake_urlopen(
+        _request: urllib.request.Request,
+        *,
+        timeout: float,
+    ) -> FakeHTTPResponse:
+        assert timeout == 5
+        payload = {
+            "model": "qwen3.8-max",
+            "choices": [
+                {
+                    "message": {"content": content},
+                    "finish_reason": "content_filter",
+                }
+            ],
+        }
+        return FakeHTTPResponse(json.dumps(payload).encode("utf-8"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    client = OpenAICompatibleQwenClient(
+        endpoint="https://maas.example/v1/chat/completions",
+        model="qwen3.8-max",
+        timeout_seconds=5,
+        api_key_env="QWEN_TEST_API_KEY",
+    )
+
+    with pytest.raises(RuntimeError, match="finish_reason='content_filter'"):
+        client.complete([{"role": "user", "content": "test"}], max_tokens=32)
+
+
+def test_client_from_api_config_enables_json_object_response() -> None:
+    client = OpenAICompatibleQwenClient.from_config(
+        QwenConfig(
+            endpoint="https://maas.example/v1/chat/completions",
+            model="qwen3.8-max",
+            prompt_template=Path("prompt.txt"),
+            runtime="api",
+            api_key_env="QWEN_TEST_API_KEY",
+            probe="models",
+        )
+    )
+
+    assert client.json_object_response
 
 
 def test_api_client_fails_before_request_when_credential_is_missing(

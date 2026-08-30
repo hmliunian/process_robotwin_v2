@@ -17,11 +17,18 @@ State events:
 - close_end: {close_end}
 - episode_end: {episode_end}
 
-The target is the smallest complete visible functional part that is opened or driven, such
-as a door handle, latch, knob, or door panel when no separate actuator is visible. Infer it
-from the instruction and the gripper approach. It need not be grasped, held, or move with
-the gripper. Never choose the gripper, background, an abstract contact point, or an unrelated
-part. A seed before physical contact is valid.
+Labeled multimodal frames:
+{labeled_multimodal_frames}
 
-Return one strict JSON object matching {response_schema}. Every non-empty query must be a
-distinct 1-4 word lowercase singular noun phrase; use null when visual evidence is absent.
+The target is the smallest complete visible functional part that is opened or driven. Prefer
+a visually separable handle, latch, or knob. If the instruction names a handle but that handle
+cannot be separated in this view, use the moving door panel as the visible proxy target. Never
+include a fixed appliance body or control panel with that door panel. Infer the target from the
+instruction and gripper approach. It need not be grasped, held, or move synchronously with the
+gripper. Never choose the gripper, background, an abstract contact point, or an unrelated part.
+A seed before physical contact is valid.
+
+Your first output character must be { and your last output character must be }. Do not add
+analysis, explanations, or Markdown fences. Return one strict JSON object matching
+{response_schema}. Every non-empty query must be a distinct 1-4 word lowercase singular noun
+phrase; use null when visual evidence is absent.

@@ -112,3 +112,4 @@ modes:
     mask:
       qc_prompt_template: prompts/target_only_door_open_mask_candidate_qc_open_set.txt
       qc_bbox_prompt_template: prompts/target_only_door_open_bbox_localization.txt
+      qc_max_tokens: 400

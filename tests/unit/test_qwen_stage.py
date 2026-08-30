@@ -143,6 +143,21 @@ class FakeQwenClient:
         return QwenCompletion(content=self.response, model=self.model_id)
 
 
+class TerminatedQwenClient(FakeQwenClient):
+    def __init__(self, response: str, finish_reason: str) -> None:
+        super().__init__(response)
+        self.finish_reason = finish_reason
+
+    def complete(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        max_tokens: int,
+    ) -> QwenCompletion:
+        super().complete(messages, max_tokens=max_tokens)
+        return QwenCompletion(self.response, self.model_id, self.finish_reason)
+
+
 def test_qwen_request_interleaves_frame_label_and_image() -> None:
     template = (
         "task={task_text}\nmove={move_start}\n"
@@ -302,6 +317,22 @@ def test_target_only_open_set_semantic_prompt_uses_target_only_timeline() -> Non
     assert "open_done" not in request.rendered_prompt
 
 
+def test_door_open_semantic_prompt_satisfies_multimodal_contract() -> None:
+    template = (
+        PROJECT_ROOT / "configs/prompts/target_only_door_open_semantic_open_set.txt"
+    ).read_text(encoding="utf-8")
+    context = _target_only_context()
+    frames = {frame_id: _frames()[frame_id] for frame_id in (0, 9)}
+
+    request = build_qwen_request(context, frames, template)
+
+    assert "<image frame_id=0>" in request.rendered_prompt
+    assert "<image frame_id=9>" in request.rendered_prompt
+    assert "smallest complete visible functional part" in request.rendered_prompt
+    assert "use the moving door panel as the visible proxy target" in request.rendered_prompt
+    assert "Never\ninclude a fixed appliance body or control panel" in request.rendered_prompt
+
+
 def test_target_only_semantic_prompt_ends_hold_before_reopen() -> None:
     template = (
         PROJECT_ROOT / "configs/prompts/target_only_semantic_open_set.txt"
@@ -455,3 +486,30 @@ def test_run_qwen_stage_preserves_invalid_raw_response(tmp_path: Path) -> None:
 
     assert captured.value.raw_response == "not json"
     assert captured.value.rendered_prompt is not None
+
+
+@pytest.mark.parametrize("finish_reason", ("length", "content_filter"))
+def test_run_qwen_stage_rejects_abnormal_completion(
+    tmp_path: Path,
+    finish_reason: str,
+) -> None:
+    prompt_path = tmp_path / "prompt.txt"
+    prompt_path.write_text("{labeled_multimodal_frames}", encoding="utf-8")
+    config = QwenConfig(
+        endpoint="http://127.0.0.1:18086/v1/chat/completions",
+        model="fake-qwen",
+        prompt_template=prompt_path,
+    )
+
+    with pytest.raises(
+        QwenStageError,
+        match=rf"finish_reason={finish_reason!r}",
+    ) as captured:
+        run_qwen_stage(
+            _context(),
+            _frames(),
+            config,
+            TerminatedQwenClient('{"target":', finish_reason),
+        )
+
+    assert captured.value.raw_response == '{"target":'
