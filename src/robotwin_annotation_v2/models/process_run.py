@@ -88,6 +88,7 @@ class ProcessSummary:
     # summaries written by older runners remain readable and round-trippable.
     target_profile: str | None = None
     prompt_bundle: Mapping[str, Any] | None = None
+    resolution_strategy: Mapping[str, Any] | None = None
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any]) -> ProcessSummary:
@@ -108,6 +109,7 @@ class ProcessSummary:
         raw_qwen_health = payload.get("qwen_health")
         raw_render = payload.get("render")
         raw_plan = payload.get("plan")
+        raw_resolution_strategy = payload.get("resolution_strategy")
         return cls(
             format_version=str(payload["format_version"]),
             annotation_mode=str(payload["annotation_mode"]),
@@ -151,6 +153,11 @@ class ProcessSummary:
                 if not isinstance(payload.get("prompt_bundle"), Mapping)
                 else dict(payload["prompt_bundle"])
             ),
+            resolution_strategy=(
+                None
+                if not isinstance(raw_resolution_strategy, Mapping)
+                else dict(raw_resolution_strategy)
+            ),
         )
 
     def with_artifact(self, artifact: str) -> ProcessSummary:
@@ -186,6 +193,8 @@ class ProcessSummary:
             payload["target_profile"] = self.target_profile
         if self.prompt_bundle is not None:
             payload["prompt_bundle"] = dict(self.prompt_bundle)
+        if self.resolution_strategy is not None:
+            payload["resolution_strategy"] = dict(self.resolution_strategy)
         return payload
 
 

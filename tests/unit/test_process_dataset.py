@@ -830,6 +830,7 @@ def test_process_dataset_reports_sam_stages_without_embedded_json(
     assert capsys.readouterr().out == ""
     assert summary["passed"] is True
     assert summary["records"] == [{"episode": 7, "status": "completed"}]
+    assert summary["resolution_strategy"]["order"] == ["S1", "S2", "S3"]
     assert reporter.stages == [
         ("started", 7, "qwen", None),
         ("finished", 7, "qwen", "completed"),
@@ -903,6 +904,7 @@ def test_process_dataset_target_receiver_only_skips_gripper_and_uses_sam_resume(
     assert summary["gripper_backend"] is None
     assert summary["backend"] == {"object_masks": "sam", "gripper": None}
     assert summary["stage_mode"] == "object_source_only"
+    assert summary["resolution_strategy"]["scope"] == "object_masks_only"
 
 
 def test_parallel_sam_summary_records_pool_and_unhealthy_failure(
@@ -2888,6 +2890,7 @@ def test_process_urdf_source_run_never_calls_sam_or_legacy_renderer(
     assert summary["passed"] is True
     assert summary["requested_episode_ids"] == [7]
     assert summary["backend"]["selected_episode_ids"] == [7]
+    assert summary["resolution_strategy"]["order"] == ["S1", "S2", "S3"]
     assert len(observed) == 1
     assert observed[0].episode_ids == (7,)
     assert observed[0].run_id == "urdf"
@@ -3494,6 +3497,7 @@ def test_process_urdf_source_run_renders_successes_after_partial_backend_failure
         "fatal_error",
         "backend",
         "passed",
+        "resolution_strategy",
     }
 
 

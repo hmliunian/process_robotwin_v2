@@ -32,6 +32,7 @@ from .discovery import (
 )
 from .provenance import (
     attach_profile_provenance,
+    object_resolution_strategy,
     prompt_bundle_for_config,
     prompt_bundle_from_manifest,
     target_profile_from_config,
@@ -699,6 +700,10 @@ class SamWorkflow[BackendT: SamBackend, SamExecutionT, GripperExecutionT]:
             # per-episode artifacts without a mode-dependent omission.
             target_profile=selected_profile,
             prompt_bundle=prompt_bundle,
+            resolution_strategy=object_resolution_strategy(
+                target_profile=selected_profile,
+                prompt_bundle=prompt_bundle,
+            ),
         )
         persisted_summary = summary_model.to_json()
         summary_path = store.write_json(

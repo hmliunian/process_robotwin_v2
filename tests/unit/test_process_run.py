@@ -138,6 +138,39 @@ def test_process_summary_round_trip_preserves_payload() -> None:
     assert ProcessSummary.from_payload(payload).to_json() == payload
 
 
+def test_process_summary_round_trip_preserves_resolution_strategy() -> None:
+    strategy = {
+        "format_version": "robotwin_object_resolution_v1",
+        "scope": "object_masks_only",
+        "order": ["S1", "S2", "S3"],
+    }
+    summary = ProcessSummary(
+        format_version="robotwin_process_dataset_summary_v1",
+        annotation_mode="target_only",
+        required_object_roles=("target",),
+        gripper_backend="urdf",
+        run_id="run-1",
+        dataset_root="/dataset",
+        task="open_microwave",
+        camera="cam_high",
+        discovered_episode_ids=(7,),
+        requested_episode_ids=(7,),
+        dynamic_manifest={},
+        qwen_health=None,
+        records=(EpisodeRecord(7, "completed"),),
+        render=None,
+        fatal_error=None,
+        backend={"type": "urdf"},
+        passed=True,
+        resolution_strategy=strategy,
+    )
+
+    payload = summary.to_json()
+
+    assert payload["resolution_strategy"] == strategy
+    assert ProcessSummary.from_payload(payload).to_json() == payload
+
+
 def test_process_request_keeps_shared_identity_and_selection() -> None:
     request = ProcessRequest(
         dataset_root=Path("/dataset"),

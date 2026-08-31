@@ -16,6 +16,7 @@ from typing import Any, Protocol
 
 from robotwin_annotation_v2.adapters.artifact_store import ArtifactStore
 from robotwin_annotation_v2.application.provenance import (
+    object_resolution_strategy,
     prompt_bundle_for_config,
     target_profile_from_config,
     validate_profile_provenance_pair,
@@ -917,6 +918,10 @@ class UrdfWorkflow:
             target_profile=selection.target_profile,
             prompt_bundle=(
                 None if selection.prompt_bundle is None else dict(selection.prompt_bundle)
+            ),
+            resolution_strategy=object_resolution_strategy(
+                target_profile=selection.target_profile,
+                prompt_bundle=selection.prompt_bundle,
             ),
         )
         if dry_run:
