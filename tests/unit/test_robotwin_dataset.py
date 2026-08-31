@@ -3,9 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
+import pandas as pd
 import pytest
 
 from robotwin_annotation_v2.adapters.robotwin_dataset import DatasetError, RoboTwinDataset
+from robotwin_annotation_v2.models import EpisodeRef
 
 
 def _dataset(
@@ -100,3 +103,87 @@ def test_manifest_free_preflight_infers_video_contract(
     assert report["passed"]
     assert dataset.manifest["frame_shape_hw"] == [240, 320]
     assert dataset.manifest["raw_video_frame_surplus"] == 1
+
+
+def test_load_state_maps_declared_cora_single_right_arm_layout(tmp_path: Path) -> None:
+    dataset = _dataset(
+        tmp_path,
+        task="open_microwave",
+        camera="head_left",
+        manifest_data={"regression_episode_ids": [0]},
+    )
+    state = np.zeros((15, 7), dtype=np.float32)
+    state[:, :6] = np.arange(15, dtype=np.float32)[:, None]
+    state[:, 6] = np.asarray(
+        [0.0, 0.0, 0.8, 0.8, 0.8, 0.4, 0.4, 0.4, 0.8, 0.8, 0.8, 0.0, 0.0, 0.0, 0.0],
+        dtype=np.float32,
+    )
+    parquet = tmp_path / "data/chunk-000/episode_000000.parquet"
+    parquet.parent.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "frame_index": np.arange(len(state)),
+            "episode_index": np.zeros(len(state), dtype=np.int64),
+            "observation.state": list(state),
+        }
+    ).to_parquet(parquet, index=False)
+    meta = tmp_path / "meta"
+    meta.mkdir()
+    (meta / "episodes.jsonl").write_text(
+        '{"episode_index":0,"tasks":["open the microwave door"]}\n',
+        encoding="utf-8",
+    )
+    (meta / "info.json").write_text(
+        """{
+          "robot_type": "cora_cart_right_arm",
+          "features": {
+            "observation.state": {
+              "shape": [7],
+              "names": [
+                "right_eef_x", "right_eef_y", "right_eef_z",
+                "right_eef_roll", "right_eef_pitch", "right_eef_yaw",
+                "right_gripper_open"
+              ]
+            }
+          }
+        }""",
+        encoding="utf-8",
+    )
+
+    loaded = dataset.load_state(EpisodeRef("open_microwave", 0, "head_left"))
+
+    assert loaded.task_text == "open the microwave door"
+    assert loaded.gripper_states.shape == (15, 2)
+    assert np.array_equal(loaded.gripper_states[:, 0], np.ones(15))
+    assert np.array_equal(
+        loaded.gripper_states[:, 1],
+        np.asarray([1.0] * 5 + [0.0] * 3 + [1.0] * 7),
+    )
+    assert np.array_equal(loaded.eef_states[:, 0], np.zeros((15, 6)))
+    assert np.array_equal(loaded.eef_states[:, 1], state[:, :6])
+
+
+def test_load_state_rejects_undeclared_seven_dimensional_layout(tmp_path: Path) -> None:
+    dataset = _dataset(tmp_path, manifest_data={"regression_episode_ids": [0]})
+    parquet = tmp_path / "data/chunk-000/episode_000000.parquet"
+    parquet.parent.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "frame_index": np.arange(8),
+            "episode_index": np.zeros(8, dtype=np.int64),
+            "observation.state": list(np.zeros((8, 7), dtype=np.float32)),
+        }
+    ).to_parquet(parquet, index=False)
+    meta = tmp_path / "meta"
+    meta.mkdir()
+    (meta / "episodes.jsonl").write_text(
+        '{"episode_index":0,"tasks":["task"]}\n',
+        encoding="utf-8",
+    )
+    (meta / "info.json").write_text(
+        '{"robot_type":"unknown","features":{"observation.state":{"shape":[7]}}}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(DatasetError, match="supported cora_cart_right_arm"):
+        dataset.load_state(EpisodeRef("move_pillbottle_pad", 0, "cam_high"))

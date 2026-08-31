@@ -111,6 +111,19 @@ def test_normalize_gripper_loop_rejects_recording_without_release() -> None:
         normalize_gripper_loop(raw)
 
 
+def test_normalize_gripper_loop_allows_target_only_hold_without_release() -> None:
+    raw = np.asarray([0.0, 0.04, 0.05, 0.05, 0.05, 0.02, 0.01, 0.01, 0.01])
+
+    normalized, close_frame, release_frame = normalize_gripper_loop(
+        raw,
+        require_release=False,
+    )
+
+    assert close_frame == 5
+    assert release_frame == len(raw)
+    assert np.array_equal(normalized, np.asarray([1.0] * 5 + [0.0] * 4))
+
+
 def test_align_episode_uses_video_timestamps_as_frame_authority(tmp_path: Path) -> None:
     count = 11
     timestamps = np.arange(count, dtype=np.int64) * 100_000_000

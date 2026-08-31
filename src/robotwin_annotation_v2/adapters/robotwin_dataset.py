@@ -15,8 +15,19 @@ from PIL import Image
 
 from ..config import ConfigError, validate_dataset_component
 from ..models import EpisodeRef
+from .real_mcap import RealMcapError, normalize_gripper_loop
 
 NDArray = np.ndarray[Any, Any]
+
+_SINGLE_RIGHT_ARM_STATE_NAMES = (
+    "right_eef_x",
+    "right_eef_y",
+    "right_eef_z",
+    "right_eef_roll",
+    "right_eef_pitch",
+    "right_eef_yaw",
+    "right_gripper_open",
+)
 
 
 class DatasetError(RuntimeError):
@@ -132,6 +143,35 @@ class RoboTwinDataset:
             raise DatasetError(f"episode {episode_index} has no task text")
         return tasks[0].strip()
 
+    def _single_right_arm_state(self, state: NDArray) -> tuple[NDArray, NDArray]:
+        info_path = self.root / "meta" / "info.json"
+        try:
+            info = json.loads(info_path.read_text(encoding="utf-8"))
+            feature = info["features"]["observation.state"]
+        except (FileNotFoundError, OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            raise DatasetError(
+                "7D observation.state requires a valid meta/info.json schema"
+            ) from exc
+        if (
+            info.get("robot_type") != "cora_cart_right_arm"
+            or feature.get("shape") != [7]
+            or tuple(feature.get("names", ())) != _SINGLE_RIGHT_ARM_STATE_NAMES
+        ):
+            raise DatasetError(
+                "7D observation.state is not the supported cora_cart_right_arm layout"
+            )
+        try:
+            right_gripper, _close_frame, _release_frame = normalize_gripper_loop(
+                state[:, 6],
+                require_release=False,
+            )
+        except RealMcapError as exc:
+            raise DatasetError(f"cannot normalize single-right-arm gripper: {exc}") from exc
+        grippers = np.column_stack((np.ones(len(state)), right_gripper))
+        eef = np.zeros((len(state), 2, 6), dtype=np.float64)
+        eef[:, 1] = state[:, :6]
+        return grippers, eef
+
     def load_state(self, ref: EpisodeRef) -> EpisodeState:
         paths = self.paths(ref)
         if not paths.parquet.is_file():
@@ -149,12 +189,15 @@ class RoboTwinDataset:
         if not np.all(episode_indices == ref.episode_index):
             raise DatasetError("parquet episode_index does not match requested episode")
         state = np.stack(frame["observation.state"].to_numpy()).astype(np.float64)
-        if state.shape != (len(frame), 14):
-            raise DatasetError(f"observation.state must be [T,14], got {state.shape}")
         if not np.isfinite(state).all():
             raise DatasetError("observation.state contains non-finite values")
-        grippers = state[:, (6, 13)]
-        eef = np.stack((state[:, 0:6], state[:, 7:13]), axis=1)
+        if state.shape == (len(frame), 14):
+            grippers = state[:, (6, 13)]
+            eef = np.stack((state[:, 0:6], state[:, 7:13]), axis=1)
+        elif state.shape == (len(frame), 7):
+            grippers, eef = self._single_right_arm_state(state)
+        else:
+            raise DatasetError(f"observation.state must be [T,14] or supported [T,7], got {state.shape}")
         return EpisodeState(
             frame_count=len(frame),
             task_text=self.task_text(ref.episode_index),

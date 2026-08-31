@@ -444,7 +444,11 @@ def _first_stable_run(mask: NDArray, *, start: int, length: int) -> int | None:
     return None
 
 
-def normalize_gripper_loop(raw_values: NDArray) -> tuple[NDArray, int, int]:
+def normalize_gripper_loop(
+    raw_values: NDArray,
+    *,
+    require_release: bool = True,
+) -> tuple[NDArray, int, int]:
     """Map physical j7 positions to the binary RoboTwin open/closed convention."""
 
     values = np.asarray(raw_values, dtype=np.float64)
@@ -474,7 +478,9 @@ def normalize_gripper_loop(raw_values: NDArray) -> tuple[NDArray, int, int]:
         length=stable,
     )
     if release_frame is None:
-        raise RealMcapError("gripper signal has no stable release after closing")
+        if require_release:
+            raise RealMcapError("gripper signal has no stable release after closing")
+        release_frame = len(values)
     normalized = np.ones(len(values), dtype=np.float32)
     normalized[close_frame:release_frame] = 0.0
     return normalized, close_frame, release_frame
