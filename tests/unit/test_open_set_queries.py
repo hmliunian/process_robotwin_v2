@@ -146,6 +146,107 @@ def test_curated_query_aliases_remove_queries_already_in_bank_and_fill_next_alia
     assert aliases == ("brown box", "display platform", "display base")
 
 
+def test_open_microwave_target_aliases_are_handle_headed_and_color_ordered() -> None:
+    semantic = _semantic(
+        "target",
+        "microwave door handle",
+        "white microwave door handle",
+        "vertical microwave door handle",
+        "microwave door",
+    )
+
+    aliases = curated_query_aliases(_context("open_microwave"), "target", semantic)
+
+    assert aliases == ("handle", "white handle", "door handle")
+
+
+def test_open_door_target_aliases_require_handle_evidence() -> None:
+    semantic = _semantic(
+        "target",
+        "handle",
+        "black handle",
+        "vertical handle",
+        None,
+    )
+
+    assert curated_query_aliases(_context("open_door"), "target", semantic) == (
+        "door handle",
+    )
+
+
+def test_open_door_hyphenated_handle_still_triggers_handle_alias_rule() -> None:
+    semantic = _semantic(
+        "target",
+        "door-handle",
+        None,
+        None,
+        None,
+    )
+
+    assert curated_query_aliases(_context("open_door"), "target", semantic) == (
+        "handle",
+        "door handle",
+    )
+
+
+def test_open_door_hyphenated_color_handle_generates_color_alias() -> None:
+    semantic = _semantic(
+        "target",
+        "dark-blue handle",
+        None,
+        None,
+        None,
+    )
+
+    assert curated_query_aliases(_context("open_door"), "target", semantic) == (
+        "handle",
+        "dark blue handle",
+        "door handle",
+    )
+
+
+def test_open_microwave_target_aliases_deduplicate_existing_handle_queries() -> None:
+    semantic = _semantic(
+        "target",
+        "handle",
+        "white handle",
+        "vertical handle",
+        "microwave door",
+    )
+
+    aliases = curated_query_aliases(_context("open_microwave"), "target", semantic)
+
+    assert aliases == ("door handle",)
+
+
+def test_open_microwave_aliases_do_not_leak_into_generic_articulated_queries() -> None:
+    semantic = _semantic(
+        "target",
+        "microwave",
+        "white microwave",
+        "vertical door",
+        None,
+    )
+
+    assert curated_query_aliases(_context("open_microwave"), "target", semantic) == ()
+
+
+def test_open_microwave_panel_proxy_does_not_mix_handle_aliases() -> None:
+    semantic = RoleSemanticPlan(
+        role="target",
+        status=SemanticStatus.OK,
+        seed_frame_id=0,
+        query_bank=QueryBank(
+            category_query="moving door panel",
+            allow_moving_door_panel=True,
+        ),
+        exclude=(),
+        reason="no separable handle exists",
+    )
+
+    assert curated_query_aliases(_context("open_microwave"), "target", semantic) == ()
+
+
 def test_curated_query_aliases_normalize_and_deduplicate_existing_aliases() -> None:
     semantic = _semantic("target", "fan", "white fan", "table fan", "device")
 

@@ -56,6 +56,8 @@ class _AliasRule:
     role: RoleName
     tasks: frozenset[str]
     query_words: frozenset[str]
+    required_query_words: frozenset[str]
+    excluded_query_phrases: frozenset[str]
     aliases: tuple[str, ...]
 
 
@@ -90,6 +92,14 @@ def _load_rules(path: Path = _CATALOG_PATH) -> tuple[_AliasRule, ...]:
             entry.get("query_words", []),
             field=f"rules[{index}].query_words",
         )
+        required_query_words = _strings(
+            entry.get("required_query_words", []),
+            field=f"rules[{index}].required_query_words",
+        )
+        excluded_query_phrases = _strings(
+            entry.get("excluded_query_phrases", []),
+            field=f"rules[{index}].excluded_query_phrases",
+        )
         aliases = _strings(
             entry.get("aliases"),
             field=f"rules[{index}].aliases",
@@ -102,6 +112,10 @@ def _load_rules(path: Path = _CATALOG_PATH) -> tuple[_AliasRule, ...]:
                 role=role,
                 tasks=frozenset(tasks),
                 query_words=frozenset(query_words),
+                required_query_words=frozenset(required_query_words),
+                excluded_query_phrases=frozenset(
+                    phrase.casefold() for phrase in excluded_query_phrases
+                ),
                 aliases=aliases,
             )
         )
@@ -120,11 +134,20 @@ def _query_values(semantic: RoleSemanticPlan) -> tuple[str, ...]:
 
 def _query_color(queries: Iterable[str]) -> str | None:
     values = tuple(queries)
+    # The query validator accepts hyphenated compounds, while the color
+    # catalog is expressed as ordinary words.  Normalize only for color
+    # detection so ``dark-blue handle`` still yields a useful color alias.
+    normalized_values = tuple(query.replace("-", " ") for query in values)
     for phrase in _COLOR_PHRASES:
-        if any(phrase in query for query in values):
+        if any(phrase in query for query in normalized_values):
             return phrase
     return next(
-        (word for query in values for word in query.split() if word in _COLOR_WORDS),
+        (
+            word
+            for query in normalized_values
+            for word in query.split()
+            if word in _COLOR_WORDS
+        ),
         None,
     )
 
@@ -155,17 +178,32 @@ def curated_query_aliases(
     queries = _query_values(semantic)
     if not queries:
         return ()
-    words = frozenset(word for query in queries for word in query.split())
+    # ``normalize_query`` permits hyphenated words (for example
+    # ``door-handle``), but alias rules are expressed in ordinary word
+    # vocabulary.  Split hyphens here as well so a handle-headed query cannot
+    # accidentally bypass the door-open ``required_query_words: [handle]``
+    # gate merely because Qwen used a hyphen.
+    words = frozenset(
+        word
+        for query in queries
+        for word in query.replace("-", " ").split()
+    )
     rule = next(
         (
             item
             for item in _load_rules()
             if item.role == role
+            and (
+                not item.required_query_words
+                or item.required_query_words.issubset(words)
+            )
             and (context.episode.task in item.tasks or bool(words & item.query_words))
         ),
         None,
     )
     if rule is None:
+        return ()
+    if any(query.casefold() in rule.excluded_query_phrases for query in queries):
         return ()
     color = _query_color(queries)
     aliases = (

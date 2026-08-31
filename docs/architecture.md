@@ -249,8 +249,9 @@ policy。本地 server 尚不提供可靠的 token-limit 终止原因，local ru
 
 - target：`grasp_manipulation` profile 中是随后被 gripper 抓取并移动的完整物体；
   `contact_press` profile 中是即将被接触或驱动的最小完整功能部件/action site；`door_open`
-  优先可分离的 handle/latch/knob，视角无法分离该部件时才允许用完整可动门板作 visible proxy，
-  且必须排除固定机身、控制面板和按钮。
+  优先完整可分离的 handle（query 保持 handle 作为 head noun），只有视觉证据表明不存在可
+  分离 handle 时才允许用完整可动门板作 visible proxy，且必须排除固定机身、控制面板、按钮、
+  门边和铰链。
 - receiver：任务完成时与 target 直接接触的完整物体或目标区域；不要求承托 target，也不
   要求位于其下方。
 - receiver 身份先由 `place_context` 确认，再回到合法 seed 帧中选择同一对象的清晰视图。
@@ -283,7 +284,9 @@ policy。本地 server 尚不提供可靠的 token-limit 终止原因，local ru
 - 禁止位置关系、比较级、动作、OCR/品牌和 `object/thing/item` 等空泛词；
 - canonical query bank 中的非空候选必须互异；完全相同的输入候选只做窄 canonicalization；
   general fallback 永远最后；
-- `recommended_order` 由 Qwen 按预期分割可靠性排序，而不是按描述长度排序；
+- `recommended_order` 通常由 Qwen 按预期分割可靠性排序，而不是按描述长度排序；`door_open`
+  profile 会在解析边界将非空候选固定为 `category → color → shape → general`，确保裸
+  `handle` 先于属性化 query；
 - Python/YAML 不写死 `bottle`、`pad` 等任务特定文本；
 - schema 不要求 Qwen bbox。历史实验表明 bbox 可能过紧或只覆盖子部件。
 

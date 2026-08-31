@@ -766,6 +766,12 @@ def test_save_sam_artifacts_marks_grippers_not_annotated(tmp_path: Path) -> None
     assert manifest["algorithm"]["canonical_envelope_usage"] == "seed_diagnostic_only"
     assert not manifest["algorithm"]["automatic_query_fallback"]
     assert not manifest["algorithm"]["mask_qc_fallback_used"]
+    strategy = manifest["algorithm"]["resolution_strategy"]
+    assert strategy["order"] == ["S1", "S2", "S3"]
+    assert strategy["runtime_attempt_order"] == [
+        "text_query_all_legal_seeds",
+        "bbox_fallback_same_seed_order",
+    ]
     assert manifest["channels"]["gripper_left"] == "not_annotated"
     assert (episode_dir / "target_0/seed.mask.png").is_file()
     assert (episode_dir / "receiver_0/canonical_envelope.png").is_file()
@@ -783,6 +789,7 @@ def test_save_sam_artifacts_marks_grippers_not_annotated(tmp_path: Path) -> None
     }
     provenance = json.loads((episode_dir / "frame_provenance.json").read_text())
     assert provenance["gripper_backend"] == "sam"
+    assert provenance["resolution_strategy"] == strategy
     assert provenance["channels"]["target_0"]["target_hold_coverage"] == (
         target_qc["target_hold_coverage"]
     )

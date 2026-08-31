@@ -54,6 +54,9 @@ def test_door_open_bbox_prompt_satisfies_render_contract() -> None:
     assert "not be a box around only the gripper contact point or a handle tip" in rendered
     assert "Do not switch to the panel merely because an existing handle is hard to see" in rendered
     assert "door hinges, unrelated mounting hardware" in rendered
+    assert "S3" in rendered
+    assert "after all S1/S2 text-query" in rendered
+    assert "native-propagation, and temporal QC" in rendered
 
 
 @pytest.mark.parametrize("status", ("ambiguous", "not_visible"))

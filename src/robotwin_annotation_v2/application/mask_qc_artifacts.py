@@ -10,6 +10,7 @@ import numpy as np
 
 from ..adapters.artifact_store import ArtifactStore
 from ..models import LoopContext, MaskQCResult
+from .provenance import object_resolution_strategy
 
 
 def save_mask_qc_artifacts(
@@ -19,12 +20,18 @@ def save_mask_qc_artifacts(
     result: MaskQCResult,
     *,
     candidate_masks: Mapping[str, Mapping[str, np.ndarray[Any, Any]]] | None = None,
+    target_profile: str | None = None,
+    prompt_bundle: Mapping[str, Any] | None = None,
 ) -> Path:
     """Persist QC decisions and optional candidate masks for later review."""
 
     episode_dir = store.episode_dir(run_id, context.episode)
     reports = result.to_json()
     reports["episode"] = context.episode.to_json()
+    reports["resolution_strategy"] = object_resolution_strategy(
+        target_profile=target_profile,
+        prompt_bundle=prompt_bundle,
+    )
     masks_to_save = result.candidate_masks if candidate_masks is None else candidate_masks
     mask_paths: dict[str, dict[str, str]] = {}
     if masks_to_save:

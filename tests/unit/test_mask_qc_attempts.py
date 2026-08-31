@@ -181,6 +181,10 @@ def test_save_mask_qc_artifacts_keeps_flat_final_and_nested_seed_attempts(
     )
 
     payload = json.loads(path.read_text(encoding="utf-8"))
+    strategy = payload["resolution_strategy"]
+    assert strategy["format_version"] == "robotwin_object_resolution_v1"
+    assert strategy["order"] == ["S1", "S2", "S3"]
+    assert strategy["S2"]["profile"] == "mode_default"
     artifacts = payload["artifacts"]
     assert artifacts["candidate_masks"]["target"]["A"] == (
         "target/qc_candidates/candidate_A.mask.png"

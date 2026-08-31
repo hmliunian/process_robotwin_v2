@@ -6,6 +6,10 @@ evidence shows that no separable handle exists, box the complete visible moving 
 proxy target. Do not switch to the panel merely because an existing handle is hard to see. The
 seed may precede contact.
 
+S3 — this is the last-resort bbox localization after all S1/S2 text-query × legal-seed attempts
+have been rejected or are ambiguous. Return only the one box JSON requested below; the resulting
+SAM box mask still goes through the same mechanical, visual, native-propagation, and temporal QC.
+
 Task name: {task}
 Task: {task_text}
 Episode: {episode_id}

@@ -13,6 +13,7 @@ from PIL import Image
 
 from ..adapters.qwen_client import QwenCompletion, image_data_url
 from ..config import QwenConfig
+from ..domain import AnnotationMode, TargetProfile
 from ..models import (
     CANDIDATE_FIELDS,
     LoopContext,
@@ -22,6 +23,7 @@ from ..models import (
     SemanticPlanError,
     SemanticStatus,
 )
+from ..models.semantic_plan import canonical_target_profile, normalize_profile_query
 from .prompt_context import timeline_prompt_fields
 
 _FRAME_MARKER = "{labeled_multimodal_frames}"
@@ -277,6 +279,8 @@ def _canonicalize_duplicate_candidates(
 def _complete_candidate_order(
     candidate_values: dict[str, str | None],
     order: tuple[str, ...],
+    *,
+    target_profile: TargetProfile | None = None,
 ) -> tuple[str, ...]:
     """Repair an otherwise valid Qwen bank with omitted/null order entries."""
 
@@ -299,13 +303,88 @@ def _complete_candidate_order(
     if fallback in completed:
         completed.remove(fallback)
         completed.append(fallback)
+    if target_profile is TargetProfile.DOOR_OPEN:
+        # Text probes show the bare ``handle`` category query is the most
+        # stable door-open prompt.  Keep the profile's documented ladder
+        # deterministic even when Qwen returns a different valid permutation;
+        # generic/grasp profiles retain their model-supplied order.
+        completed = [
+            field
+            for field in CANDIDATE_FIELDS
+            if candidate_values[field] is not None
+        ]
     return tuple(completed)
+
+
+def canonicalize_legacy_semantic_plan(
+    payload: Mapping[str, Any],
+    *,
+    target_profile: TargetProfile | str | None,
+) -> dict[str, Any]:
+    """Upgrade a legacy semantic-plan envelope for a specialized profile.
+
+    Older door-open artifacts were written before profile-aware parsing and
+    can therefore retain context words such as ``microwave`` in otherwise
+    valid handle queries.  The raw response is still parsed under the current
+    contract; this helper only normalizes the derived JSON envelope so a
+    valid legacy artifact can be replayed without weakening validation.
+    """
+
+    resolved_profile = canonical_target_profile(target_profile)
+    cloned_value = json.loads(json.dumps(dict(payload), ensure_ascii=False))
+    if not isinstance(cloned_value, dict):  # pragma: no cover - mapping serialization guard
+        raise TypeError("semantic plan must serialize to a JSON object")
+    cloned: dict[str, Any] = cloned_value
+    if resolved_profile is not TargetProfile.DOOR_OPEN:
+        return cloned
+    roles = cloned.get("roles")
+    if not isinstance(roles, dict):
+        return cloned
+    for role, role_payload in roles.items():
+        if not isinstance(role_payload, dict):
+            continue
+        values: dict[str, str | None] = {}
+        for field in CANDIDATE_FIELDS:
+            value = role_payload.get(field)
+            values[field] = (
+                None
+                if value is None
+                else normalize_profile_query(
+                    value,
+                    target_profile=resolved_profile,
+                    field=f"{role}.{field}",
+                    allow_visual_object=field == "general_fallback_query",
+                )
+            )
+        raw_order = role_payload.get("recommended_order")
+        if not isinstance(raw_order, list) or any(
+            not isinstance(field, str) for field in raw_order
+        ):
+            raise SemanticPlanError(
+                f"{role}.recommended_order must be a list of strings"
+            )
+        values, order = _canonicalize_duplicate_candidates(values, tuple(raw_order))
+        order = _complete_candidate_order(
+            values,
+            order,
+            target_profile=resolved_profile,
+        )
+        for field, value in values.items():
+            role_payload[field] = value
+        role_payload["recommended_order"] = list(order)
+        role_payload["primary_query"] = (
+            None if not order else values[order[0]]
+        )
+    cloned["target_profile"] = resolved_profile.value
+    return cloned
 
 
 def _parse_role(
     role: str,
     payload: Any,
     context: LoopContext,
+    *,
+    target_profile: TargetProfile | None,
 ) -> RoleSemanticPlan:
     if not isinstance(payload, dict):
         raise QwenStageError(f"{role} must be a JSON object")
@@ -340,12 +419,48 @@ def _parse_role(
     for field, value in candidate_values.items():
         if value is not None and not isinstance(value, str):
             raise QwenStageError(f"{role}.{field} must be a string or null")
+        if value is not None:
+            try:
+                candidate_values[field] = normalize_profile_query(
+                    value,
+                    target_profile=target_profile,
+                    field=f"{role}.{field}",
+                    allow_visual_object=field == "general_fallback_query",
+                )
+            except (SemanticPlanError, ValueError) as exc:
+                raise QwenStageError(str(exc)) from exc
+    if target_profile is TargetProfile.DOOR_OPEN:
+        panel_fields = tuple(
+            field
+            for field, value in candidate_values.items()
+            if value in {"door panel", "moving door panel"}
+        )
+        # A panel is an exceptional whole-door proxy, not another query
+        # synonym in the normal handle ladder.  Keeping it in the sole
+        # category slot prevents the resolver from sending a panel and a
+        # handle (or two differently worded panels) to SAM as separate
+        # candidates with different identities.
+        has_other_candidate = any(
+            candidate_values[field] is not None
+            for field in CANDIDATE_FIELDS
+            if field != "category_query"
+        )
+        if panel_fields and (
+            panel_fields != ("category_query",) or has_other_candidate
+        ):
+            raise QwenStageError(
+                f"{role} door-panel proxy must be the sole category_query"
+            )
     order = _string_list(payload["recommended_order"], field=f"{role}.recommended_order")
     candidate_values, order = _canonicalize_duplicate_candidates(
         candidate_values,
         order,
     )
-    order = _complete_candidate_order(candidate_values, order)
+    order = _complete_candidate_order(
+        candidate_values,
+        order,
+        target_profile=target_profile,
+    )
 
     if status is SemanticStatus.NO_CLEAR_SEED:
         if seed_frame_id is not None or any(
@@ -368,6 +483,7 @@ def _parse_role(
                 shape_category_query=candidate_values["shape_category_query"],
                 general_fallback_query=candidate_values["general_fallback_query"],
                 recommended_order=order,
+                allow_moving_door_panel=target_profile is TargetProfile.DOOR_OPEN,
             )
         except SemanticPlanError as exc:
             raise QwenStageError(f"invalid {role} query bank: {exc}") from exc
@@ -388,21 +504,46 @@ def parse_semantic_plan(
     context: LoopContext,
     model: str,
     rendered_prompt: str,
+    target_profile: TargetProfile | str | None = None,
 ) -> SemanticPlan:
     """Parse one joint response and enforce seed/query constraints."""
 
+    try:
+        resolved_profile = canonical_target_profile(target_profile)
+    except ValueError as exc:
+        raise QwenStageError(str(exc)) from exc
+    if (
+        resolved_profile in {TargetProfile.CONTACT_PRESS, TargetProfile.DOOR_OPEN}
+        and context.annotation_mode is not AnnotationMode.TARGET_ONLY
+    ):
+        raise QwenStageError(
+            f"{resolved_profile.value} target profile requires target_only mode"
+        )
     expected_roles = context.annotation_spec.required_role_names
     payload = _decode_response(raw_response, expected_roles=expected_roles)
     return SemanticPlan(
         episode=context.episode,
         role_plans=tuple(
-            _parse_role(role, payload[role], context) for role in expected_roles
+            _parse_role(
+                role,
+                payload[role],
+                context,
+                target_profile=resolved_profile,
+            )
+            for role in expected_roles
         ),
         model=model,
         prompt_sha256=SemanticPlan.prompt_hash(rendered_prompt),
         input_frame_ids=tuple(frame.frame_id for frame in context.semantic_frames),
         raw_response=raw_response,
         annotation_mode=context.annotation_mode,
+        # Only door-open currently changes parser semantics. Keep the
+        # historical semantic-plan shape for grasp/contact profiles.
+        target_profile=(
+            resolved_profile
+            if resolved_profile is TargetProfile.DOOR_OPEN
+            else None
+        ),
     )
 
 
@@ -413,6 +554,7 @@ def run_qwen_stage(
     client: QwenClient,
     *,
     check_health: bool = True,
+    target_profile: TargetProfile | str | None = None,
 ) -> QwenStageResult:
     """Run the complete Qwen stage without embedding prompt policy in the server."""
 
@@ -441,6 +583,7 @@ def run_qwen_stage(
             context=context,
             model=completion.model,
             rendered_prompt=request.rendered_prompt,
+            target_profile=target_profile,
         )
     except QwenStageError as exc:
         raise QwenStageError(

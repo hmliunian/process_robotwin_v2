@@ -27,7 +27,7 @@ from ..models import (
     SemanticPlan,
 )
 from ..pipeline.sam_stage import RoleMaskData, SamStageError, SamStageResult
-from .provenance import attach_profile_provenance
+from .provenance import attach_profile_provenance, object_resolution_strategy
 
 if TYPE_CHECKING:
     from ..pipeline.gripper.sam.annotator import GripperStageResult
@@ -327,12 +327,17 @@ def save_sam_artifacts(
         "legend": FRAME_ENCODING_LEGEND,
         "target_hold_window": None if hold is None else list(hold),
     }
+    resolution_strategy = object_resolution_strategy(
+        target_profile=target_profile,
+        prompt_bundle=prompt_bundle,
+    )
     provenance: dict[str, Any] = {
         "format_version": "robotwin_frame_provenance_v2",
         "annotation_mode": context.annotation_mode.value,
         "required_object_roles": list(context.annotation_spec.required_role_names),
         "gripper_backend": "sam",
         "composition": "native_track clipped_to role_output_window",
+        "resolution_strategy": resolution_strategy,
         "frame_encoding": encoding_metadata,
         "channels": provenance_channels,
     }
@@ -420,6 +425,7 @@ def save_sam_artifacts(
                 "automatic_query_fallback": False,
                 "mask_qc_fallback_used": fallback_used,
                 "candidate_mask_qc": candidate_mask_qc,
+                "resolution_strategy": resolution_strategy,
                 "gripper_stage": None
                 if gripper_result is None
                 else {

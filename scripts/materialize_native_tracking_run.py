@@ -6,16 +6,24 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import shutil
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import numpy as np
 from PIL import Image
 
 from robotwin_annotation_v2.adapters import ArtifactStore, RoboTwinDataset
+from robotwin_annotation_v2.application.provenance import (
+    prompt_bundle_for_config,
+    prompt_bundle_from_manifest,
+    target_profile_from_config,
+    target_profile_from_manifest,
+    validate_profile_provenance_pair,
+)
 from robotwin_annotation_v2.config import PipelineConfig, load_config
+from robotwin_annotation_v2.domain import AnnotationMode, TargetProfile
 from robotwin_annotation_v2.models import (
     EpisodeRef,
     FrameWindow,
@@ -23,10 +31,12 @@ from robotwin_annotation_v2.models import (
     MaskStatus,
     SemanticPlan,
 )
+from robotwin_annotation_v2.models.semantic_plan import canonical_target_profile
 from robotwin_annotation_v2.pipeline import (
     RoleMaskData,
     SamStageResult,
     build_loop_context,
+    canonicalize_legacy_semantic_plan,
     compose_visible_mask,
     dilate_envelope,
     evaluate_temporal_mask,
@@ -37,13 +47,33 @@ from robotwin_annotation_v2.pipeline import (
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RoleName = Literal["target", "receiver"]
 ROLE_NAMES: tuple[RoleName, ...] = ("target", "receiver")
-ROLE_DIRECTORIES = ("target_0", "receiver_0")
-STAGE_FILES = (
-    "loop.json",
-    "semantic_plan.json",
-    "qwen_rendered_prompt.txt",
-    "qwen_raw_response.txt",
-)
+
+
+def _validate_source_prompt_provenance(
+    source_manifest: Mapping[str, Any],
+    *,
+    target_profile: str | None,
+    prompt_bundle: Mapping[str, Any] | None,
+) -> None:
+    """Validate a source run's prompt contract against the current config.
+
+    Runs created before prompt bundles were introduced are intentionally kept
+    readable.  Once a source manifest carries a bundle, however, reusing its
+    native tracks under a different prompt/profile would relabel the semantic
+    result, so require an exact content/profile match and fail closed.
+    """
+
+    source_bundle = prompt_bundle_from_manifest(source_manifest, strict=True)
+    if source_bundle is None:
+        return
+    validate_profile_provenance_pair(
+        source_manifest,
+        {
+            "target_profile": target_profile,
+            "prompt_bundle": prompt_bundle,
+        },
+        label="source and configured prompt provenance",
+    )
 
 
 def _parse_args() -> argparse.Namespace:
@@ -93,7 +123,10 @@ def _dataset(config: PipelineConfig) -> RoboTwinDataset:
     )
 
 
-def _load_mask(path: Path | None, shape: tuple[int, int]) -> np.ndarray | None:
+def _load_mask(
+    path: Path | None,
+    shape: tuple[int, int],
+) -> np.ndarray[Any, Any] | None:
     if path is None or not path.is_file():
         return None
     with Image.open(path) as image:
@@ -103,7 +136,10 @@ def _load_mask(path: Path | None, shape: tuple[int, int]) -> np.ndarray | None:
     return mask
 
 
-def _load_track(path: Path | None, expected_shape: tuple[int, int, int]) -> np.ndarray:
+def _load_track(
+    path: Path | None,
+    expected_shape: tuple[int, int, int],
+) -> np.ndarray[Any, Any]:
     if path is None or not path.is_file():
         return np.zeros(expected_shape, dtype=bool)
     with np.load(path, allow_pickle=False) as archive:
@@ -130,18 +166,56 @@ def _identity_record(
     return record
 
 
-def _load_semantic_plan(source_dir: Path, context: LoopContext) -> SemanticPlan:
+def _load_semantic_plan(
+    source_dir: Path,
+    context: LoopContext,
+    *,
+    target_profile: str | None = None,
+) -> SemanticPlan:
     saved_path = source_dir / "semantic_plan.json"
     prompt_path = source_dir / "qwen_rendered_prompt.txt"
     raw_path = source_dir / "qwen_raw_response.txt"
     saved = json.loads(saved_path.read_text(encoding="utf-8"))
-    plan = parse_semantic_plan(
-        raw_path.read_text(encoding="utf-8"),
-        context=context,
-        model=str(saved["model"]),
-        rendered_prompt=prompt_path.read_text(encoding="utf-8"),
+    configured_profile = canonical_target_profile(target_profile)
+    saved_profile_field_present = "target_profile" in saved
+    raw_saved_profile = saved.get("target_profile")
+    saved_profile = canonical_target_profile(raw_saved_profile)
+    if (
+        configured_profile is not None
+        and saved_profile_field_present
+        and raw_saved_profile is not None
+        and saved_profile is None
+    ):
+        raise ValueError(
+            "saved semantic_plan.json target_profile differs from current config"
+        )
+    if saved_profile is not None and saved_profile is not configured_profile:
+        raise ValueError(
+            "saved semantic_plan.json target_profile differs from current config"
+        )
+    plan = cast(
+        SemanticPlan,
+        parse_semantic_plan(
+            raw_path.read_text(encoding="utf-8"),
+            context=context,
+            model=str(saved["model"]),
+            rendered_prompt=prompt_path.read_text(encoding="utf-8"),
+            target_profile=configured_profile,
+        ),
     )
-    if plan.to_json() != saved:
+    comparable_saved = saved
+    if configured_profile is TargetProfile.DOOR_OPEN and (
+        not saved_profile_field_present or saved_profile is None
+    ):
+        comparable_saved = canonicalize_legacy_semantic_plan(
+            saved,
+            target_profile=configured_profile,
+        )
+    elif saved_profile_field_present and saved_profile is None:
+        comparable_saved = {
+            key: value for key, value in saved.items() if key != "target_profile"
+        }
+    if plan.to_json() != comparable_saved:
         raise ValueError(f"saved semantic plan fails provenance validation: {saved_path}")
     return plan
 
@@ -247,6 +321,8 @@ def materialize(
     if len(frame_shape_values) != 2:
         raise ValueError(f"invalid dataset frame shape: {frame_shape_values}")
     frame_shape = (frame_shape_values[0], frame_shape_values[1])
+    target_profile = target_profile_from_config(config)
+    prompt_bundle = prompt_bundle_for_config(config)
 
     records: list[dict[str, Any]] = []
     for position, episode_index in enumerate(episode_ids, start=1):
@@ -255,23 +331,60 @@ def materialize(
         source_dir = source_masks.parent
         source_manifest_path = source_dir / "run_manifest.json"
         source_manifest = json.loads(source_manifest_path.read_text(encoding="utf-8"))
+        source_profile = target_profile_from_manifest(source_manifest)
+        if source_profile is not None:
+            configured_source_profile = canonical_target_profile(source_profile)
+            configured_profile = canonical_target_profile(target_profile)
+            if configured_source_profile is not configured_profile:
+                raise ValueError(
+                    "source run target_profile differs from current config"
+                )
+        # Validate a present source bundle before reusing its stage metadata;
+        # legacy source manifests may legitimately omit the bundle.
+        _validate_source_prompt_provenance(
+            source_manifest,
+            target_profile=target_profile,
+            prompt_bundle=prompt_bundle,
+        )
         ref = EpisodeRef(config.dataset.task, episode_index, config.dataset.camera)
-        context = build_loop_context(dataset, ref)
+        context = build_loop_context(
+            dataset,
+            ref,
+            annotation_mode=AnnotationMode(config.annotation.mode),
+        )
         saved_loop = json.loads((source_dir / "loop.json").read_text(encoding="utf-8"))
         if saved_loop != context.to_json():
             raise ValueError(f"saved loop differs from current Stage 1: {source_dir}")
-        semantic_plan = _load_semantic_plan(source_dir, context)
+        semantic_plan = _load_semantic_plan(
+            source_dir,
+            context,
+            target_profile=target_profile,
+        )
+
+        source_roles = source_manifest.get("roles")
+        if not isinstance(source_roles, list):
+            raise TypeError(f"source manifest roles must be a list: {source_manifest_path}")
+        source_roles_by_name: dict[str, dict[str, Any]] = {}
+        for source_role in source_roles:
+            if not isinstance(source_role, dict) or source_role.get("role") not in {
+                "target",
+                "receiver",
+            }:
+                continue
+            role_name = str(source_role["role"])
+            if role_name in source_roles_by_name:
+                raise ValueError(f"duplicate source role {role_name}: {source_manifest_path}")
+            source_roles_by_name[role_name] = source_role
 
         role_values: list[RoleMaskData] = []
         seed_images: dict[int, Image.Image] = {}
-        for role, role_directory, source_role in zip(
-            ROLE_NAMES,
-            ROLE_DIRECTORIES,
-            source_manifest["roles"],
-            strict=True,
-        ):
-            if source_role["role"] != role:
-                raise ValueError(f"source role order mismatch: {source_manifest_path}")
+        required_roles = context.annotation_spec.required_role_names
+        for role in required_roles:
+            if role not in source_roles_by_name:
+                raise ValueError(
+                    f"source manifest is missing required role {role}: {source_manifest_path}"
+                )
+            source_role = source_roles_by_name[role]
             review_record = _identity_record(identity_review, episode_index, role)
             role_values.append(
                 _role_data(
@@ -290,13 +403,14 @@ def materialize(
                 with Image.open(source_dir / seed_rgb_relative) as image:
                     seed_images[int(seed_frame)] = image.convert("RGB").copy()
             elif role_values[-1].seed_mask is not None:
-                raise ValueError(f"source seed RGB is missing: {source_dir / role_directory}")
+                raise ValueError(
+                    f"source seed RGB is missing: {source_dir / role}_0"
+                )
 
         result = SamStageResult(
             frame_count=context.frame_count,
             frame_shape=frame_shape,
-            target=role_values[0],
-            receiver=role_values[1],
+            role_masks=tuple(role_values),
         )
         mask_run = save_sam_artifacts(
             store,
@@ -305,10 +419,26 @@ def materialize(
             semantic_plan,
             result,
             seed_images=seed_images,
+            target_profile=target_profile,
+            prompt_bundle=prompt_bundle,
         )
         output_dir = Path(mask_run.artifact_dir)
-        for filename in STAGE_FILES:
-            shutil.copy2(source_dir / filename, output_dir / filename)
+        # Re-publish the validated Stage-1/2 envelopes instead of copying the
+        # source semantic-plan JSON verbatim.  Profile-aware parsing may
+        # canonicalize legacy handle wording (and add target_profile), so the
+        # saved JSON must match the plan consumed by this materialization.
+        store.save_loop(output_run_id, ref, context.to_json())
+        store.save_semantic_plan(
+            output_run_id,
+            ref,
+            semantic_plan.to_json(),
+            rendered_prompt=(source_dir / "qwen_rendered_prompt.txt").read_text(
+                encoding="utf-8"
+            ),
+            raw_response=(source_dir / "qwen_raw_response.txt").read_text(
+                encoding="utf-8"
+            ),
+        )
         output_manifest_path = output_dir / "run_manifest.json"
         output_manifest = json.loads(output_manifest_path.read_text(encoding="utf-8"))
         output_manifest["lineage"] = {

@@ -55,6 +55,7 @@ _EXPORT_GROUPS = {
         "QwenStageResult",
         "RenderedQwenRequest",
         "build_qwen_request",
+        "canonicalize_legacy_semantic_plan",
         "parse_semantic_plan",
         "run_qwen_stage",
     ),

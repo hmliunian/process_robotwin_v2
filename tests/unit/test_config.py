@@ -187,6 +187,40 @@ def test_shared_profile_loads_each_supported_mode_without_dataset_identity() -> 
 
 
 @pytest.mark.parametrize(
+    "setting",
+    (
+        "qc_enabled",
+        "qc_query_fallback_enabled",
+        "qc_seed_fallback_enabled",
+        "qc_bbox_fallback_enabled",
+    ),
+)
+def test_door_open_profile_requires_complete_s1_s3_object_resolution(
+    tmp_path: Path,
+    setting: str,
+) -> None:
+    raw = yaml.safe_load((PROJECT_ROOT / "configs/process.yaml").read_text(encoding="utf-8"))
+    assert isinstance(raw, dict)
+    defaults = raw["defaults"]
+    assert isinstance(defaults, dict)
+    mask = defaults["mask"]
+    assert isinstance(mask, dict)
+    mask[setting] = False
+    if setting == "qc_enabled":
+        for fallback in (
+            "qc_query_fallback_enabled",
+            "qc_seed_fallback_enabled",
+            "qc_bbox_fallback_enabled",
+        ):
+            mask[fallback] = False
+    config_path = tmp_path / "door-open-disabled-stage.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="complete S1-S3"):
+        load_profile(config_path, mode="door_open")
+
+
+@pytest.mark.parametrize(
     ("semantic_profile", "prompt_name", "qc_name", "bbox_name"),
     (
         (

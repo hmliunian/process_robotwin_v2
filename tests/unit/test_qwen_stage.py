@@ -9,14 +9,18 @@ import pytest
 from PIL import Image
 
 from robotwin_annotation_v2.adapters import QwenCompletion
+from robotwin_annotation_v2.adapters.artifact_store import ArtifactStore
+from robotwin_annotation_v2.application.episode_pipeline import _load_saved_semantic_plan
 from robotwin_annotation_v2.config import QwenConfig
-from robotwin_annotation_v2.domain import AnnotationMode
+from robotwin_annotation_v2.domain import AnnotationMode, TargetProfile
 from robotwin_annotation_v2.models import (
     EpisodeRef,
     FramePurpose,
     LoopContext,
     LoopEvents,
+    QueryBank,
     SemanticFrame,
+    SemanticPlanError,
     TargetOnlyEvents,
 )
 from robotwin_annotation_v2.pipeline import (
@@ -120,6 +124,35 @@ def _response() -> str:
 
 def _target_only_response() -> str:
     return json.dumps({"target": json.loads(_response())["target"]}, ensure_ascii=False)
+
+
+def _door_open_response(
+    category_query: str,
+    *,
+    color_query: str | None = None,
+    shape_query: str | None = None,
+    fallback_query: str | None = None,
+) -> str:
+    target = json.loads(_target_only_response())["target"]
+    target.update(
+        {
+            "category_query": category_query,
+            "color_category_query": color_query,
+            "shape_category_query": shape_query,
+            "general_fallback_query": fallback_query,
+            "recommended_order": [
+                field
+                for field, value in (
+                    ("category_query", category_query),
+                    ("color_category_query", color_query),
+                    ("shape_category_query", shape_query),
+                    ("general_fallback_query", fallback_query),
+                )
+                if value is not None
+            ],
+        }
+    )
+    return json.dumps({"target": target})
 
 
 class FakeQwenClient:
@@ -333,9 +366,331 @@ def test_door_open_semantic_prompt_satisfies_multimodal_contract() -> None:
     assert "smallest complete visible functional part" in prompt_text
     assert "compare every frame marked ``seed_candidate=yes``" in prompt_text
     assert "do not default to the latest pre-close frame" in prompt_text
-    assert "every candidate; do not replace it with ``vertical bar``" in prompt_text
+    assert "Keep the word ``handle`` as the semantic head" in prompt_text
     assert "All non-empty candidates must preserve the same physical identity" in prompt_text
     assert "no separable handle exists, not merely because the handle is hard to see" in prompt_text
+    assert "S1" in prompt_text and "S2" in prompt_text and "S3" in prompt_text
+    assert "downstream last-resort bbox fallback" in prompt_text
+
+
+@pytest.mark.parametrize(
+    "query",
+    (
+        "vertical bar",
+        "horizontal bar",
+        "latch",
+        "door latch",
+        "microwave door",
+        "door",
+        "panel",
+        "body",
+    ),
+)
+def test_door_open_profile_rejects_non_handle_queries(query: str) -> None:
+    with pytest.raises(QwenStageError, match="handle as the head noun"):
+        parse_semantic_plan(
+            _door_open_response(query),
+            context=_target_only_context(),
+            model="fake-qwen",
+            rendered_prompt="rendered prompt",
+            target_profile=TargetProfile.DOOR_OPEN,
+        )
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    (
+        ("microwave handle", "handle"),
+        ("microwave door handle", "handle"),
+        ("white microwave door handle", "white handle"),
+        ("vertical microwave door handle", "vertical handle"),
+        ("black door handle", "black handle"),
+    ),
+)
+def test_door_open_profile_canonicalizes_microwave_handle_aliases(
+    query: str,
+    expected: str,
+) -> None:
+    plan = parse_semantic_plan(
+        _door_open_response(query),
+        context=_target_only_context(),
+        model="fake-qwen",
+        rendered_prompt="rendered prompt",
+        target_profile=TargetProfile.DOOR_OPEN,
+    )
+
+    assert plan.target.primary_query == expected
+    assert plan.target_profile is TargetProfile.DOOR_OPEN
+    assert plan.to_json()["target_profile"] == "door_open"
+
+
+@pytest.mark.parametrize("query", ("handle", "door handle", "black handle", "vertical handle"))
+def test_door_open_profile_accepts_handle_head_queries(query: str) -> None:
+    plan = parse_semantic_plan(
+        _door_open_response(query),
+        context=_target_only_context(),
+        model="fake-qwen",
+        rendered_prompt="rendered prompt",
+        target_profile=TargetProfile.DOOR_OPEN,
+    )
+
+    assert plan.target.primary_query == query
+
+
+def test_door_open_profile_forces_category_first_query_ladder() -> None:
+    payload = json.loads(_door_open_response(
+        "handle",
+        color_query="black handle",
+        shape_query="vertical handle",
+        fallback_query="door handle",
+    ))
+    payload["target"]["recommended_order"] = [
+        "shape_category_query",
+        "color_category_query",
+        "category_query",
+        "general_fallback_query",
+    ]
+
+    plan = parse_semantic_plan(
+        json.dumps(payload),
+        context=_target_only_context(),
+        model="fake-qwen",
+        rendered_prompt="rendered prompt",
+        target_profile=TargetProfile.DOOR_OPEN,
+    )
+
+    assert plan.target.query_bank is not None
+    assert plan.target.query_bank.recommended_order == (
+        "category_query",
+        "color_category_query",
+        "shape_category_query",
+        "general_fallback_query",
+    )
+    assert plan.target.primary_query == "handle"
+
+
+@pytest.mark.parametrize("query", ("door panel", "moving door panel"))
+def test_door_open_profile_preserves_door_panel_proxy(query: str) -> None:
+    plan = parse_semantic_plan(
+        _door_open_response(query),
+        context=_target_only_context(),
+        model="fake-qwen",
+        rendered_prompt="rendered prompt",
+        target_profile=TargetProfile.DOOR_OPEN,
+    )
+
+    assert plan.target.primary_query == query
+
+
+@pytest.mark.parametrize("query", ("door-panel", "moving-door-panel"))
+def test_door_open_profile_canonicalizes_hyphenated_panel_proxy(query: str) -> None:
+    plan = parse_semantic_plan(
+        _door_open_response(query),
+        context=_target_only_context(),
+        model="fake-qwen",
+        rendered_prompt="rendered prompt",
+        target_profile=TargetProfile.DOOR_OPEN,
+    )
+
+    assert plan.target.primary_query == query.replace("-", " ")
+
+
+def test_door_open_profile_rejects_mixed_handle_and_panel_proxy() -> None:
+    with pytest.raises(QwenStageError, match="door-panel proxy"):
+        parse_semantic_plan(
+            _door_open_response("handle", fallback_query="moving door panel"),
+            context=_target_only_context(),
+            model="fake-qwen",
+            rendered_prompt="rendered prompt",
+            target_profile=TargetProfile.DOOR_OPEN,
+        )
+
+
+@pytest.mark.parametrize("category_query", ("door panel", "moving door panel"))
+def test_door_open_profile_keeps_panel_proxy_in_category_slot_only(
+    category_query: str,
+) -> None:
+    plan = parse_semantic_plan(
+        _door_open_response(category_query),
+        context=_target_only_context(),
+        model="fake-qwen",
+        rendered_prompt="rendered prompt",
+        target_profile=TargetProfile.DOOR_OPEN,
+    )
+
+    assert plan.target.query_bank is not None
+    assert plan.target.query_bank.recommended_order == ("category_query",)
+
+
+def test_door_open_profile_rejects_two_panel_proxy_fields() -> None:
+    with pytest.raises(QwenStageError, match="sole category_query"):
+        parse_semantic_plan(
+            _door_open_response("door panel", fallback_query="moving door panel"),
+            context=_target_only_context(),
+            model="fake-qwen",
+            rendered_prompt="rendered prompt",
+            target_profile=TargetProfile.DOOR_OPEN,
+        )
+
+
+def test_door_open_profile_rejects_panel_proxy_mixed_with_handle_candidate() -> None:
+    with pytest.raises(QwenStageError, match="sole category_query"):
+        parse_semantic_plan(
+            _door_open_response("moving door panel", color_query="black handle"),
+            context=_target_only_context(),
+            model="fake-qwen",
+            rendered_prompt="rendered prompt",
+            target_profile=TargetProfile.DOOR_OPEN,
+        )
+
+
+def test_query_bank_rejects_panel_proxy_outside_category_slot() -> None:
+    with pytest.raises(SemanticPlanError, match="sole category_query"):
+        QueryBank(
+            category_query="moving door panel",
+            general_fallback_query="door panel",
+            allow_moving_door_panel=True,
+        )
+
+
+def test_generic_profile_keeps_door_queries_backward_compatible() -> None:
+    plan = parse_semantic_plan(
+        _door_open_response("vertical bar"),
+        context=_target_only_context(),
+        model="fake-qwen",
+        rendered_prompt="rendered prompt",
+    )
+
+    assert plan.target.primary_query == "vertical bar"
+    assert "target_profile" not in plan.to_json()
+
+
+def test_specialized_profile_requires_target_only_context() -> None:
+    with pytest.raises(QwenStageError, match="requires target_only"):
+        parse_semantic_plan(
+            _response(),
+            context=_context(),
+            model="fake-qwen",
+            rendered_prompt="rendered prompt",
+            target_profile=TargetProfile.DOOR_OPEN,
+        )
+
+
+def test_saved_door_open_plan_replays_with_the_same_profile(tmp_path: Path) -> None:
+    context = _target_only_context()
+    raw_response = _door_open_response("microwave door handle")
+    prompt = "rendered prompt"
+    plan = parse_semantic_plan(
+        raw_response,
+        context=context,
+        model="fake-qwen",
+        rendered_prompt=prompt,
+        target_profile=TargetProfile.DOOR_OPEN,
+    )
+    store = ArtifactStore(tmp_path)
+    store.save_loop("run", context.episode, context.to_json())
+    store.save_semantic_plan(
+        "run",
+        context.episode,
+        plan.to_json(),
+        rendered_prompt=prompt,
+        raw_response=raw_response,
+    )
+
+    replay = _load_saved_semantic_plan(
+        store,
+        "run",
+        context,
+        target_profile=TargetProfile.DOOR_OPEN,
+    )
+
+    assert replay.to_json() == plan.to_json()
+
+    # An older door-open run may omit the profile from semantic_plan.json;
+    # parsing under the configured profile upgrades that envelope while still
+    # enforcing the current handle contract.
+    legacy_store = ArtifactStore(tmp_path / "legacy")
+    legacy_store.save_loop("run", context.episode, context.to_json())
+    legacy_store.save_semantic_plan(
+        "run",
+        context.episode,
+        {key: value for key, value in plan.to_json().items() if key != "target_profile"},
+        rendered_prompt=prompt,
+        raw_response=raw_response,
+    )
+    upgraded = _load_saved_semantic_plan(
+        legacy_store,
+        "run",
+        context,
+        target_profile=TargetProfile.DOOR_OPEN,
+    )
+    assert upgraded.target_profile is TargetProfile.DOOR_OPEN
+    with pytest.raises(ValueError, match="target_profile differs"):
+        _load_saved_semantic_plan(
+            store,
+            "run",
+            context,
+            target_profile=TargetProfile.CONTACT_PRESS,
+        )
+
+    generic_marker_store = ArtifactStore(tmp_path / "generic-marker")
+    generic_marker_store.save_loop("run", context.episode, context.to_json())
+    generic_marker = plan.to_json()
+    generic_marker["target_profile"] = "grasp_manipulation"
+    generic_marker_store.save_semantic_plan(
+        "run",
+        context.episode,
+        generic_marker,
+        rendered_prompt=prompt,
+        raw_response=raw_response,
+    )
+    with pytest.raises(ValueError, match="target_profile differs"):
+        _load_saved_semantic_plan(
+            generic_marker_store,
+            "run",
+            context,
+            target_profile=TargetProfile.DOOR_OPEN,
+        )
+
+
+def test_legacy_door_open_plan_replay_canonicalizes_context_words(tmp_path: Path) -> None:
+    context = _target_only_context()
+    prompt = "rendered prompt"
+    raw_response = _door_open_response(
+        "microwave door handle",
+        color_query="white microwave door handle",
+        shape_query="vertical microwave door handle",
+        fallback_query="door handle",
+    )
+    legacy = parse_semantic_plan(
+        raw_response,
+        context=context,
+        model="fake-qwen",
+        rendered_prompt=prompt,
+    )
+    store = ArtifactStore(tmp_path)
+    store.save_loop("run", context.episode, context.to_json())
+    store.save_semantic_plan(
+        "run",
+        context.episode,
+        legacy.to_json(),
+        rendered_prompt=prompt,
+        raw_response=raw_response,
+    )
+
+    upgraded = _load_saved_semantic_plan(
+        store,
+        "run",
+        context,
+        target_profile=TargetProfile.DOOR_OPEN,
+    )
+
+    assert upgraded.target_profile is TargetProfile.DOOR_OPEN
+    assert upgraded.target.query_bank is not None
+    assert upgraded.target.query_bank.category_query == "handle"
+    assert upgraded.target.query_bank.color_category_query == "white handle"
+    assert upgraded.target.query_bank.shape_category_query == "vertical handle"
+    assert upgraded.target.primary_query == "handle"
 
 
 def test_target_only_semantic_prompt_ends_hold_before_reopen() -> None:

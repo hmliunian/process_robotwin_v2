@@ -578,6 +578,11 @@ def _run_role_qc_at_seed(
     mask_config: MaskConfig,
     client: MaskQCClient,
 ) -> RoleAttemptExecution:
+    provenance: dict[str, Any] = {
+        "resolution_stage": "S1",
+        "candidate_generation": "sam3_text_queries",
+    }
+
     def generation_error(reason: str) -> RoleAttemptExecution:
         return RoleAttemptExecution(
             seed_frame_id,
@@ -587,6 +592,9 @@ def _run_role_qc_at_seed(
                 f"text candidate generation failed: {reason}",
             ),
             (),
+            (),
+            MaskQCAttemptMethod.TEXT_QUERY,
+            provenance,
         )
 
     blue_prior = np.zeros(frame_shape, dtype=bool)
@@ -721,6 +729,7 @@ def _run_role_qc_at_seed(
         mask_config=mask_config,
         client=client,
         method=MaskQCAttemptMethod.TEXT_QUERY,
+        provenance=provenance,
     )
 
 
@@ -741,6 +750,7 @@ def _run_bbox_qc_at_seed(
 
     method = MaskQCAttemptMethod.BBOX_FALLBACK
     provenance: dict[str, Any] = {
+        "resolution_stage": "S3",
         "candidate_generation": "qwen_bbox_to_sam_box",
         "sam_ran": False,
     }

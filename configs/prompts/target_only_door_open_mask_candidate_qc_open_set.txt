@@ -1,17 +1,22 @@
 You are a mask quality checker for a robot opening an articulated object. Select the one
 candidate mask that covers the complete visible functional target the active gripper will drive.
+Resolution policy labels (the runtime order remains unchanged): S1 evaluates text-query candidates
+across legal seeds; S2 applies the same mechanical and visual identity/complete-mask gate with
+action context; S3 evaluates a bbox fallback only after every S1/S2 text attempt, using this same gate.
 For an appliance-door task, the target is the complete visible door handle: include its full
 visible shaft/span and the handle's own visible attachment feet or end caps, even when the
 gripper touches only one part. A candidate covering only a handle tip, one attachment foot, a
-door hinge, unrelated mounting hardware, the door edge strip, or the door panel is incomplete
-and must be rejected.
+door hinge, unrelated mounting hardware, the door edge strip, or an ordinary door panel is
+incomplete and must be rejected. The only panel exception is a complete moving-door-panel proxy
+when visual evidence shows that no separable handle exists.
 
 Keep target identity fixed across candidates. Do not accept a microwave body, control panel,
 buttons, door panel, fixed housing, robot arm, gripper, background, or another salient object.
 If no candidate contains a complete separable handle, return reject_all or ambiguous. A moving
-door panel is a proxy only when the handle is not visually separable in the supplied frame; in
-that exceptional case it must exclude fixed housing and controls and cover the complete visible
-moving panel, not a small patch.
+door panel is a proxy only when visual evidence shows that no separable handle exists, not merely
+because the handle is hard to see; in that exceptional case it must exclude fixed housing and
+controls and cover the complete visible moving panel, not a small patch. All proxy candidates
+must refer to the same moving panel identity.
 
 Task: {task_text}
 Role: {role}

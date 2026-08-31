@@ -32,7 +32,12 @@ from robotwin_annotation_v2.application.provenance import (
 )
 from robotwin_annotation_v2.application.sam_artifacts import save_sam_artifacts
 from robotwin_annotation_v2.config import PipelineConfig, load_config
-from robotwin_annotation_v2.domain import AnnotationMode, ObjectRole, annotation_spec
+from robotwin_annotation_v2.domain import (
+    AnnotationMode,
+    ObjectRole,
+    TargetProfile,
+    annotation_spec,
+)
 from robotwin_annotation_v2.models import (
     EpisodeRef,
     FrameWindow,
@@ -42,6 +47,7 @@ from robotwin_annotation_v2.models import (
     MaskStatus,
     SemanticPlan,
 )
+from robotwin_annotation_v2.models.semantic_plan import canonical_target_profile
 from robotwin_annotation_v2.pipeline.gripper.sam.annotator import (
     GripperStageError,
     run_gripper_stage,
@@ -57,6 +63,7 @@ from robotwin_annotation_v2.pipeline.object_mask.temporal_qc import (
 )
 from robotwin_annotation_v2.pipeline.qwen_stage import (
     QwenStageError,
+    canonicalize_legacy_semantic_plan,
     parse_semantic_plan,
     run_qwen_stage,
 )
@@ -246,6 +253,7 @@ def run_qwen(
             config.qwen,
             client,
             check_health=check_health,
+            target_profile=target_profile_from_config(config),
         )
     except QwenStageError as exc:
         paths = store.save_qwen_failure(
@@ -297,6 +305,8 @@ def _load_saved_semantic_plan(
     store: ArtifactStore,
     run_id: str,
     context: LoopContext,
+    *,
+    target_profile: TargetProfile | str | None = None,
 ) -> SemanticPlan:
     episode_dir = store.episode_dir(run_id, context.episode)
     loop_path = episode_dir / "loop.json"
@@ -312,13 +322,53 @@ def _load_saved_semantic_plan(
     saved_plan = json.loads(semantic_path.read_text(encoding="utf-8"))
     rendered_prompt = prompt_path.read_text(encoding="utf-8")
     raw_response = raw_path.read_text(encoding="utf-8")
+    configured_profile = canonical_target_profile(target_profile)
+    saved_profile_field_present = "target_profile" in saved_plan
+    raw_saved_profile = saved_plan.get("target_profile")
+    saved_profile = canonical_target_profile(raw_saved_profile)
+    if (
+        configured_profile is not None
+        and saved_profile_field_present
+        and raw_saved_profile is not None
+        and saved_profile is None
+    ):
+        raise ValueError(
+            "saved semantic_plan.json target_profile differs from current config"
+        )
+    if saved_profile is not None and saved_profile is not configured_profile:
+        # Grasp/contact semantic plans historically omit this field and their
+        # parser serialization remains unchanged.  A profile from a different
+        # configured contract is therefore a provenance mismatch.
+        raise ValueError(
+            "saved semantic_plan.json target_profile differs from current config"
+        )
     plan = parse_semantic_plan(
         raw_response,
         context=context,
         model=str(saved_plan.get("model", "")),
         rendered_prompt=rendered_prompt,
+        target_profile=configured_profile,
     )
-    if saved_plan != plan.to_json():
+    comparable_saved_plan = saved_plan
+    if configured_profile is TargetProfile.DOOR_OPEN and (
+        not saved_profile_field_present or saved_profile is None
+    ):
+        # Before the profile-aware parser was introduced, valid door-open
+        # runs recorded the old v2 semantic-plan envelope without this field.
+        # Re-parse under the current profile (which still enforces handle
+        # semantics), then compare against the upgraded envelope.
+        comparable_saved_plan = canonicalize_legacy_semantic_plan(
+            saved_plan,
+            target_profile=configured_profile,
+        )
+    elif saved_profile_field_present and saved_profile is None:
+        # Default/grasp and contact plans intentionally keep the historical
+        # v2 envelope without a profile field.  Ignore an explicit null or
+        # canonical default marker when replaying those plans.
+        comparable_saved_plan = {
+            key: value for key, value in saved_plan.items() if key != "target_profile"
+        }
+    if comparable_saved_plan != plan.to_json():
         raise ValueError("saved semantic_plan.json fails provenance validation")
     return plan
 
@@ -535,7 +585,12 @@ def _execute_gripper_episode(
         store,
         run_id,
         context,
-        _load_saved_semantic_plan(store, run_id, context),
+        _load_saved_semantic_plan(
+            store,
+            run_id,
+            context,
+            target_profile=target_profile_from_config(config),
+        ),
         sam_result,
         seed_images=seed_images,
         gripper_result=gripper_result,
@@ -564,7 +619,12 @@ def _execute_sam_episode(
     ref = _episode_ref(config, episode_index)
     context = _build_context(config, dataset, ref)
     store = ArtifactStore(config.output_root)
-    plan = _load_saved_semantic_plan(store, run_id, context)
+    plan = _load_saved_semantic_plan(
+        store,
+        run_id,
+        context,
+        target_profile=target_profile_from_config(config),
+    )
     frame_shape = dataset.frame_shape(ref)
     semantic_frame_ids = {frame.frame_id for frame in context.semantic_frames}
     stage_images = dataset.read_frames(ref, semantic_frame_ids)
@@ -572,6 +632,8 @@ def _execute_sam_episode(
         frame.frame_id for frame in context.semantic_frames if frame.seed_eligible
     }
     seed_images = {frame_id: stage_images[frame_id] for frame_id in seed_frame_ids}
+    target_profile = target_profile_from_config(config)
+    prompt_bundle = prompt_bundle_for_config(config)
 
     qc_path: Path | None = None
     with sam3_video_resource(
@@ -592,7 +654,14 @@ def _execute_sam_episode(
                 mask_config=config.mask,
                 client=qc_client,
             )
-            qc_path = save_mask_qc_artifacts(store, run_id, context, mask_qc)
+            qc_path = save_mask_qc_artifacts(
+                store,
+                run_id,
+                context,
+                mask_qc,
+                target_profile=target_profile,
+                prompt_bundle=prompt_bundle,
+            )
         result = run_sam_stage(
             context,
             plan,
@@ -609,8 +678,8 @@ def _execute_sam_episode(
         plan,
         result,
         seed_images=seed_images,
-        target_profile=target_profile_from_config(config),
-        prompt_bundle=prompt_bundle_for_config(config),
+        target_profile=target_profile,
+        prompt_bundle=prompt_bundle,
     )
     (store.episode_dir(run_id, ref) / "sam_failure.json").unlink(missing_ok=True)
     return SamEpisodeExecution(mask_run, qc_path, context.annotation_mode)

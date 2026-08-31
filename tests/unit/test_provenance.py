@@ -6,11 +6,29 @@ from types import SimpleNamespace
 import pytest
 
 from robotwin_annotation_v2.application.provenance import (
+    object_resolution_strategy,
     prompt_bundle_for_config,
     target_profile_from_manifest,
     validate_profile_provenance,
 )
 from robotwin_annotation_v2.domain import TargetProfile
+
+
+def test_object_resolution_strategy_audits_door_open_s2_policy() -> None:
+    strategy = object_resolution_strategy(
+        prompt_bundle={
+            "target_profile": "door_open",
+            "templates": {"gripper_qc": {"sha256": "d" * 64}},
+        },
+    )
+
+    assert strategy["scope"] == "object_masks_only"
+    assert isinstance(strategy["S1"], str)
+    assert strategy["S2"]["profile"] == "door_open"
+    assert strategy["S2"]["semantic_prompt"] == "mode_specific_open_set_semantic"
+    assert strategy["S2"]["visual_qc_prompt"] == "mode_specific_mask_candidate_qc"
+    assert isinstance(strategy["S3"], str)
+    assert "gripper_qc" not in str(strategy)
 
 
 def _prompt_config(tmp_path: Path, profile: TargetProfile) -> SimpleNamespace:

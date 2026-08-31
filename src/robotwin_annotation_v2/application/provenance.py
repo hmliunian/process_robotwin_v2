@@ -22,6 +22,7 @@ from typing import Any
 from robotwin_annotation_v2.domain import TargetProfile
 
 PROMPT_BUNDLE_FORMAT_VERSION = "robotwin_prompt_bundle_v1"
+OBJECT_RESOLUTION_FORMAT_VERSION = "robotwin_object_resolution_v1"
 _WORKFLOW_PROFILE_ALIASES = frozenset(
     {
         "pick_place",
@@ -340,6 +341,42 @@ def prompt_bundle_from_manifest(
     return cloned
 
 
+def object_resolution_strategy(
+    *,
+    target_profile: str | TargetProfile | None = None,
+    prompt_bundle: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Describe the canonical S1-S3 object-mask resolution contract.
+
+    S2 is prompt policy active from semantic planning onward, not a separate
+    runtime attempt between text queries and bbox fallback.  A prompt bundle
+    may supply the profile when the caller has no explicit profile value.
+    """
+
+    profile = _profile_value(target_profile)
+    if profile is None and isinstance(prompt_bundle, Mapping):
+        profile = _profile_value(prompt_bundle.get("target_profile"))
+    strategy: dict[str, Any] = {
+        "format_version": OBJECT_RESOLUTION_FORMAT_VERSION,
+        "scope": "object_masks_only",
+        "order": ["S1", "S2", "S3"],
+        "runtime_attempt_order": [
+            "text_query_all_legal_seeds",
+            "bbox_fallback_same_seed_order",
+        ],
+        "S1": "semantic_query_bank_curated_aliases_and_legal_seed_rescue",
+        "S2": {
+            "capability": "mode_specific_open_set_semantic_and_visual_qc",
+            "profile": profile or "mode_default",
+            "semantic_prompt": "mode_specific_open_set_semantic",
+            "visual_qc_prompt": "mode_specific_mask_candidate_qc",
+            "runtime_position": "active_from_semantic_planning",
+        },
+        "S3": "qwen_bbox_to_sam_box_after_all_text_attempts",
+    }
+    return strategy
+
+
 def attach_profile_provenance(
     payload: dict[str, Any],
     *,
@@ -488,8 +525,10 @@ def validate_profile_provenance_pair(
 
 
 __all__ = [
+    "OBJECT_RESOLUTION_FORMAT_VERSION",
     "PROMPT_BUNDLE_FORMAT_VERSION",
     "attach_profile_provenance",
+    "object_resolution_strategy",
     "prompt_bundle_for_config",
     "prompt_bundle_from_manifest",
     "target_profile_from_config",

@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass
 from enum import StrEnum
 from typing import Any, Literal, cast
 
-from ..domain import AnnotationMode, AnnotationSpec, annotation_spec
+from ..domain import (
+    AnnotationMode,
+    AnnotationSpec,
+    TargetProfile,
+    annotation_spec,
+)
 from .loop_context import EpisodeRef
 
 RoleName = Literal["target", "receiver"]
@@ -21,6 +26,8 @@ CANDIDATE_FIELDS = (
 MAX_QUERY_WORDS = 4
 _WORD = r"[a-z]+(?:-[a-z]+)*"
 _QUERY_PATTERN = re.compile(rf"{_WORD}(?: {_WORD}){{0,{MAX_QUERY_WORDS - 1}}}")
+_DOOR_OPEN_PANEL_PROXIES = frozenset({"door panel", "moving door panel"})
+_DOOR_OPEN_REJECT_WORDS = frozenset({"bar", "body", "housing", "latch", "panel"})
 _FORBIDDEN_WORDS = frozenset(
     {
         "a",
@@ -84,11 +91,43 @@ class SemanticPlanError(ValueError):
     """Raised when a Qwen semantic response violates the stage contract."""
 
 
+def canonical_target_profile(
+    value: TargetProfile | str | None,
+) -> TargetProfile | None:
+    """Normalize a target profile, omitting the default grasp profile."""
+
+    if value is None:
+        return None
+    if isinstance(value, TargetProfile):
+        profile = value
+    elif isinstance(value, str) and value.strip():
+        normalized = value.strip().lower().replace("-", "_")
+        aliases = {
+            "origin": TargetProfile.GRASP_MANIPULATION.value,
+            "graspmanipulation": TargetProfile.GRASP_MANIPULATION.value,
+            "contactpress": TargetProfile.CONTACT_PRESS.value,
+            "dooropen": TargetProfile.DOOR_OPEN.value,
+        }
+        try:
+            profile = TargetProfile(aliases.get(normalized, normalized))
+        except ValueError as exc:
+            choices = ", ".join(item.value for item in TargetProfile)
+            raise ValueError(
+                f"target_profile must be one of: {choices}"
+            ) from exc
+    else:
+        raise ValueError("target_profile must be a non-empty string or null")
+    if profile is TargetProfile.GRASP_MANIPULATION:
+        return None
+    return profile
+
+
 def normalize_query(
     value: Any,
     *,
     field: str = "query",
     allow_visual_object: bool = False,
+    allow_moving_door_panel: bool = False,
 ) -> str:
     """Validate a direct SAM3 query's mechanically checkable constraints."""
 
@@ -103,6 +142,8 @@ def normalize_query(
         )
     words = tuple(normalized.replace("-", " ").split())
     forbidden_words = set(words) & _FORBIDDEN_WORDS
+    if allow_moving_door_panel and normalized == "moving door panel":
+        forbidden_words.discard("moving")
     if allow_visual_object and len(words) > 1 and words[-1] == "object":
         forbidden_words.discard("object")
     forbidden = sorted(forbidden_words)
@@ -111,6 +152,62 @@ def normalize_query(
             f"{field} contains forbidden descriptor(s): {', '.join(forbidden)}"
         )
     return normalized
+
+
+def normalize_profile_query(
+    value: Any,
+    *,
+    target_profile: TargetProfile | str | None,
+    field: str = "query",
+    allow_visual_object: bool = False,
+) -> str:
+    """Validate a query and enforce specialized target-profile semantics."""
+
+    profile = canonical_target_profile(target_profile)
+    if profile is not TargetProfile.DOOR_OPEN:
+        return normalize_query(
+            value,
+            field=field,
+            allow_visual_object=allow_visual_object,
+        )
+    if not isinstance(value, str) or not value.strip():
+        raise SemanticPlanError(f"{field} must be a non-empty string")
+    normalized = " ".join(value.split())
+    panel_phrase = normalized.replace("-", " ")
+    if panel_phrase in _DOOR_OPEN_PANEL_PROXIES:
+        return normalize_query(
+            panel_phrase,
+            field=field,
+            allow_visual_object=allow_visual_object,
+            allow_moving_door_panel=True,
+        )
+    normalized = normalize_query(
+        normalized,
+        field=field,
+        allow_visual_object=allow_visual_object,
+    )
+    words = normalized.replace("-", " ").split()
+    if words[-1] != "handle":
+        raise SemanticPlanError(
+            f"{field} must use handle as the head noun or be an explicit door panel proxy"
+        )
+    if set(words) & _DOOR_OPEN_REJECT_WORDS:
+        rejected = sorted(set(words) & _DOOR_OPEN_REJECT_WORDS)
+        raise SemanticPlanError(
+            f"{field} contains a non-handle door descriptor: {', '.join(rejected)}"
+        )
+    context_words = {"microwave"}
+    if "microwave" in words:
+        context_words.add("door")
+    canonical_words = [word for word in words if word not in context_words]
+    if len(canonical_words) > 2 and canonical_words[-2:] == ["door", "handle"]:
+        canonical_words.pop(-2)
+    canonical = " ".join(canonical_words)
+    if not canonical:
+        return "handle"
+    # Keep the canonical form within the same mechanical query contract after
+    # removing appliance context words (e.g. ``white microwave door handle``).
+    return normalize_query(canonical, field=field)
 
 
 @dataclass(frozen=True)
@@ -122,25 +219,47 @@ class QueryBank:
     shape_category_query: str | None = None
     general_fallback_query: str | None = None
     recommended_order: tuple[str, ...] = ()
+    allow_moving_door_panel: InitVar[bool] = False
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, allow_moving_door_panel: bool) -> None:
         normalized: dict[str, str | None] = {}
         for field in CANDIDATE_FIELDS:
             value = getattr(self, field)
             if value is None:
                 normalized[field] = None
             else:
-                normalized[field] = normalize_query(
-                    value,
-                    field=field,
-                    allow_visual_object=field == "general_fallback_query",
-                )
+                if allow_moving_door_panel:
+                    normalized[field] = normalize_profile_query(
+                        value,
+                        target_profile=TargetProfile.DOOR_OPEN,
+                        field=field,
+                        allow_visual_object=field == "general_fallback_query",
+                    )
+                else:
+                    normalized[field] = normalize_query(
+                        value,
+                        field=field,
+                        allow_visual_object=field == "general_fallback_query",
+                    )
         if normalized["category_query"] is None:
             raise SemanticPlanError("category_query is required")
         if len({value for value in normalized.values() if value is not None}) != len(
             [value for value in normalized.values() if value is not None]
         ):
             raise SemanticPlanError("query candidates must be distinct")
+        panel_fields = tuple(
+            field
+            for field, value in normalized.items()
+            if value in _DOOR_OPEN_PANEL_PROXIES
+        )
+        if allow_moving_door_panel and panel_fields:
+            has_other_candidate = any(
+                normalized[field] is not None for field in CANDIDATE_FIELDS if field != "category_query"
+            )
+            if panel_fields != ("category_query",) or has_other_candidate:
+                raise SemanticPlanError(
+                    "door-panel proxy must be the sole category_query"
+                )
 
         order = tuple(self.recommended_order)
         expected = tuple(field for field in CANDIDATE_FIELDS if normalized[field] is not None)
@@ -234,6 +353,10 @@ class SemanticPlan:
     raw_response: str
     annotation_mode: AnnotationMode = AnnotationMode.PICK_PLACE
     prompt_version: str = "object_roles_semantic_v2"
+    # Keep this new optional field after the historical optional fields so
+    # positional construction of SemanticPlan continues to interpret its
+    # eighth argument as ``prompt_version``.
+    target_profile: TargetProfile | None = None
 
     def __post_init__(self) -> None:
         expected = self.annotation_spec.required_role_names
@@ -249,6 +372,18 @@ class SemanticPlan:
             raise ValueError("prompt_sha256 must be a SHA-256 hex digest")
         if not self.input_frame_ids:
             raise ValueError("input_frame_ids must not be empty")
+        try:
+            target_profile = canonical_target_profile(self.target_profile)
+        except ValueError as exc:
+            raise ValueError("SemanticPlan target_profile is invalid") from exc
+        if (
+            target_profile in {TargetProfile.CONTACT_PRESS, TargetProfile.DOOR_OPEN}
+            and self.annotation_mode is not AnnotationMode.TARGET_ONLY
+        ):
+            raise ValueError(
+                f"{target_profile.value} target profile requires target_only mode"
+            )
+        object.__setattr__(self, "target_profile", target_profile)
 
     @property
     def usable(self) -> bool:
@@ -283,7 +418,7 @@ class SemanticPlan:
         return hashlib.sha256(rendered_prompt.encode("utf-8")).hexdigest()
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        payload = {
             "format_version": "robotwin_semantic_plan_v2",
             "prompt_version": self.prompt_version,
             "annotation_mode": self.annotation_mode.value,
@@ -295,3 +430,6 @@ class SemanticPlan:
             "roles": {plan.role: plan.to_json() for plan in self.role_plans},
             "raw_response": self.raw_response,
         }
+        if self.target_profile is not None:
+            payload["target_profile"] = self.target_profile.value
+        return payload

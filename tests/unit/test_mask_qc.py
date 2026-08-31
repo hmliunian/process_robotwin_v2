@@ -515,6 +515,9 @@ def test_door_open_qc_prompt_requires_a_complete_handle_mask() -> None:
     assert "covering only a handle tip, one attachment foot" in prompt_text
     assert "Compare the actual mask contour with the RGB candidate panel" in prompt_text
     assert "Never enlarge a partial mask conceptually" in prompt_text
+    assert "S1 evaluates text-query candidates" in prompt_text
+    assert "S2 applies the same mechanical and visual identity" in prompt_text
+    assert "S3 evaluates a bbox fallback only after every S1/S2 text attempt" in prompt_text
 
 
 def test_parse_mask_qc_response_validates_candidate_contract() -> None:

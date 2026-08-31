@@ -1097,6 +1097,28 @@ class MaskConfig:
             raise ConfigError("mask.qc_duplicate_iou_threshold must be between 0 and 1")
 
 
+def _validate_target_profile_resolution_contract(
+    annotation: AnnotationConfig,
+    mask: MaskConfig,
+) -> None:
+    """Keep the door-open object-mask resolver on the complete S1-S3 path."""
+
+    if annotation.profile is not TargetProfile.DOOR_OPEN:
+        return
+    required = {
+        "mask.qc_enabled": mask.qc_enabled,
+        "mask.qc_query_fallback_enabled": mask.qc_query_fallback_enabled,
+        "mask.qc_seed_fallback_enabled": mask.qc_seed_fallback_enabled,
+        "mask.qc_bbox_fallback_enabled": mask.qc_bbox_fallback_enabled,
+    }
+    disabled = [name for name, enabled in required.items() if not enabled]
+    if disabled:
+        raise ConfigError(
+            "annotation.profile=door_open requires the complete S1-S3 object-mask "
+            f"resolution contract; disabled setting(s): {', '.join(disabled)}"
+        )
+
+
 @dataclass(frozen=True)
 class GripperRoiConfig:
     """Fixed prompt and final-crop geometry for gripper mask generation."""
@@ -1156,6 +1178,7 @@ class PipelineConfig:
     def __post_init__(self) -> None:
         if self.parallel.enabled and self.qwen.runtime != "api":
             raise ConfigError("parallel SAM workers require qwen.runtime=api")
+        _validate_target_profile_resolution_contract(self.annotation, self.mask)
 
 
 @dataclass(frozen=True)
@@ -1179,6 +1202,7 @@ class PipelineProfile:
     def __post_init__(self) -> None:
         if self.parallel.enabled and self.qwen.runtime != "api":
             raise ConfigError("parallel SAM workers require qwen.runtime=api")
+        _validate_target_profile_resolution_contract(self.annotation, self.mask)
 
     def bind_dataset(self, binding: DatasetBinding) -> PipelineConfig:
         """Return a legacy-compatible, dataset-bound pipeline configuration."""
