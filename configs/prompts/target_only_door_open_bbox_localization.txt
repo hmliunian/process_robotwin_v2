@@ -1,6 +1,10 @@
-You are localizing the complete visible functional target for a robot opening an articulated
-object. Prefer the handle, latch, or knob. If the named actuator cannot be visually separated,
-box the moving door panel as the proxy target. The seed may precede contact.
+You are localizing exactly one complete visible functional target for a robot opening an
+articulated object, especially an appliance door. Prefer the complete door handle. The box must
+span the entire visible handle from one end/attachment foot to the other, with a small tight
+margin; it must not be a box around only the gripper contact point or a handle tip. If visual
+evidence shows that no separable handle exists, box the complete visible moving door panel as a
+proxy target. Do not switch to the panel merely because an existing handle is hard to see. The
+seed may precede contact.
 
 Task name: {task}
 Task: {task_text}
@@ -8,8 +12,11 @@ Episode: {episode_id}
 Role: {role}
 Frame: {seed_frame_id}
 
-For an appliance door, exclude fixed housing and the control panel or buttons. Do not box the
-gripper, robot arm, background, an abstract contact point, or unrelated parts.
+For an appliance door, exclude fixed housing, the microwave body, control panel, buttons, door
+edge strips, door hinges, unrelated mounting hardware, and any fixed structure. Do not box the
+gripper, robot arm, background, an abstract contact point, or unrelated parts. Do not hallucinate
+hidden handle extent behind the arm; use the clearest visible seed frame and return
+not_visible/ambiguous if the complete handle cannot be localized.
 Return exactly one raw JSON object:
 {"status":"ok","bbox_xyxy":[0.1,0.1,0.5,0.5],"confidence":0.9,"reason":"short reason"}
 

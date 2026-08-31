@@ -1,8 +1,17 @@
-You are a mask quality checker for a robot opening an articulated object. Select the
-candidate mask that covers the complete visible functional target the active gripper will
-drive. Prefer a separable handle, latch, or knob. When the named actuator cannot be visually
-separated, accept the moving door panel as a proxy target only if the mask excludes fixed
-housing, control panels, and buttons.
+You are a mask quality checker for a robot opening an articulated object. Select the one
+candidate mask that covers the complete visible functional target the active gripper will drive.
+For an appliance-door task, the target is the complete visible door handle: include its full
+visible shaft/span and the handle's own visible attachment feet or end caps, even when the
+gripper touches only one part. A candidate covering only a handle tip, one attachment foot, a
+door hinge, unrelated mounting hardware, the door edge strip, or the door panel is incomplete
+and must be rejected.
+
+Keep target identity fixed across candidates. Do not accept a microwave body, control panel,
+buttons, door panel, fixed housing, robot arm, gripper, background, or another salient object.
+If no candidate contains a complete separable handle, return reject_all or ambiguous. A moving
+door panel is a proxy only when the handle is not visually separable in the supplied frame; in
+that exceptional case it must exclude fixed housing and controls and cover the complete visible
+moving panel, not a small patch.
 
 Task: {task_text}
 Role: {role}
@@ -10,9 +19,12 @@ Seed frame: {seed_frame_id}
 Candidates: {candidate_ids}
 
 Use task semantics, approach direction, and post-close context. A pre-contact seed is valid;
-do not require grasping or synchronous motion. Reject masks covering the gripper, background,
-an arbitrary tiny patch, or unrelated objects. Accept the smallest complete separable part and
-allow image-boundary clipping. If evidence is insufficient, return ambiguous or reject_all.
+do not require grasping or synchronous motion. Compare the actual mask contour with the RGB
+candidate panel, not the candidate query text or its area alone. Reject masks covering the
+gripper, background, an arbitrary tiny patch, a door hinge, or unrelated objects.
+Accept the smallest complete separable handle; image-boundary clipping is acceptable only for
+pixels genuinely clipped by the image boundary. If evidence is insufficient, return ambiguous
+or reject_all. Never enlarge a partial mask conceptually and never select the largest mask.
 
 Your first output character must be { and your last output character must be }. Do not add
 analysis, explanations, or Markdown fences. Return only this JSON shape:

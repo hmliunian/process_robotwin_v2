@@ -504,6 +504,19 @@ def test_context_sampling_prefers_action_evidence_over_extra_seed_frames() -> No
     assert [frame_id for frame_id, _image in sampled] == [7, 15]
 
 
+def test_door_open_qc_prompt_requires_a_complete_handle_mask() -> None:
+    prompt = (
+        PROJECT_ROOT / "configs/prompts/target_only_door_open_mask_candidate_qc_open_set.txt"
+    ).read_text(encoding="utf-8")
+    prompt_text = " ".join(prompt.split())
+
+    assert "full visible shaft/span" in prompt_text
+    assert "handle's own visible attachment feet or end caps" in prompt_text
+    assert "covering only a handle tip, one attachment foot" in prompt_text
+    assert "Compare the actual mask contour with the RGB candidate panel" in prompt_text
+    assert "Never enlarge a partial mask conceptually" in prompt_text
+
+
 def test_parse_mask_qc_response_validates_candidate_contract() -> None:
     decision, selected, confidence, reason = parse_mask_qc_response(
         _response("b"),

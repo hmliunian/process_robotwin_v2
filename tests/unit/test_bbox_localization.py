@@ -50,6 +50,10 @@ def test_door_open_bbox_prompt_satisfies_render_contract() -> None:
 
     assert "Task name: open_microwave" in rendered
     assert "Episode: 009350" in rendered
+    assert "span the entire visible handle from one end/attachment foot to the other" in rendered
+    assert "not be a box around only the gripper contact point or a handle tip" in rendered
+    assert "Do not switch to the panel merely because an existing handle is hard to see" in rendered
+    assert "door hinges, unrelated mounting hardware" in rendered
 
 
 @pytest.mark.parametrize("status", ("ambiguous", "not_visible"))

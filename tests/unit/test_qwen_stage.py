@@ -328,9 +328,14 @@ def test_door_open_semantic_prompt_satisfies_multimodal_contract() -> None:
 
     assert "<image frame_id=0>" in request.rendered_prompt
     assert "<image frame_id=9>" in request.rendered_prompt
-    assert "smallest complete visible functional part" in request.rendered_prompt
-    assert "use the moving door panel as the visible proxy target" in request.rendered_prompt
-    assert "Never\ninclude a fixed appliance body or control panel" in request.rendered_prompt
+    prompt_text = " ".join(request.rendered_prompt.split())
+
+    assert "smallest complete visible functional part" in prompt_text
+    assert "compare every frame marked ``seed_candidate=yes``" in prompt_text
+    assert "do not default to the latest pre-close frame" in prompt_text
+    assert "every candidate; do not replace it with ``vertical bar``" in prompt_text
+    assert "All non-empty candidates must preserve the same physical identity" in prompt_text
+    assert "no separable handle exists, not merely because the handle is hard to see" in prompt_text
 
 
 def test_target_only_semantic_prompt_ends_hold_before_reopen() -> None:
