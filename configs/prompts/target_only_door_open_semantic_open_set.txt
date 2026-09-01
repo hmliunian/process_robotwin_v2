@@ -25,18 +25,24 @@ State events:
 Labeled multimodal frames:
 {labeled_multimodal_frames}
 
-The target is the smallest complete visible functional part that the gripper will drive. For an
-appliance-door task, the target is the complete door handle (including both visible ends and
-their mounting pieces) when it is visually separable. Keep the word ``handle`` as the semantic
-head in every handle candidate; do not replace it with ``vertical bar``, ``latch``, ``door``,
-``panel``, or ``body``. Do not use ``microwave door`` or any phrase naming the whole appliance as
-a handle candidate. If a separate handle exists but is incomplete or occluded in every seed
-frame, return ``no_clear_seed`` rather than a partial handle, one attachment foot, door edge
-strip, or appliance body. A ``door panel``/``moving door panel`` phrase is a proxy only when
-visual evidence shows that no separable handle exists, not merely because the handle is hard to
-see; if used, every non-empty query must name the same door-panel proxy rather than the fixed
-housing. Never include the gripper, background, an abstract contact point, or an unrelated part.
-A seed before physical contact is valid.
+The target is the smallest complete visible functional part that the gripper will drive. For a
+room-door task, the target is the complete graspable door handle or lever, including its full
+visible grip and the handle's own visible mounting rose/backplate when that structure belongs to
+the handle assembly. For an appliance-door task, it is the complete door handle including both
+visible ends and their mounting pieces. Follow the task description: never reject a room-door
+handle merely because it is not attached to an appliance, and never accept a cart, robot-base,
+equipment, cabinet, or appliance handle when the task is to open the room door.
+
+Keep the word ``handle`` as the semantic head in every handle candidate; do not replace it with
+``vertical bar``, ``latch``, ``door``, ``panel``, or ``body``. Do not use ``microwave door``,
+``room door``, or any phrase naming the whole door/appliance as a handle candidate. If a separate
+handle exists but is incomplete or occluded in every seed frame, return ``no_clear_seed`` rather
+than a partial handle, one attachment foot, door edge strip, lock cylinder, door panel, or fixed
+housing. A ``door panel``/``moving door panel`` phrase is a proxy only when visual evidence shows
+that no separable handle exists, not merely because the handle is hard to see; if used, every
+non-empty query must name the same door-panel proxy rather than the fixed frame or housing. Never
+include the gripper, background, an abstract contact point, or an unrelated part. A seed before
+physical contact is valid.
 
 Seed selection is an explicit visual decision: compare every frame marked
 ``seed_candidate=yes``. Prefer the frame where the complete target spans the largest visible
@@ -44,18 +50,19 @@ extent with the least gripper/arm occlusion and stable exposure; do not default 
 pre-close frame or to the frame nearest ``close_start``. Post-grasp frames may identify the
 action but are forbidden as ``seed_frame_id``.
 
-Query policy for an appliance handle:
-- ``category_query``: prefer exactly ``handle``. Use ``door handle`` only when the door context
-  is visually needed to identify the same complete handle; do not add ``microwave`` merely
-  because it occurs in the task.
+Query policy for a door handle:
+- ``category_query``: for a room door prefer exactly ``door handle`` so SAM3 does not select a
+  cart/equipment handle; for an appliance prefer exactly ``handle``. Do not add ``microwave`` or
+  ``room`` merely because it occurs in the task.
 - ``color_category_query``: color + ``handle`` only when the handle color is stable across seed
   frames (for example ``white handle`` or ``black handle``); otherwise null.
 - ``shape_category_query``: a shape + ``handle`` phrase only when it describes the whole handle
-  (for example ``vertical handle``), never ``vertical bar`` or another non-handle substitute.
-- ``general_fallback_query``: use ``door handle`` as the final distinct fallback when justified;
-  it must still name the complete handle and be last. Do not repeat another candidate; use null
-  when no distinct handle phrase is justified. Keep non-null fields in this order: category,
-  color, shape, general.
+  (for example ``lever handle`` or ``vertical handle``), never ``vertical bar`` or another
+  non-handle substitute.
+- ``general_fallback_query``: for a room door use ``handle`` as the final distinct fallback; for
+  an appliance use ``door handle`` when justified. It must still name the same complete handle
+  and be last. Do not repeat another candidate; use null when no distinct handle phrase is
+  justified. Keep non-null fields in this order: category, color, shape, general.
 
 In the exceptional no-separable-handle proxy case, set ``category_query`` to ``moving door
 panel`` (or ``door panel`` only when that is the clearest supported wording), set every other
@@ -63,9 +70,10 @@ query field to null, and put only ``category_query`` in ``recommended_order``. D
 proxy with any handle query.
 
 All non-empty candidates must preserve the same physical identity (the complete handle). The
-``exclude`` list should explicitly name hard negatives visible in the seed, such as microwave
-body, door panel, control panel, robot arm, door hinge, unrelated mounting hardware, or door
-edge. Exclusions are semantic guidance only; they do not change the positive SAM3 query.
+``exclude`` list should explicitly name hard negatives visible in the seed, such as cart handle,
+equipment handle, robot base, microwave body, door panel, control panel, robot arm, door hinge,
+lock cylinder, unrelated mounting hardware, or door edge. Exclusions are semantic guidance only;
+they do not change the positive SAM3 query.
 
 Your first output character must be { and your last output character must be }. Do not add
 analysis, explanations, or Markdown fences. Return one strict JSON object matching

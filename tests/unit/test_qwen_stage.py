@@ -367,6 +367,9 @@ def test_door_open_semantic_prompt_satisfies_multimodal_contract() -> None:
     assert "compare every frame marked ``seed_candidate=yes``" in prompt_text
     assert "do not default to the latest pre-close frame" in prompt_text
     assert "Keep the word ``handle`` as the semantic head" in prompt_text
+    assert "for a room door prefer exactly ``door handle``" in prompt_text
+    assert "never accept a cart, robot-base, equipment" in prompt_text
+    assert "``lever handle``" in prompt_text
     assert "All non-empty candidates must preserve the same physical identity" in prompt_text
     assert "no separable handle exists, not merely because the handle is hard to see" in prompt_text
     assert "S1" in prompt_text and "S2" in prompt_text and "S3" in prompt_text

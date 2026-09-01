@@ -512,6 +512,8 @@ def test_door_open_qc_prompt_requires_a_complete_handle_mask() -> None:
 
     assert "full visible shaft/span" in prompt_text
     assert "handle's own visible attachment feet or end caps" in prompt_text
+    assert "complete visible graspable door handle/lever" in prompt_text
+    assert "reject handles on the cart, robot base, blue equipment" in prompt_text
     assert "covering only a handle tip, one attachment foot" in prompt_text
     assert "Compare the actual mask contour with the RGB candidate panel" in prompt_text
     assert "Never enlarge a partial mask conceptually" in prompt_text

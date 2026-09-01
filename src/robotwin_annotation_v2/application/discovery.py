@@ -77,8 +77,9 @@ def discover_episodes(
     *,
     camera: str,
     require_depth: bool = False,
+    require_sidecar: bool = True,
 ) -> DiscoveryResult:
-    """Discover complete dataset inputs by episode id."""
+    """Discover dataset inputs required by the selected workflow."""
 
     dataset_root = root.expanduser().resolve()
     data_root = dataset_root / "data"
@@ -109,10 +110,9 @@ def discover_episodes(
                 raise ValueError(f"duplicate episode id discovered: {episode_id}")
             video = _episode_video_path(dataset_root, camera, episode_id)
             sidecar = dataset_root / "sidecars" / f"episode_{episode_id:06d}.hdf5"
-            required_paths = [
-                ("video", video),
-                ("sidecar", sidecar),
-            ]
+            required_paths = [("video", video)]
+            if require_sidecar:
+                required_paths.append(("sidecar", sidecar))
             if require_depth:
                 required_paths.append(
                     (

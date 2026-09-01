@@ -334,6 +334,11 @@ def test_discover_episodes_cross_checks_video_and_sidecar(tmp_path: Path) -> Non
     _touch_episode(tmp_path, 1001, sidecar=False)
 
     result = discover_episodes(tmp_path, camera="cam_high")
+    source_only = discover_episodes(
+        tmp_path,
+        camera="cam_high",
+        require_sidecar=False,
+    )
 
     assert result.episode_ids == (7,)
     assert result.skipped == (
@@ -346,6 +351,8 @@ def test_discover_episodes_cross_checks_video_and_sidecar(tmp_path: Path) -> Non
             ),
         },
     )
+    assert source_only.episode_ids == (7, 1001)
+    assert source_only.skipped == ()
 
 
 def test_discover_episodes_can_require_depth_video(tmp_path: Path) -> None:
@@ -843,12 +850,12 @@ def test_process_dataset_reports_sam_stages_without_embedded_json(
     assert backend_shutdown == [True]
 
 
-def test_process_dataset_target_receiver_only_skips_gripper_and_uses_sam_resume(
+def test_process_dataset_object_source_only_allows_missing_sidecar(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     dataset = tmp_path / "dataset"
-    _touch_episode(dataset, 7)
+    _touch_episode(dataset, 7, sidecar=False)
     monkeypatch.setattr(
         process_module,
         "_measure_episode",
@@ -887,7 +894,7 @@ def test_process_dataset_target_receiver_only_skips_gripper_and_uses_sam_resume(
         run_id="target-receiver-source",
         episode_ids=(7,),
         skip_render=True,
-        target_receiver_only=True,
+        object_source_only=True,
     )
 
     assert calls == [

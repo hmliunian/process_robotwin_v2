@@ -47,16 +47,25 @@ def test_door_open_bbox_prompt_satisfies_render_contract() -> None:
         role="target",
         seed_frame_id=15,
     )
+    rendered_text = " ".join(rendered.split())
 
-    assert "Task name: open_microwave" in rendered
-    assert "Episode: 009350" in rendered
-    assert "span the entire visible handle from one end/attachment foot to the other" in rendered
-    assert "not be a box around only the gripper contact point or a handle tip" in rendered
-    assert "Do not switch to the panel merely because an existing handle is hard to see" in rendered
-    assert "door hinges, unrelated mounting hardware" in rendered
-    assert "S3" in rendered
-    assert "after all S1/S2 text-query" in rendered
-    assert "native-propagation, and temporal QC" in rendered
+    assert "Task name: open_microwave" in rendered_text
+    assert "Episode: 009350" in rendered_text
+    assert (
+        "span the entire visible handle from one end/attachment foot to the other"
+        in rendered_text
+    )
+    assert "never box only the gripper contact point" in rendered_text
+    assert "handle attached to the operated room door" in rendered_text
+    assert "exclude cart handles, robot-base handles, blue equipment" in rendered_text
+    assert (
+        "Do not switch to the panel merely because an existing handle is hard to see"
+        in rendered_text
+    )
+    assert "fixed door frame, hinges, lock cylinders" in rendered_text
+    assert "S3" in rendered_text
+    assert "after all S1/S2 text-query" in rendered_text
+    assert "native-propagation, and temporal QC" in rendered_text
 
 
 @pytest.mark.parametrize("status", ("ambiguous", "not_visible"))

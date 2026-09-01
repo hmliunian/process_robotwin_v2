@@ -283,7 +283,11 @@ class SamWorkflow[BackendT: SamBackend, SamExecutionT, GripperExecutionT]:
             reporter.phase_started("dataset_discovery")
 
         runtime = self.hooks.runtime_loader()
-        discovery = self.hooks.discover_episodes(dataset_root, camera=camera)
+        discovery = self.hooks.discover_episodes(
+            dataset_root,
+            camera=camera,
+            require_sidecar=not source_only,
+        )
         if not discovery.episodes:
             raise ValueError(f"no complete episodes found under {dataset_root}")
         manifest_episodes = select_manifest_episodes(

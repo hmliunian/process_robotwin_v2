@@ -171,6 +171,7 @@ def discover_episodes(
     *,
     camera: str,
     require_depth: bool = False,
+    require_sidecar: bool = True,
 ) -> DiscoveryResult:
     """Compatibility delegate for the canonical discovery module."""
 
@@ -178,6 +179,7 @@ def discover_episodes(
         root,
         camera=camera,
         require_depth=require_depth,
+        require_sidecar=require_sidecar,
     )
 
 
