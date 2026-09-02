@@ -1,0 +1,81 @@
+version: 3
+
+# Algorithm settings shared by every supported workflow. Dataset identity is
+# supplied by --data-path and never belongs in this file.
+defaults:
+  qwen:
+    runtime: api
+    endpoint: https://ws-4cbdki9ovgb4q42g.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions
+    model: qwen3.8-max
+    api_key_env: QWEN_API_KEY
+    probe: models
+    temperature: 0
+    enable_thinking: false
+    timeout_seconds: 600
+    query_selection: first_recommended
+    allow_query_fallback: false
+  sam3:
+    checkpoint: ../checkpoints/sam3/sam3.pt
+    gpus: [2]
+  mask:
+    target_envelope_padding_px: 4
+    receiver_envelope_padding_px: 4
+    temporal_qc_min_adjacent_iou_p05: 0.5
+    temporal_qc_max_centroid_jump_p95_px: 5.0
+    temporal_qc_max_area_ratio_jump_p95: 0.4
+    temporal_qc_quarantine_signal_count: 2
+    qc_enabled: true
+    qc_max_candidates: 8
+    qc_query_fallback_enabled: true
+    qc_seed_fallback_enabled: true
+    qc_bbox_fallback_enabled: true
+    qc_bbox_max_tokens: 180
+    qc_max_tokens: 160
+    qc_max_attempts: 2
+    qc_min_confidence: 0.70
+    qc_min_area_fraction: 0.0001
+    qc_max_area_fraction: 0.85
+    qc_duplicate_iou_threshold: 0.98
+  gripper_roi:
+    prompt:
+      axial_back_m: 0.120
+      axial_front_m: 0.060
+    hard:
+      axial_back_m: 0.120
+      axial_front_m: 0.045
+    fixed_half_width_m: 0.085
+  output:
+    root: ../artifacts/runs
+
+modes:
+  pick_place:
+    annotation:
+      mode: pick_place
+    qwen:
+      prompt_template: prompts/target_receiver_semantic_open_set.txt
+      max_tokens: 800
+    mask:
+      qc_prompt_template: prompts/mask_candidate_qc_open_set.txt
+      qc_bbox_prompt_template: prompts/open_set_bbox_localization.txt
+
+  target_only:
+    annotation:
+      mode: target_only
+      profile: grasp_manipulation
+    qwen:
+      prompt_template: prompts/target_only_semantic_open_set.txt
+      max_tokens: 400
+    mask:
+      qc_prompt_template: prompts/target_only_mask_candidate_qc_open_set.txt
+      qc_bbox_prompt_template: prompts/open_set_bbox_localization.txt
+
+  contact_press:
+    annotation:
+      mode: target_only
+      profile: contact_press
+    qwen:
+      prompt_template: prompts/target_only_contact_press_semantic_open_set.txt
+      max_tokens: 400
+    mask:
+      qc_prompt_template: prompts/target_only_contact_press_mask_candidate_qc_open_set.txt
+      qc_bbox_prompt_template: prompts/target_only_contact_press_bbox_localization.txt

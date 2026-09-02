@@ -25,7 +25,14 @@ from robotwin_annotation_v2.application.managed_qwen import (
     ManagedQwenService,
     ManagedQwenSettings,
 )
-from robotwin_annotation_v2.config import PipelineConfig, load_config
+from robotwin_annotation_v2.config import (
+    ConfigError,
+    PipelineConfig,
+    PipelineProfile,
+    load_config,
+    load_profile,
+)
+from robotwin_annotation_v2.domain import AnnotationMode
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_QWEN_API_KEY_FILE = PROJECT_ROOT / "secrets" / "qwen_api_key.txt"
@@ -100,7 +107,7 @@ def _effective_config_path(args: argparse.Namespace) -> Path:
     return args.config if process_config is None else Path(process_config)
 
 
-def _load_qwen_api_key_file(pipeline_config: PipelineConfig) -> None:
+def _load_qwen_api_key_file(pipeline_config: PipelineConfig | PipelineProfile) -> None:
     """Load one local API key without putting it on the command line or in YAML."""
 
     if pipeline_config.qwen.runtime != "api":
@@ -125,7 +132,10 @@ def _load_qwen_api_key_file(pipeline_config: PipelineConfig) -> None:
     os.environ[api_key_env] = value
 
 
-def _settings(args: argparse.Namespace, pipeline_config: PipelineConfig) -> ManagedQwenSettings:
+def _settings(
+    args: argparse.Namespace,
+    pipeline_config: PipelineConfig | PipelineProfile,
+) -> ManagedQwenSettings:
     if pipeline_config.qwen.runtime != "local":
         raise ManagedQwenError("managed Qwen startup requires qwen.runtime=local")
     if args.qwen_python is None or args.qwen_model_path is None:
@@ -191,6 +201,26 @@ def _run_process(arguments: Sequence[str], config_path: Path) -> int:
         raise
 
 
+def _load_pipeline_config(
+    config_path: Path,
+    arguments: Sequence[str],
+) -> PipelineConfig | PipelineProfile:
+    """Read legacy configs or the shared profile needed for service setup."""
+
+    try:
+        return load_config(config_path)
+    except ConfigError as legacy_error:
+        mode = (
+            AnnotationMode.TARGET_ONLY
+            if "--target-only" in arguments or "--target_only" in arguments
+            else AnnotationMode.PICK_PLACE
+        )
+        try:
+            return load_profile(config_path, mode=mode)
+        except ConfigError:
+            raise legacy_error
+
+
 @contextlib.contextmanager
 def _termination_handlers() -> Iterator[None]:
     previous: dict[signal.Signals, Any] = {}
@@ -210,7 +240,7 @@ def _termination_handlers() -> Iterator[None]:
 
 def _run(args: argparse.Namespace) -> int:
     config_path = _effective_config_path(args)
-    pipeline_config = load_config(config_path)
+    pipeline_config = _load_pipeline_config(config_path, args.process_args)
     print(
         f"Process config: {pipeline_config.config_path} "
         f"(qwen.runtime={pipeline_config.qwen.runtime}, "

@@ -19,6 +19,7 @@ from robotwin_annotation_v2.application.managed_qwen import (
     qwen_health_endpoint,
     select_qwen_gpu,
 )
+from robotwin_annotation_v2.domain import AnnotationMode
 
 
 def _settings(tmp_path: Path) -> ManagedQwenSettings:
@@ -295,6 +296,13 @@ def test_forwarded_config_uses_last_argparse_value() -> None:
     )
 
     assert manager_script._effective_config_path(args) == Path("last.yaml")
+
+
+def test_manager_reads_shared_profile_for_service_settings() -> None:
+    config = manager_script._load_pipeline_config(Path("configs/process.yaml"), ())
+
+    assert config.annotation.mode is AnnotationMode.PICK_PLACE
+    assert config.qwen.runtime == "api"
 
 
 def test_settings_preserve_symlinked_qwen_virtualenv_python(tmp_path: Path) -> None:

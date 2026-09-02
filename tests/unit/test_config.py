@@ -8,11 +8,14 @@ import pytest
 from robotwin_annotation_v2.config import (
     AnnotationConfig,
     ConfigError,
+    DatasetBinding,
     GripperRoiConfig,
     MaskConfig,
     ParallelConfig,
     Sam3Config,
+    bind_dataset,
     load_config,
+    load_profile,
     parse_gpu_list,
 )
 from robotwin_annotation_v2.domain import (
@@ -24,6 +27,73 @@ from robotwin_annotation_v2.domain import (
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.mark.parametrize(
+    ("mode", "profile", "semantic_prompt"),
+    (
+        (
+            AnnotationMode.PICK_PLACE,
+            TargetProfile.GRASP_MANIPULATION,
+            "target_receiver_semantic_open_set.txt",
+        ),
+        (
+            AnnotationMode.TARGET_ONLY,
+            TargetProfile.GRASP_MANIPULATION,
+            "target_only_semantic_open_set.txt",
+        ),
+        (
+            AnnotationMode.TARGET_ONLY,
+            TargetProfile.CONTACT_PRESS,
+            "target_only_contact_press_semantic_open_set.txt",
+        ),
+    ),
+)
+def test_shared_profile_selects_workflow_overlay(
+    mode: AnnotationMode,
+    profile: TargetProfile,
+    semantic_prompt: str,
+) -> None:
+    loaded = load_profile(
+        PROJECT_ROOT / "configs/process.yaml",
+        mode=mode,
+        target_profile=profile,
+    )
+
+    assert loaded.annotation == AnnotationConfig(mode, profile)
+    assert loaded.qwen.prompt_template.name == semantic_prompt
+
+
+def test_runtime_binding_keeps_dataset_identity_out_of_profile(tmp_path: Path) -> None:
+    profile = load_profile(
+        PROJECT_ROOT / "configs/process.yaml",
+        mode=AnnotationMode.TARGET_ONLY,
+    )
+    source_manifest = {"profile": "target_only", "source": {"name": "extract"}}
+
+    config = bind_dataset(
+        profile,
+        DatasetBinding(
+            root=tmp_path,
+            task="adjust_bottle",
+            camera="cam_high",
+            episode_ids=(3, 7),
+            manifest_data=source_manifest,
+        ),
+    )
+
+    assert config.dataset.root == tmp_path.resolve()
+    assert config.dataset.regression_episode_ids == (3, 7)
+    assert config.dataset.manifest_data is not source_manifest
+    assert config.dataset.manifest_data == {
+        "profile": "target_only",
+        "source": {"name": "extract"},
+        "dataset_root": str(tmp_path.resolve()),
+        "task": "adjust_bottle",
+        "camera": "cam_high",
+        "smoke_episode_ids": [3],
+        "regression_episode_ids": [3, 7],
+    }
 
 
 def test_pilot_config_loads_new_pipeline_contract() -> None:
@@ -288,7 +358,9 @@ def test_annotation_specs_only_declare_roles_and_backend() -> None:
 
 
 def test_config_rejects_unknown_annotation_mode(tmp_path: Path) -> None:
-    source = (PROJECT_ROOT / "configs/pilot_move_pillbottle_pad.yaml").read_text(encoding="utf-8")
+    source = (PROJECT_ROOT / "configs/pilot_move_pillbottle_pad.yaml").read_text(
+        encoding="utf-8"
+    )
     config_path = tmp_path / "bad-mode.yaml"
     config_path.write_text(source.replace("mode: pick_place", "mode: mystery"), encoding="utf-8")
 
@@ -312,9 +384,7 @@ def test_target_only_config_accepts_explicit_contact_press_profile(tmp_path: Pat
 
 
 def test_contact_press_profile_requires_target_only_mode(tmp_path: Path) -> None:
-    source = (PROJECT_ROOT / "configs/pilot_move_pillbottle_pad.yaml").read_text(
-        encoding="utf-8"
-    )
+    source = (PROJECT_ROOT / "configs/pilot_move_pillbottle_pad.yaml").read_text(encoding="utf-8")
     config_path = tmp_path / "invalid-contact-press.yaml"
     config_path.write_text(
         source.replace("mode: pick_place", "mode: pick_place\n  profile: contact_press"),
