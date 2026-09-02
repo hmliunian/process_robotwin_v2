@@ -23,6 +23,15 @@ lint:
 format:
     {{python}} -m ruff format src tests scripts
 
+version:
+    @{{python}} scripts/bump_version.py
+
+version-check:
+    @{{python}} scripts/bump_version.py --check
+
+bump-version change:
+    @{{python}} scripts/bump_version.py {{quote(change)}}
+
 preflight:
     {{python}} scripts/run_target_receiver.py preflight --config {{config}}
 

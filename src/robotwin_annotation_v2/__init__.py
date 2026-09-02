@@ -1,7 +1,6 @@
 """RoboTwin target/receiver annotation pipeline."""
 
-__version__ = "0.2.0"
-
+from ._version import __version__
 from .models import (
     EpisodeRef,
     FramePurpose,
@@ -28,4 +27,5 @@ __all__ = [
     "RoleSemanticPlan",
     "SemanticFrame",
     "SemanticPlan",
+    "__version__",
 ]
