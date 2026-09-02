@@ -15,3 +15,4 @@ the package release version.
 ### Changed
 
 - Dataset identity is bound at runtime instead of duplicated across pipeline profiles.
+- Current documentation is reduced to entry, architecture, dataset, operations, and release docs.
