@@ -13,6 +13,7 @@ from PIL import Image
 
 from ..adapters.qwen_client import QwenCompletion, image_data_url
 from ..config import QwenConfig
+from ..domain import TargetProfile
 from ..models import (
     CANDIDATE_FIELDS,
     LoopContext,
@@ -388,9 +389,14 @@ def parse_semantic_plan(
     context: LoopContext,
     model: str,
     rendered_prompt: str,
+    target_profile: TargetProfile | str = TargetProfile.GRASP_MANIPULATION,
 ) -> SemanticPlan:
     """Parse one joint response and enforce seed/query constraints."""
 
+    try:
+        resolved_profile = TargetProfile(target_profile)
+    except ValueError as exc:
+        raise QwenStageError(f"unsupported target profile: {target_profile!r}") from exc
     expected_roles = context.annotation_spec.required_role_names
     payload = _decode_response(raw_response, expected_roles=expected_roles)
     return SemanticPlan(
@@ -403,6 +409,7 @@ def parse_semantic_plan(
         input_frame_ids=tuple(frame.frame_id for frame in context.semantic_frames),
         raw_response=raw_response,
         annotation_mode=context.annotation_mode,
+        target_profile=resolved_profile,
     )
 
 
@@ -413,6 +420,7 @@ def run_qwen_stage(
     client: QwenClient,
     *,
     check_health: bool = True,
+    target_profile: TargetProfile | str = TargetProfile.GRASP_MANIPULATION,
 ) -> QwenStageResult:
     """Run the complete Qwen stage without embedding prompt policy in the server."""
 
@@ -435,6 +443,7 @@ def run_qwen_stage(
             context=context,
             model=completion.model,
             rendered_prompt=request.rendered_prompt,
+            target_profile=target_profile,
         )
     except QwenStageError as exc:
         raise QwenStageError(

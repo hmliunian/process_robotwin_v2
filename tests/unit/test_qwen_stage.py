@@ -10,7 +10,7 @@ from PIL import Image
 
 from robotwin_annotation_v2.adapters import QwenCompletion
 from robotwin_annotation_v2.config import QwenConfig
-from robotwin_annotation_v2.domain import AnnotationMode
+from robotwin_annotation_v2.domain import AnnotationMode, TargetProfile
 from robotwin_annotation_v2.models import (
     EpisodeRef,
     FramePurpose,
@@ -256,6 +256,19 @@ def test_target_only_qwen_contract_accepts_exactly_target() -> None:
             model="fake-qwen",
             rendered_prompt="rendered prompt",
         )
+
+
+def test_semantic_plan_records_specialized_target_profile() -> None:
+    plan = parse_semantic_plan(
+        _target_only_response(),
+        context=_target_only_context(),
+        model="fake-qwen",
+        rendered_prompt="rendered prompt",
+        target_profile=TargetProfile.DOOR_OPEN,
+    )
+
+    assert plan.target_profile is TargetProfile.DOOR_OPEN
+    assert plan.to_json()["target_profile"] == "door_open"
 
 
 def test_target_only_semantic_prompt_contains_only_target_contract() -> None:

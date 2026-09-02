@@ -2575,7 +2575,9 @@ def test_process_urdf_source_run_renders_successes_after_partial_backend_failure
         "fatal_error",
         "backend",
         "passed",
+        "target_profile",
     }
+    assert persisted["target_profile"] == "grasp_manipulation"
 
 
 @pytest.mark.parametrize(

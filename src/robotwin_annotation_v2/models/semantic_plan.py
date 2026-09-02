@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Literal, cast
 
-from ..domain import AnnotationMode, AnnotationSpec, annotation_spec
+from ..domain import AnnotationMode, AnnotationSpec, TargetProfile, annotation_spec
 from .loop_context import EpisodeRef
 
 RoleName = Literal["target", "receiver"]
@@ -233,6 +233,7 @@ class SemanticPlan:
     input_frame_ids: tuple[int, ...]
     raw_response: str
     annotation_mode: AnnotationMode = AnnotationMode.PICK_PLACE
+    target_profile: TargetProfile = TargetProfile.GRASP_MANIPULATION
     prompt_version: str = "object_roles_semantic_v2"
 
     def __post_init__(self) -> None:
@@ -249,6 +250,11 @@ class SemanticPlan:
             raise ValueError("prompt_sha256 must be a SHA-256 hex digest")
         if not self.input_frame_ids:
             raise ValueError("input_frame_ids must not be empty")
+        if (
+            self.target_profile is not TargetProfile.GRASP_MANIPULATION
+            and self.annotation_mode is not AnnotationMode.TARGET_ONLY
+        ):
+            raise ValueError("specialized target profiles require target_only mode")
 
     @property
     def usable(self) -> bool:
@@ -283,7 +289,7 @@ class SemanticPlan:
         return hashlib.sha256(rendered_prompt.encode("utf-8")).hexdigest()
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        payload = {
             "format_version": "robotwin_semantic_plan_v2",
             "prompt_version": self.prompt_version,
             "annotation_mode": self.annotation_mode.value,
@@ -295,3 +301,6 @@ class SemanticPlan:
             "roles": {plan.role: plan.to_json() for plan in self.role_plans},
             "raw_response": self.raw_response,
         }
+        if self.target_profile is not TargetProfile.GRASP_MANIPULATION:
+            payload["target_profile"] = self.target_profile.value
+        return payload

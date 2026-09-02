@@ -84,6 +84,7 @@ class ProcessSummary:
     stage_mode: str | None = None
     plan: Mapping[str, Any] | None = None
     artifact: str | None = None
+    target_profile: str | None = None
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any]) -> ProcessSummary:
@@ -137,6 +138,11 @@ class ProcessSummary:
             artifact=(
                 None if payload.get("artifact") is None else str(payload["artifact"])
             ),
+            target_profile=(
+                None
+                if payload.get("target_profile") is None
+                else str(payload["target_profile"])
+            ),
         )
 
     def with_artifact(self, artifact: str) -> ProcessSummary:
@@ -168,6 +174,8 @@ class ProcessSummary:
             payload["plan"] = dict(self.plan)
         if self.artifact is not None:
             payload["artifact"] = self.artifact
+        if self.target_profile is not None:
+            payload["target_profile"] = self.target_profile
         return payload
 
 

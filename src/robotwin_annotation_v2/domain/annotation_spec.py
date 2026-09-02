@@ -24,6 +24,7 @@ class TargetProfile(StrEnum):
 
     GRASP_MANIPULATION = "grasp_manipulation"
     CONTACT_PRESS = "contact_press"
+    DOOR_OPEN = "door_open"
 
 
 class TargetOnlyTaskKind(StrEnum):
@@ -33,6 +34,7 @@ class TargetOnlyTaskKind(StrEnum):
     SINGLE_MOVABLE_TARGET_CONDITIONAL = "single_movable_target_conditional"
     CONTACT_ACTION_SITE = "contact_action_site"
     ARTICULATED_ACTION_SITE = "articulated_action_site"
+    DOOR_OPEN_ACTION_SITE = "door_open_action_site"
 
 
 def target_profile_for_task_kind(
@@ -56,6 +58,8 @@ def target_profile_for_task_kind(
         ) from exc
     if resolved is TargetOnlyTaskKind.CONTACT_ACTION_SITE:
         return TargetProfile.CONTACT_PRESS
+    if resolved is TargetOnlyTaskKind.DOOR_OPEN_ACTION_SITE:
+        return TargetProfile.DOOR_OPEN
     return TargetProfile.GRASP_MANIPULATION
 
 

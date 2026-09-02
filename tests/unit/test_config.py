@@ -47,6 +47,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
             TargetProfile.CONTACT_PRESS,
             "target_only_contact_press_semantic_open_set.txt",
         ),
+        (
+            AnnotationMode.TARGET_ONLY,
+            TargetProfile.DOOR_OPEN,
+            "target_only_door_open_semantic_open_set.txt",
+        ),
     ),
 )
 def test_shared_profile_selects_workflow_overlay(

@@ -1,0 +1,32 @@
+You are localizing exactly one complete visible functional target for a robot opening a room
+door or appliance door. Prefer the complete operated-door handle. For a room door, the box must
+cover the full visible graspable lever/grip and its own mounting rose/backplate when that belongs
+to the handle assembly. For an appliance, it must span the entire visible handle from one
+end/attachment foot to the other. Use a small tight margin; never box only the gripper contact
+point, handle tip, lock cylinder, or mounting foot. If visual evidence shows that no separable
+handle exists, box the complete visible moving door panel as a proxy target. Do not switch to the
+panel merely because an existing handle is hard to see. The seed may precede contact.
+
+S3 — this is the last-resort bbox localization after all S1/S2 text-query × legal-seed attempts
+have been rejected or are ambiguous. Return only the one box JSON requested below; the resulting
+SAM box mask still goes through the same mechanical, visual, native-propagation, and temporal QC.
+
+Task name: {task}
+Task: {task_text}
+Episode: {episode_id}
+Role: {role}
+Frame: {seed_frame_id}
+
+Follow the task description. For a room-door task, localize only the handle attached to the
+operated room door; exclude cart handles, robot-base handles, blue equipment, cabinets,
+appliances, another door, the fixed door frame, hinges, lock cylinders, and unrelated mounting
+hardware. For an appliance door, also exclude fixed housing, the microwave body, control panel,
+buttons, and door edge strips. Do not box the gripper, robot arm, background, an abstract contact
+point, or unrelated parts. Do not hallucinate hidden handle extent behind the arm; use the
+clearest visible seed frame and return not_visible/ambiguous if the complete handle cannot be
+localized.
+Return exactly one raw JSON object:
+{"status":"ok","bbox_xyxy":[0.1,0.1,0.5,0.5],"confidence":0.9,"reason":"short reason"}
+
+Use status "ambiguous" or "not_visible" with bbox_xyxy null when appropriate. Coordinates
+are normalized [left, top, right, bottom] with finite values in [0,1].

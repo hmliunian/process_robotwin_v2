@@ -326,11 +326,10 @@ class AnnotationConfig:
     profile: TargetProfile = TargetProfile.GRASP_MANIPULATION
 
     def __post_init__(self) -> None:
-        if (
-            self.profile is TargetProfile.CONTACT_PRESS
-            and self.mode is not AnnotationMode.TARGET_ONLY
+        if self.profile is not TargetProfile.GRASP_MANIPULATION and (
+            self.mode is not AnnotationMode.TARGET_ONLY
         ):
-            raise ConfigError("annotation.profile=contact_press requires target_only mode")
+            raise ConfigError(f"annotation.profile={self.profile.value} requires target_only mode")
 
     @property
     def spec(self) -> AnnotationSpec:
@@ -664,6 +663,7 @@ def load_profile(
         else {
             TargetProfile.GRASP_MANIPULATION: "target_only",
             TargetProfile.CONTACT_PRESS: "contact_press",
+            TargetProfile.DOOR_OPEN: "door_open",
         }[target_profile]
     )
     config_path, raw = _read_yaml(path)

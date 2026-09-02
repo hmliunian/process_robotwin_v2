@@ -140,6 +140,7 @@ def _load_semantic_plan(source_dir: Path, context: LoopContext) -> SemanticPlan:
         context=context,
         model=str(saved["model"]),
         rendered_prompt=prompt_path.read_text(encoding="utf-8"),
+        target_profile=str(saved.get("target_profile", "grasp_manipulation")),
     )
     if plan.to_json() != saved:
         raise ValueError(f"saved semantic plan fails provenance validation: {saved_path}")

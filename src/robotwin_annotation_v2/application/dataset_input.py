@@ -89,6 +89,7 @@ def _manifest_mode(manifest: dict[str, Any], *, root: Path) -> AnnotationMode:
         "target_only": AnnotationMode.TARGET_ONLY,
         "grasp_manipulation": AnnotationMode.TARGET_ONLY,
         "contact_press": AnnotationMode.TARGET_ONLY,
+        "door_open": AnnotationMode.TARGET_ONLY,
     }
     if not isinstance(raw, str) or raw.strip().lower().replace("-", "_") not in aliases:
         raise ValueError(f"dataset manifest has unsupported profile {raw!r}: {root}")

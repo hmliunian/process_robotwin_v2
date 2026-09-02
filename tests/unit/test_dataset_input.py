@@ -70,6 +70,7 @@ def test_resolve_infers_mode_from_manifest(tmp_path: Path) -> None:
         ("single_movable_target_conditional", TargetProfile.GRASP_MANIPULATION),
         ("contact_action_site", TargetProfile.CONTACT_PRESS),
         ("articulated_action_site", TargetProfile.GRASP_MANIPULATION),
+        ("door_open_action_site", TargetProfile.DOOR_OPEN),
     ),
 )
 def test_target_only_task_kind_selects_profile(
