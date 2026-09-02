@@ -56,6 +56,8 @@ class _AliasRule:
     role: RoleName
     tasks: frozenset[str]
     query_words: frozenset[str]
+    required_query_words: frozenset[str]
+    excluded_query_phrases: frozenset[str]
     aliases: tuple[str, ...]
 
 
@@ -90,6 +92,14 @@ def _load_rules(path: Path = _CATALOG_PATH) -> tuple[_AliasRule, ...]:
             entry.get("query_words", []),
             field=f"rules[{index}].query_words",
         )
+        required_query_words = _strings(
+            entry.get("required_query_words", []),
+            field=f"rules[{index}].required_query_words",
+        )
+        excluded_query_phrases = _strings(
+            entry.get("excluded_query_phrases", []),
+            field=f"rules[{index}].excluded_query_phrases",
+        )
         aliases = _strings(
             entry.get("aliases"),
             field=f"rules[{index}].aliases",
@@ -102,6 +112,8 @@ def _load_rules(path: Path = _CATALOG_PATH) -> tuple[_AliasRule, ...]:
                 role=role,
                 tasks=frozenset(tasks),
                 query_words=frozenset(query_words),
+                required_query_words=frozenset(required_query_words),
+                excluded_query_phrases=frozenset(excluded_query_phrases),
                 aliases=aliases,
             )
         )
@@ -119,7 +131,7 @@ def _query_values(semantic: RoleSemanticPlan) -> tuple[str, ...]:
 
 
 def _query_color(queries: Iterable[str]) -> str | None:
-    values = tuple(queries)
+    values = tuple(query.replace("-", " ") for query in queries)
     for phrase in _COLOR_PHRASES:
         if any(phrase in query for query in values):
             return phrase
@@ -155,17 +167,22 @@ def curated_query_aliases(
     queries = _query_values(semantic)
     if not queries:
         return ()
-    words = frozenset(word for query in queries for word in query.split())
+    words = frozenset(
+        word for query in queries for word in query.replace("-", " ").split()
+    )
     rule = next(
         (
             item
             for item in _load_rules()
             if item.role == role
+            and item.required_query_words.issubset(words)
             and (context.episode.task in item.tasks or bool(words & item.query_words))
         ),
         None,
     )
     if rule is None:
+        return ()
+    if any(query in rule.excluded_query_phrases for query in queries):
         return ()
     color = _query_color(queries)
     aliases = (

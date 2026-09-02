@@ -105,6 +105,7 @@ class QwenServiceError(RuntimeError):
 class QwenCompletion:
     content: str
     model: str
+    finish_reason: str | None = None
 
 
 def image_data_url(image: Image.Image | NDArray) -> str:
@@ -287,12 +288,20 @@ class OpenAICompatibleQwenClient:
         )
         payload = self._read_json(request)
         try:
-            content = payload["choices"][0]["message"]["content"]
+            choice = payload["choices"][0]
+            content = choice["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
             raise QwenServiceError("Qwen response has no assistant content") from exc
+        finish_reason = choice.get("finish_reason")
+        if finish_reason is not None and not isinstance(finish_reason, str):
+            raise QwenServiceError("Qwen response has an invalid finish_reason field")
         if not isinstance(content, str) or not content.strip():
             raise QwenServiceError("Qwen returned empty assistant content")
         model = payload.get("model", self.model_id)
         if not isinstance(model, str) or not model.strip():
             raise QwenServiceError("Qwen response has an invalid model field")
-        return QwenCompletion(content=content.strip(), model=model.strip())
+        return QwenCompletion(
+            content=content.strip(),
+            model=model.strip(),
+            finish_reason=finish_reason,
+        )

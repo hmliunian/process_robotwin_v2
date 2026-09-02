@@ -13,7 +13,7 @@ from PIL import Image
 
 from ..adapters.qwen_client import QwenCompletion, image_data_url
 from ..config import QwenConfig
-from ..domain import TargetProfile
+from ..domain import AnnotationMode, TargetProfile
 from ..models import (
     CANDIDATE_FIELDS,
     LoopContext,
@@ -23,6 +23,7 @@ from ..models import (
     SemanticPlanError,
     SemanticStatus,
 )
+from ..models.semantic_plan import normalize_profile_query
 from .prompt_context import timeline_prompt_fields
 
 _FRAME_MARKER = "{labeled_multimodal_frames}"
@@ -278,6 +279,8 @@ def _canonicalize_duplicate_candidates(
 def _complete_candidate_order(
     candidate_values: dict[str, str | None],
     order: tuple[str, ...],
+    *,
+    target_profile: TargetProfile,
 ) -> tuple[str, ...]:
     """Repair an otherwise valid Qwen bank with omitted/null order entries."""
 
@@ -300,6 +303,10 @@ def _complete_candidate_order(
     if fallback in completed:
         completed.remove(fallback)
         completed.append(fallback)
+    if target_profile is TargetProfile.DOOR_OPEN:
+        completed = [
+            field for field in CANDIDATE_FIELDS if candidate_values[field] is not None
+        ]
     return tuple(completed)
 
 
@@ -307,6 +314,8 @@ def _parse_role(
     role: str,
     payload: Any,
     context: LoopContext,
+    *,
+    target_profile: TargetProfile,
 ) -> RoleSemanticPlan:
     if not isinstance(payload, dict):
         raise QwenStageError(f"{role} must be a JSON object")
@@ -341,12 +350,26 @@ def _parse_role(
     for field, value in candidate_values.items():
         if value is not None and not isinstance(value, str):
             raise QwenStageError(f"{role}.{field} must be a string or null")
+        if value is not None:
+            try:
+                candidate_values[field] = normalize_profile_query(
+                    value,
+                    target_profile=target_profile,
+                    field=f"{role}.{field}",
+                    allow_visual_object=field == "general_fallback_query",
+                )
+            except SemanticPlanError as exc:
+                raise QwenStageError(str(exc)) from exc
     order = _string_list(payload["recommended_order"], field=f"{role}.recommended_order")
     candidate_values, order = _canonicalize_duplicate_candidates(
         candidate_values,
         order,
     )
-    order = _complete_candidate_order(candidate_values, order)
+    order = _complete_candidate_order(
+        candidate_values,
+        order,
+        target_profile=target_profile,
+    )
 
     if status is SemanticStatus.NO_CLEAR_SEED:
         if seed_frame_id is not None or any(
@@ -369,6 +392,7 @@ def _parse_role(
                 shape_category_query=candidate_values["shape_category_query"],
                 general_fallback_query=candidate_values["general_fallback_query"],
                 recommended_order=order,
+                target_profile=target_profile,
             )
         except SemanticPlanError as exc:
             raise QwenStageError(f"invalid {role} query bank: {exc}") from exc
@@ -397,12 +421,25 @@ def parse_semantic_plan(
         resolved_profile = TargetProfile(target_profile)
     except ValueError as exc:
         raise QwenStageError(f"unsupported target profile: {target_profile!r}") from exc
+    if (
+        resolved_profile is not TargetProfile.GRASP_MANIPULATION
+        and context.annotation_mode is not AnnotationMode.TARGET_ONLY
+    ):
+        raise QwenStageError(
+            f"{resolved_profile.value} target profile requires target_only mode"
+        )
     expected_roles = context.annotation_spec.required_role_names
     payload = _decode_response(raw_response, expected_roles=expected_roles)
     return SemanticPlan(
         episode=context.episode,
         role_plans=tuple(
-            _parse_role(role, payload[role], context) for role in expected_roles
+            _parse_role(
+                role,
+                payload[role],
+                context,
+                target_profile=resolved_profile,
+            )
+            for role in expected_roles
         ),
         model=model,
         prompt_sha256=SemanticPlan.prompt_hash(rendered_prompt),
@@ -437,6 +474,12 @@ def run_qwen_stage(
             f"Qwen request failed: {exc}",
             rendered_prompt=request.rendered_prompt,
         ) from exc
+    if completion.finish_reason not in {None, "stop"}:
+        raise QwenStageError(
+            f"Qwen response ended with finish_reason={completion.finish_reason!r}",
+            rendered_prompt=request.rendered_prompt,
+            raw_response=completion.content,
+        )
     try:
         plan = parse_semantic_plan(
             completion.content,

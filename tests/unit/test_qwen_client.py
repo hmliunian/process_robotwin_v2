@@ -81,6 +81,7 @@ def test_openai_client_health_and_completion(monkeypatch: Any) -> None:
     assert client.health_endpoint == "http://127.0.0.1:18086/health"
     assert health["status"] == "ok"
     assert completion.model == "fake-qwen"
+    assert completion.finish_reason is None
     body = json.loads(requests[1].data)
     assert body["max_tokens"] == 20
     assert body["temperature"] == 0
@@ -100,7 +101,9 @@ def test_api_client_authenticates_models_probe_and_completion(monkeypatch: Any) 
             if request.full_url.endswith("/models")
             else {
                 "model": "qwen3.8-max",
-                "choices": [{"message": {"content": "ok"}}],
+                "choices": [
+                    {"message": {"content": "ok"}, "finish_reason": "stop"}
+                ],
             }
         )
         return FakeHTTPResponse(json.dumps(payload).encode("utf-8"))
@@ -121,7 +124,9 @@ def test_api_client_authenticates_models_probe_and_completion(monkeypatch: Any) 
         "model": "qwen3.8-max",
         "probe": "models",
     }
-    assert client.complete([{"role": "user", "content": "test"}], max_tokens=32).content == "ok"
+    completion = client.complete([{"role": "user", "content": "test"}], max_tokens=32)
+    assert completion.content == "ok"
+    assert completion.finish_reason == "stop"
     assert client.models_endpoint == "https://maas.example/compatible-mode/v1/models"
     body = json.loads(requests[1].data)
     assert body["model"] == "qwen3.8-max"
