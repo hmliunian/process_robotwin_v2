@@ -139,6 +139,7 @@ class OpenAICompatibleQwenClient:
         probe: str = "health",
         temperature: float = 0.0,
         enable_thinking: bool = False,
+        json_object_response: bool = False,
     ) -> None:
         if not endpoint.strip():
             raise ValueError("Qwen endpoint must be non-empty")
@@ -159,6 +160,7 @@ class OpenAICompatibleQwenClient:
         self.probe = probe
         self.temperature = temperature
         self.enable_thinking = enable_thinking
+        self.json_object_response = json_object_response
 
     @classmethod
     def from_config(cls, config: QwenConfig) -> OpenAICompatibleQwenClient:
@@ -172,6 +174,7 @@ class OpenAICompatibleQwenClient:
             probe=config.probe,
             temperature=config.temperature,
             enable_thinking=config.enable_thinking,
+            json_object_response=config.runtime == "api",
         )
 
     @property
@@ -269,17 +272,17 @@ class OpenAICompatibleQwenClient:
             raise ValueError("Qwen messages must not be empty")
         if max_tokens < 1:
             raise ValueError("Qwen max_tokens must be positive")
-        body = json.dumps(
-            {
-                "model": self.model_id,
-                "messages": messages,
-                "max_tokens": max_tokens,
-                "temperature": self.temperature,
-                "enable_thinking": self.enable_thinking,
-                "stream": False,
-            },
-            ensure_ascii=False,
-        ).encode("utf-8")
+        payload: dict[str, Any] = {
+            "model": self.model_id,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": self.temperature,
+            "enable_thinking": self.enable_thinking,
+            "stream": False,
+        }
+        if self.json_object_response:
+            payload["response_format"] = {"type": "json_object"}
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         request = urllib.request.Request(
             self.endpoint,
             data=body,

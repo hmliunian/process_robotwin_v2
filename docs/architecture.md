@@ -60,9 +60,9 @@ query，并把 `microwave door handle` 之类 appliance context 规整到物理 
 
 ### Object masks
 
-每个 required role 都会在合法 seeds 上尝试 semantic query bank，执行基础 mask 检查，并让
-Qwen 比较实际 candidate panels。配置可以增加 curated aliases 和 seed fallback。Qwen bbox
-localization 是最后一级 fallback，其 SAM box mask 仍要通过相同的 candidate 与 temporal QC。
+共享 profile 默认启用完整 resolution chain：S1 在所有合法 seeds 上尝试 semantic query bank
+与 curated aliases；S2 从语义规划开始应用 profile 专用 identity、完整性与 action-context QC；
+S3 仅在全部文本尝试失败后执行 Qwen bbox localization，并通过相同的 candidate 与 temporal QC。
 Identity QC 未通过的 candidate 不得进入 propagation。
 
 SAM3 native video tracking 从选定 seed 双向传播，并裁剪到 role window。Temporal QC 记录

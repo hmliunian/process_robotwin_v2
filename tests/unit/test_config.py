@@ -67,6 +67,14 @@ def test_shared_profile_selects_workflow_overlay(
 
     assert loaded.annotation == AnnotationConfig(mode, profile)
     assert loaded.qwen.prompt_template.name == semantic_prompt
+    assert loaded.mask.qc_enabled
+    assert loaded.mask.qc_query_fallback_enabled
+    assert loaded.mask.qc_seed_fallback_enabled
+    assert loaded.mask.qc_bbox_fallback_enabled
+    assert loaded.mask.qc_prompt_template is not None
+    assert loaded.mask.qc_bbox_prompt_template is not None
+    if profile is TargetProfile.DOOR_OPEN:
+        assert loaded.mask.qc_bbox_max_tokens == 400
 
 
 def test_runtime_binding_keeps_dataset_identity_out_of_profile(tmp_path: Path) -> None:
