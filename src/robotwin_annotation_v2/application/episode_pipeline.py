@@ -487,10 +487,7 @@ def _execute_gripper_episode(
     ref = _episode_ref(config, episode_index)
     context = _build_context(config, dataset, ref)
     store = ArtifactStore(config.output_root)
-    shape_values = tuple(int(value) for value in dataset.manifest["frame_shape_hw"])
-    if len(shape_values) != 2:
-        raise ValueError(f"invalid dataset frame shape: {shape_values}")
-    frame_shape = (shape_values[0], shape_values[1])
+    frame_shape = dataset.frame_shape(ref)
     sam_result = _load_completed_sam_stage(
         config,
         store,
@@ -558,10 +555,7 @@ def _execute_sam_episode(
     context = _build_context(config, dataset, ref)
     store = ArtifactStore(config.output_root)
     plan = _load_saved_semantic_plan(store, run_id, context, config.annotation.profile)
-    shape_values = tuple(int(value) for value in dataset.manifest["frame_shape_hw"])
-    if len(shape_values) != 2:
-        raise ValueError(f"invalid dataset frame shape: {shape_values}")
-    frame_shape = (shape_values[0], shape_values[1])
+    frame_shape = dataset.frame_shape(ref)
     semantic_frame_ids = {frame.frame_id for frame in context.semantic_frames}
     stage_images = dataset.read_frames(ref, semantic_frame_ids)
     seed_frame_ids = {

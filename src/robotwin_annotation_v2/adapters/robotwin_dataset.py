@@ -22,6 +22,16 @@ class DatasetError(RuntimeError):
     """The external dataset does not satisfy the checked contract."""
 
 
+def _parse_frame_shape(value: Any) -> tuple[int, int]:
+    try:
+        shape = tuple(int(item) for item in value)
+    except (TypeError, ValueError) as exc:
+        raise DatasetError("dataset manifest frame_shape_hw must contain two integers") from exc
+    if len(shape) != 2 or any(item <= 0 for item in shape):
+        raise DatasetError("dataset manifest frame_shape_hw must contain two positive integers")
+    return shape[0], shape[1]
+
+
 @dataclass(frozen=True)
 class EpisodePaths:
     parquet: Path
@@ -188,12 +198,34 @@ class RoboTwinDataset:
             raise DatasetError(f"video contains no frames: {path}")
         return count, shape
 
+    def frame_shape(self, ref: EpisodeRef) -> tuple[int, int]:
+        """Return the declared frame shape, or infer and cache it from video."""
+
+        raw_shape = self.manifest.get("frame_shape_hw")
+        if raw_shape is None:
+            _count, shape = self.video_info(ref)
+            self.manifest["frame_shape_hw"] = list(shape)
+            return shape
+        return _parse_frame_shape(raw_shape)
+
     def preflight(self, episode_ids: Iterable[int]) -> dict[str, Any]:
         ids = tuple(int(value) for value in episode_ids)
         issues: list[str] = []
         metadata = self._metadata_index()
-        expected_shape = tuple(int(value) for value in self.manifest["frame_shape_hw"])
-        expected_surplus = int(self.manifest["raw_video_frame_surplus"])
+        expected_shape: tuple[int, int] | None = None
+        raw_shape = self.manifest.get("frame_shape_hw")
+        if raw_shape is not None:
+            try:
+                expected_shape = _parse_frame_shape(raw_shape)
+            except DatasetError as exc:
+                issues.append(str(exc))
+        expected_surplus: int | None = None
+        raw_surplus = self.manifest.get("raw_video_frame_surplus")
+        if raw_surplus is not None:
+            try:
+                expected_surplus = int(raw_surplus)
+            except (TypeError, ValueError):
+                issues.append("dataset manifest raw_video_frame_surplus must be an integer")
         content: dict[str, dict[str, Any]] = {}
         for episode_index in ids:
             ref = EpisodeRef(self.task, episode_index, self.camera)
@@ -218,12 +250,18 @@ class RoboTwinDataset:
                         "raw_video_frame_surplus": surplus,
                         "frame_shape_hw": list(video_shape),
                     }
-                    if surplus != expected_surplus:
+                    if expected_surplus is None:
+                        expected_surplus = surplus
+                        self.manifest["raw_video_frame_surplus"] = surplus
+                    elif surplus != expected_surplus:
                         issues.append(
                             f"episode {episode_index}: video surplus {surplus} "
                             f"!= {expected_surplus}"
                         )
-                    if video_shape != expected_shape:
+                    if expected_shape is None:
+                        expected_shape = video_shape
+                        self.manifest["frame_shape_hw"] = list(video_shape)
+                    elif video_shape != expected_shape:
                         issues.append(
                             f"episode {episode_index}: frame shape {video_shape} "
                             f"!= {expected_shape}"
