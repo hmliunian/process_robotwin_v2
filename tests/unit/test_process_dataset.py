@@ -2042,6 +2042,45 @@ def test_process_urdf_source_run_never_calls_sam_or_legacy_renderer(
     ).resolve()
 
 
+def test_process_urdf_source_run_rejects_target_profile_mismatch(
+    tmp_path: Path,
+) -> None:
+    dataset = tmp_path / "dataset"
+    source = tmp_path / "source-run"
+    _touch_episode(dataset, 7)
+    _write_source_summary(
+        source,
+        dataset,
+        [{"episode": 7, "status": "completed"}],
+    )
+    _write_source_episode(source, 7)
+    summary_path = source / "process_summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["target_profile"] = "door_open"
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+    with pytest.raises(
+        ValueError,
+        match="pipeline target profile differs from the frozen source run",
+    ):
+        process_module.process_urdf_source_run(
+            pipeline_config=process_module.load_config(
+                Path("configs/pilot_move_pillbottle_pad.yaml")
+            ),
+            dataset_root=dataset,
+            source_run_dir=source,
+            task="task",
+            camera="cam_high",
+            output_root=tmp_path / "output",
+            urdf_path=tmp_path / "aloha.urdf",
+            run_id="urdf-profile-mismatch",
+            episode_ids=(7,),
+            dry_run=True,
+        )
+
+    assert not (tmp_path / "output").exists()
+
+
 def test_process_urdf_source_run_allows_partial_source_by_default(
     tmp_path: Path,
 ) -> None:
