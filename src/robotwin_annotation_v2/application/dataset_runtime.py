@@ -42,15 +42,16 @@ from robotwin_annotation_v2.application.urdf_workflow import (
     UrdfWorkflowHooks,
 )
 from robotwin_annotation_v2.config import (
-    ParallelConfig,
+    DatasetBinding,
     PipelineConfig,
+    bind_dataset,
     load_config,
+    load_profile,
     parse_gpu_list,
 )
 from robotwin_annotation_v2.domain import (
     AnnotationMode,
     GripperBackend,
-    TargetProfile,
 )
 from robotwin_annotation_v2.models import ProcessRequest
 from robotwin_annotation_v2.terminal_ui import UI_MODES, ProcessUI, create_process_ui
@@ -69,21 +70,7 @@ DEFAULT_BUNDLED_URDF_PATH = (
     / "aloha-agilex"
     / "arx5_description_isaac_gripper.urdf"
 )
-DEFAULT_PROCESS_CONFIG = PROJECT_ROOT / "configs" / "process_qwen38_api.yaml"
-PATH_MODE_CONFIGS = {
-    "local": {
-        AnnotationMode.PICK_PLACE: PROJECT_ROOT / "configs" / "pilot_move_pillbottle_pad.yaml",
-        AnnotationMode.TARGET_ONLY: PROJECT_ROOT / "configs" / "pilot_adjust_bottle_target_only.yaml",
-    },
-    "api": {
-        AnnotationMode.PICK_PLACE: DEFAULT_PROCESS_CONFIG,
-        AnnotationMode.TARGET_ONLY: PROJECT_ROOT / "configs" / "process_target_only_qwen38_api.yaml",
-    },
-}
-CONTACT_PRESS_CONFIGS = {
-    "local": PROJECT_ROOT / "configs" / "pilot_contact_press_target_only.yaml",
-    "api": PROJECT_ROOT / "configs" / "process_contact_press_qwen38_api.yaml",
-}
+DEFAULT_PROCESS_CONFIG = PROJECT_ROOT / "configs" / "process.yaml"
 CHUNK_PATTERN = _discovery.CHUNK_PATTERN
 EPISODE_FILE_PATTERN = _discovery.EPISODE_FILE_PATTERN
 DiscoveredEpisode = _discovery.DiscoveredEpisode
@@ -588,97 +575,87 @@ def _optional_cli_path(value: str | None) -> Path | None:
 def _path_target_args(
     args: argparse.Namespace,
     *,
-    config: Path,
+    config: PipelineConfig,
     dataset_root: Path,
     task: str,
     camera: str,
     run_id: str | None,
-    parallel_defaults: ParallelConfig | None,
 ) -> argparse.Namespace:
     values = vars(args) | {
-        "config": config,
+        "config": config.config_path,
+        "bound_config": config,
         "data_path": None,
         "dataset_root": dataset_root,
         "task": task,
         "camera": camera,
         "path_mode": None,
         "run_id": run_id,
-        "path_parallel_defaults": parallel_defaults,
     }
     return argparse.Namespace(**values)
 
 
-def _path_profile_config(
-    profile: PipelineConfig,
-    target: DatasetTarget,
-) -> Path:
-    """Resolve a task-kind-derived profile without inspecting the task name."""
-
-    mode = profile.annotation.mode
-    if target.profile is profile.annotation.profile:
-        return profile.config_path
-    if target.profile is TargetProfile.CONTACT_PRESS:
-        if mode is not AnnotationMode.TARGET_ONLY:
-            raise ValueError("contact_press profile requires target_only mode")
-        return CONTACT_PRESS_CONFIGS[profile.qwen.runtime]
-    return PATH_MODE_CONFIGS[profile.qwen.runtime][mode]
+def _bind_target(args: argparse.Namespace, target: DatasetTarget) -> PipelineConfig:
+    profile = load_profile(
+        args.config,
+        mode=target.mode,
+        target_profile=target.profile,
+    )
+    return bind_dataset(
+        profile,
+        DatasetBinding(
+            root=target.root,
+            task=target.task,
+            camera=target.camera,
+            episode_ids=target.episode_ids,
+            manifest_path=target.manifest_path,
+            manifest_data=target.manifest_data,
+        ),
+    )
 
 
 def _run_path_input(args: argparse.Namespace, reporter: ProcessUI) -> dict[str, Any]:
     if args.dataset_root is not None:
         raise ValueError("--data-path and --dataset-root cannot be used together")
-    if args.path_mode is None:
-        raise ValueError("--data-path requires exactly one of --target-only/--pick-place")
     if _optional_cli_path(args.source_run_dir) is not None:
         raise ValueError("--source-run-dir is not supported with --data-path")
-    mode = AnnotationMode(args.path_mode)
+    mode = None if args.path_mode is None else AnnotationMode(args.path_mode)
     resolved = resolve_dataset_input(args.data_path, mode=mode, task=args.task)
     if args.camera is not None and any(target.camera != args.camera for target in resolved.targets):
         raise ValueError("--camera does not match the dataset extract manifest")
     if resolved.is_collection and args.episode_ids is not None and len(resolved.targets) != 1:
         raise ValueError("collection --episode-ids requires selecting one --task")
 
-    profile = load_config(args.config)
-    if profile.annotation.mode is not mode:
-        raise ValueError(
-            f"--{mode.value.replace('_', '-')} requires annotation.mode={mode.value}, "
-            f"but {profile.config_path} declares {profile.annotation.mode.value}"
-        )
     if not resolved.is_collection:
         target = resolved.targets[0]
-        target_config = _path_profile_config(profile, target)
+        config = _bind_target(args, target)
         return _run_from_args(
             _path_target_args(
                 args,
-                config=target_config,
+                config=config,
                 dataset_root=target.root,
                 task=target.task,
                 camera=target.camera,
                 run_id=args.run_id,
-                parallel_defaults=(
-                    None if target_config == profile.config_path else profile.parallel
-                ),
             ),
             reporter,
         )
 
     collection_run_id = _validate_run_id(args.run_id or ArtifactStore.new_run_id())
     records: list[dict[str, Any]] = []
+    first_config: PipelineConfig | None = None
     for target in resolved.targets:
         task_run_id = _validate_run_id(f"{collection_run_id}-{target.task}")
-        target_config = _path_profile_config(profile, target)
+        config = _bind_target(args, target)
+        first_config = first_config or config
         try:
             summary = _run_from_args(
                 _path_target_args(
                     args,
-                    config=target_config,
+                    config=config,
                     dataset_root=target.root,
                     task=target.task,
                     camera=target.camera,
                     run_id=task_run_id,
-                    parallel_defaults=(
-                        None if target_config == profile.config_path else profile.parallel
-                    ),
                 ),
                 reporter,
             )
@@ -708,13 +685,14 @@ def _run_path_input(args: argparse.Namespace, reporter: ProcessUI) -> dict[str, 
         "format_version": "robotwin_process_collection_summary_v1",
         "run_id": collection_run_id,
         "dataset_root": str(resolved.root),
-        "annotation_mode": mode.value,
+        "annotation_mode": resolved.targets[0].mode.value,
         "records": records,
         "passed": all(record["status"] == "completed" for record in records),
     }
+    assert first_config is not None
+    collection_output = first_config.output_root if args.output_dir is None else args.output_dir
     artifact = ArtifactStore.write_json(
-        (profile.output_root if args.output_dir is None else args.output_dir).expanduser().resolve()
-        / f"{collection_run_id}-collection-summary.json",
+        collection_output.expanduser().resolve() / f"{collection_run_id}-collection-summary.json",
         result,
     )
     result["artifact"] = str(artifact)
@@ -731,10 +709,7 @@ def _run_from_args(
         return _run_path_input(args, reporter)
     if args.path_mode is not None:
         raise ValueError("--target-only/--pick-place require --data-path")
-    config = load_config(args.config)
-    parallel_defaults = getattr(args, "path_parallel_defaults", None)
-    if parallel_defaults is not None:
-        config = replace(config, parallel=parallel_defaults)
+    config = getattr(args, "bound_config", None) or load_config(args.config)
     config = _apply_parallel_cli_overrides(config, args)
     output_root = config.output_root if args.output_dir is None else args.output_dir
     source_run_dir = _optional_cli_path(args.source_run_dir)

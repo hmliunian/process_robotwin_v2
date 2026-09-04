@@ -1,9 +1,15 @@
 format_version: robotwin_open_set_query_aliases_v1
 
 # Rules are evaluated in order. A rule matches when the role matches and either
-# its task or one query-bank word matches. Python only handles generic matching,
-# color interpolation, normalization, de-duplication, and the three-alias cap.
+# its task or one query-bank word matches. Optional required/excluded query
+# fields keep task-level aliases tied to semantic evidence.
 rules:
+  - role: target
+    tasks: [open_microwave, open_door]
+    query_words: []
+    required_query_words: [handle]
+    excluded_query_phrases: [door panel, moving door panel]
+    aliases: [handle, "{color} handle", door handle]
   - role: receiver
     tasks: [place_phone_stand]
     query_words: [phonestand]

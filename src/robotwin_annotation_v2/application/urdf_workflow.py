@@ -216,6 +216,16 @@ class UrdfWorkflow:
                 "pipeline config annotation mode differs from the frozen source run: "
                 f"{pipeline_config.annotation.mode.value} != {selection.annotation_mode.value}"
             )
+        source_profile = selection.source_summary.get("target_profile")
+        if (
+            pipeline_config is not None
+            and source_profile is not None
+            and source_profile != pipeline_config.annotation.profile.value
+        ):
+            raise ValueError(
+                "pipeline target profile differs from the frozen source run: "
+                f"{pipeline_config.annotation.profile.value} != {source_profile}"
+            )
         all_excluded = sorted(
             [*relevant_dataset_excluded, *selection.excluded],
             key=lambda record: int(record["episode"]),
@@ -833,6 +843,15 @@ class UrdfWorkflow:
             },
             passed=passed,
             plan=result if dry_run else None,
+            target_profile=(
+                str(source_profile)
+                if source_profile is not None
+                else (
+                    pipeline_config.annotation.profile.value
+                    if pipeline_config is not None
+                    else None
+                )
+            ),
         )
         if dry_run:
             return summary_model.to_json()

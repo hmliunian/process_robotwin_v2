@@ -133,6 +133,7 @@ def test_process_summary_round_trip_preserves_payload() -> None:
         "stage_mode": "full_sam",
         "passed": True,
         "artifact": "/output/process_summary.json",
+        "target_profile": "door_open",
     }
 
     assert ProcessSummary.from_payload(payload).to_json() == payload

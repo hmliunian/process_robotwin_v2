@@ -4,7 +4,7 @@ qwen_model := "checkpoints/Qwen/Qwen3.5-27B"
 qwen_min_free_mib := "60000"
 qwen_startup_timeout := "600"
 config := "configs/pilot_move_pillbottle_pad.yaml"
-process_config := "configs/process_qwen38_api.yaml"
+process_config := "configs/process.yaml"
 
 set positional-arguments := true
 
@@ -22,6 +22,15 @@ lint:
 
 format:
     {{python}} -m ruff format src tests scripts
+
+version:
+    @{{python}} scripts/bump_version.py
+
+version-check:
+    @{{python}} scripts/bump_version.py --check
+
+bump-version change:
+    @{{python}} scripts/bump_version.py {{quote(change)}}
 
 preflight:
     {{python}} scripts/run_target_receiver.py preflight --config {{config}}
@@ -42,7 +51,7 @@ run episode_id="7152":
     {{python}} scripts/run_target_receiver.py run --config {{config}} --episode {{episode_id}}
 
 process *process_args:
-    @dataset_root=""; output_dir=""; if [ "$#" -gt 0 ] && [ "${1#-}" = "$1" ]; then dataset_root="$1"; shift; fi; if [ "$#" -gt 0 ] && [ "${1#-}" = "$1" ]; then output_dir="$1"; shift; fi; if [ -n "$output_dir" ]; then set -- --output-dir "$output_dir" "$@"; fi; if [ -n "$dataset_root" ]; then set -- --dataset-root "$dataset_root" "$@"; fi; exec env PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" {{quote(python)}} scripts/manage_qwen_process.py --config {{quote(process_config)}} --qwen-python {{quote(qwen_python)}} --qwen-model-path {{quote(qwen_model)}} --qwen-min-free-memory-mib {{quote(qwen_min_free_mib)}} --qwen-startup-timeout {{quote(qwen_startup_timeout)}} -- "$@"
+    @data_path=""; output_dir=""; if [ "$#" -gt 0 ] && [ "${1#-}" = "$1" ]; then data_path="$1"; shift; fi; if [ "$#" -gt 0 ] && [ "${1#-}" = "$1" ]; then output_dir="$1"; shift; fi; if [ -n "$output_dir" ]; then set -- --output-dir "$output_dir" "$@"; fi; if [ -n "$data_path" ]; then set -- --data-path "$data_path" "$@"; fi; exec env PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" {{quote(python)}} scripts/manage_qwen_process.py --config {{quote(process_config)}} --qwen-python {{quote(qwen_python)}} --qwen-model-path {{quote(qwen_model)}} --qwen-min-free-memory-mib {{quote(qwen_min_free_mib)}} --qwen-startup-timeout {{quote(qwen_startup_timeout)}} -- "$@"
 
 # Run Qwen API requests with one persistent SAM worker per configured GPU.
 run-parallel *process_args:

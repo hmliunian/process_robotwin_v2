@@ -327,6 +327,7 @@ def save_sam_artifacts(
     provenance: dict[str, Any] = {
         "format_version": "robotwin_frame_provenance_v2",
         "annotation_mode": context.annotation_mode.value,
+        "target_profile": semantic_plan.target_profile.value,
         "required_object_roles": list(context.annotation_spec.required_role_names),
         "gripper_backend": "sam",
         "composition": "native_track clipped_to role_output_window",
@@ -385,6 +386,7 @@ def save_sam_artifacts(
     manifest.update(
         {
             "annotation_mode": context.annotation_mode.value,
+            "target_profile": semantic_plan.target_profile.value,
             "required_object_roles": list(context.annotation_spec.required_role_names),
             "gripper_backend": "sam",
             "mask_format_version": MASK_FORMAT_VERSION,

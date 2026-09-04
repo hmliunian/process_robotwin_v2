@@ -949,13 +949,15 @@ def test_explicit_api_profiles_enable_s1_through_s3(
 
 
 def test_contact_press_profile_uses_action_site_prompts() -> None:
-    config = process_module.load_config(process_module.CONTACT_PRESS_CONFIGS["api"])
+    config = process_module.load_profile(
+        process_module.DEFAULT_PROCESS_CONFIG,
+        mode=process_module.AnnotationMode.TARGET_ONLY,
+        target_profile=TargetProfile.CONTACT_PRESS,
+    )
 
     assert config.annotation.profile is TargetProfile.CONTACT_PRESS
     assert config.qwen.runtime == "api"
-    assert config.qwen.prompt_template.name == (
-        "target_only_contact_press_semantic_open_set.txt"
-    )
+    assert config.qwen.prompt_template.name == ("target_only_contact_press_semantic_open_set.txt")
     assert config.mask.qc_prompt_template is not None
     assert config.mask.qc_prompt_template.name == (
         "target_only_contact_press_mask_candidate_qc_open_set.txt"
@@ -966,28 +968,23 @@ def test_contact_press_profile_uses_action_site_prompts() -> None:
     )
 
 
-def test_path_mode_does_not_silently_replace_selected_config(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    target = SimpleNamespace(
-        root=tmp_path,
-        task="adjust_bottle",
-        camera="cam_high",
-        episode_ids=(0,),
-    )
-    monkeypatch.setattr(
-        process_module,
-        "resolve_dataset_input",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            root=tmp_path,
-            targets=(target,),
-            is_collection=False,
+def test_path_mode_rejects_manifest_mismatch(tmp_path: Path) -> None:
+    for name in ("data", "videos", "sidecars", "meta"):
+        (tmp_path / name).mkdir()
+    (tmp_path / "EXTRACT_MANIFEST.json").write_text(
+        json.dumps(
+            {
+                "profile": "pick_place",
+                "task": "move_pillbottle_pad",
+                "camera": "cam_high",
+                "episode_indices": [0],
+            }
         ),
+        encoding="utf-8",
     )
     args = process_module._parse_args(["--data-path", str(tmp_path), "--target-only"])
 
-    with pytest.raises(ValueError, match=r"process_qwen38_api.yaml.*pick_place"):
+    with pytest.raises(ValueError, match="does not match --target-only"):
         process_module._run_from_args(
             args,
             process_module.ProcessUI(emit_json_summary=False, verbose=False),
@@ -1004,6 +1001,7 @@ def test_path_only_single_task_dispatches_from_manifest(
         task="adjust_bottle",
         camera="cam_high",
         episode_ids=(0,),
+        mode=process_module.AnnotationMode.TARGET_ONLY,
         profile=TargetProfile.GRASP_MANIPULATION,
     )
     resolved = SimpleNamespace(root=dataset, targets=(target,), is_collection=False)
@@ -1020,11 +1018,7 @@ def test_path_only_single_task_dispatches_from_manifest(
         lambda *_args, **_kwargs: resolved,
     )
 
-    def fake_load_config(path: Path) -> Any:
-        calls["config_path"] = path
-        return config
-
-    monkeypatch.setattr(process_module, "load_config", fake_load_config)
+    monkeypatch.setattr(process_module, "_bind_target", lambda _args, _target: config)
 
     def fake_live(**kwargs: Any) -> dict[str, Any]:
         calls.update(kwargs)
@@ -1050,7 +1044,6 @@ def test_path_only_single_task_dispatches_from_manifest(
     )
 
     assert summary["passed"] is True
-    assert calls["config_path"] == config.config_path
     assert calls["dataset_root"] == dataset
     assert calls["task"] == "adjust_bottle"
     assert calls["episode_ids"] == (0,)
@@ -1066,6 +1059,7 @@ def test_path_only_collection_runs_each_task_and_writes_summary(
             task="alpha",
             camera="cam_high",
             episode_ids=(1,),
+            mode=process_module.AnnotationMode.TARGET_ONLY,
             profile=TargetProfile.GRASP_MANIPULATION,
         ),
         SimpleNamespace(
@@ -1073,32 +1067,34 @@ def test_path_only_collection_runs_each_task_and_writes_summary(
             task="beta",
             camera="cam_high",
             episode_ids=(2,),
+            mode=process_module.AnnotationMode.TARGET_ONLY,
             profile=TargetProfile.CONTACT_PRESS,
         ),
     )
     resolved = SimpleNamespace(root=tmp_path, targets=targets, is_collection=True)
     calls: list[dict[str, Any]] = []
-    config_paths: list[Path] = []
     monkeypatch.setattr(
         process_module,
         "resolve_dataset_input",
         lambda *_args, **_kwargs: resolved,
     )
-    real_load_config = process_module.load_config
     config = replace(
-        real_load_config(Path("configs/process_target_only_qwen38_api.yaml")),
+        process_module.load_config(Path("configs/process_target_only_qwen38_api.yaml")),
         config_path=tmp_path / "collection-profile.yaml",
         output_root=tmp_path / "configured-output",
         parallel=ParallelConfig(sam_worker_gpus=(1, 4), qwen_max_in_flight=2),
     )
 
-    def fake_load_config(path: Path) -> Any:
-        config_paths.append(path)
-        if path == config.config_path:
-            return config
-        return real_load_config(path)
+    def fake_bind(_args: Any, target: Any) -> Any:
+        return replace(
+            config,
+            annotation=AnnotationConfig(
+                process_module.AnnotationMode.TARGET_ONLY,
+                target.profile,
+            ),
+        )
 
-    monkeypatch.setattr(process_module, "load_config", fake_load_config)
+    monkeypatch.setattr(process_module, "_bind_target", fake_bind)
 
     def fake_live(**kwargs: Any) -> dict[str, Any]:
         calls.append(kwargs)
@@ -1130,14 +1126,13 @@ def test_path_only_collection_runs_each_task_and_writes_summary(
         "collection-test-alpha",
         "collection-test-beta",
     ]
-    assert config_paths == [
-        config.config_path,
-        config.config_path,
-        process_module.CONTACT_PRESS_CONFIGS["api"],
-    ]
     assert [call["pipeline_config"].parallel for call in calls] == [
         config.parallel,
         config.parallel,
+    ]
+    assert [call["pipeline_config"].annotation.profile for call in calls] == [
+        TargetProfile.GRASP_MANIPULATION,
+        TargetProfile.CONTACT_PRESS,
     ]
     assert summary["passed"] is True
     assert Path(summary["artifact"]).is_file()
@@ -2047,6 +2042,45 @@ def test_process_urdf_source_run_never_calls_sam_or_legacy_renderer(
     ).resolve()
 
 
+def test_process_urdf_source_run_rejects_target_profile_mismatch(
+    tmp_path: Path,
+) -> None:
+    dataset = tmp_path / "dataset"
+    source = tmp_path / "source-run"
+    _touch_episode(dataset, 7)
+    _write_source_summary(
+        source,
+        dataset,
+        [{"episode": 7, "status": "completed"}],
+    )
+    _write_source_episode(source, 7)
+    summary_path = source / "process_summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["target_profile"] = "door_open"
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+    with pytest.raises(
+        ValueError,
+        match="pipeline target profile differs from the frozen source run",
+    ):
+        process_module.process_urdf_source_run(
+            pipeline_config=process_module.load_config(
+                Path("configs/pilot_move_pillbottle_pad.yaml")
+            ),
+            dataset_root=dataset,
+            source_run_dir=source,
+            task="task",
+            camera="cam_high",
+            output_root=tmp_path / "output",
+            urdf_path=tmp_path / "aloha.urdf",
+            run_id="urdf-profile-mismatch",
+            episode_ids=(7,),
+            dry_run=True,
+        )
+
+    assert not (tmp_path / "output").exists()
+
+
 def test_process_urdf_source_run_allows_partial_source_by_default(
     tmp_path: Path,
 ) -> None:
@@ -2580,7 +2614,9 @@ def test_process_urdf_source_run_renders_successes_after_partial_backend_failure
         "fatal_error",
         "backend",
         "passed",
+        "target_profile",
     }
+    assert persisted["target_profile"] == "grasp_manipulation"
 
 
 @pytest.mark.parametrize(
@@ -2823,7 +2859,6 @@ def test_streaming_coordinator_terminates_peer_on_child_error(
         process for process in context.processes if process.name == "robotwin-streaming-urdf"
     )
     assert urdf_process.terminated is True
-
 
 def test_streaming_coordinator_empty_backend_result_is_terminal(
     monkeypatch: pytest.MonkeyPatch,

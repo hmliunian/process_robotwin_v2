@@ -160,6 +160,17 @@ def test_curated_query_aliases_return_empty_for_unknown_semantics() -> None:
     assert curated_query_aliases(_context("move_bottle"), "target", semantic) == ()
 
 
+def test_door_aliases_require_handle_semantics() -> None:
+    handle = _semantic("target", "lever-handle", "silver handle")
+    panel = _semantic("target", "door panel")
+
+    assert curated_query_aliases(_context("open_door"), "target", handle) == (
+        "handle",
+        "door handle",
+    )
+    assert curated_query_aliases(_context("open_door"), "target", panel) == ()
+
+
 def test_curated_query_aliases_return_empty_without_query_bank() -> None:
     semantic = RoleSemanticPlan(
         role="target",

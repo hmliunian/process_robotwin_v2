@@ -1,6 +1,6 @@
 [project]
 name = "robotwin-annotation-v2"
-version = "0.2.0"
+dynamic = ["version"]
 description = "Three-stage target/receiver visible-mask pipeline for RoboTwin"
 requires-python = ">=3.13"
 dependencies = [
@@ -46,6 +46,9 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["robotwin_annotation_v2*"]
+
+[tool.setuptools.dynamic]
+version = { attr = "robotwin_annotation_v2._version.__version__" }
 
 [[tool.uv.index]]
 name = "pytorch-cu128"

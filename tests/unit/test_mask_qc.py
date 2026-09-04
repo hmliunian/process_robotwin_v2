@@ -347,8 +347,14 @@ class BrokenTextBackend(BboxFallbackBackend):
 class FakeQCClient:
     model_id = "fake-qwen"
 
-    def __init__(self, responses: list[str]) -> None:
+    def __init__(
+        self,
+        responses: list[str],
+        *,
+        finish_reason: str | None = None,
+    ) -> None:
         self.responses = responses
+        self.finish_reason = finish_reason
         self.messages: list[list[dict[str, Any]]] = []
 
     def health(self) -> dict[str, Any]:
@@ -362,7 +368,11 @@ class FakeQCClient:
     ) -> QwenCompletion:
         assert max_tokens == 123
         self.messages.append(messages)
-        return QwenCompletion(self.responses.pop(0), self.model_id)
+        return QwenCompletion(
+            self.responses.pop(0),
+            self.model_id,
+            self.finish_reason,
+        )
 
 
 class FlakyQCClient(FakeQCClient):
@@ -515,6 +525,23 @@ def test_parse_mask_qc_response_validates_candidate_contract() -> None:
 
     with pytest.raises(MaskQCError, match="not one of"):
         parse_mask_qc_response(_response("C"), candidate_ids=("A", "B"))
+
+
+def test_visual_qc_rejects_truncated_completion(tmp_path: Path) -> None:
+    result = run_mask_qc_stage(
+        _target_only_context(),
+        _target_only_plan(),
+        FakeCandidateBackend(),
+        Path("/tmp/resource"),
+        seed_images={0: _images()[0]},
+        context_images=_images(),
+        frame_shape=FRAME_SHAPE,
+        mask_config=_config(_prompt(tmp_path)),
+        client=FakeQCClient([_response("A")], finish_reason="length"),
+    )
+
+    assert result.target.status is MaskQCStatus.ERROR
+    assert "finish_reason='length'" in result.target.reason
 
 
 def test_mask_qc_selects_actual_candidate_masks_and_saves_provenance(
@@ -977,6 +1004,34 @@ def test_bbox_candidate_is_not_accepted_when_normal_visual_qc_rejects_it(
     assert backend.box_calls == [(0, (0.2, 0.25, 0.6, 0.75))]
     assert result.target.attempts[-1].method is MaskQCAttemptMethod.BBOX_FALLBACK
     assert result.target.attempts[-1].status is MaskQCStatus.REJECTED
+
+
+def test_bbox_fallback_rejects_filtered_completion_before_sam(tmp_path: Path) -> None:
+    images = _images()
+    backend = BboxFallbackBackend()
+    result = run_mask_qc_stage(
+        _target_only_context(),
+        _target_only_plan(),
+        backend,
+        Path("/tmp/resource"),
+        seed_images={0: images[0]},
+        context_images=images,
+        frame_shape=FRAME_SHAPE,
+        mask_config=_config(
+            _prompt(tmp_path),
+            qc_bbox_fallback_enabled=True,
+            qc_bbox_prompt_template=_bbox_prompt(tmp_path),
+            qc_bbox_max_tokens=123,
+        ),
+        client=FakeQCClient(
+            [_bbox_response()],
+            finish_reason="content_filter",
+        ),
+    )
+
+    assert result.target.status is MaskQCStatus.ERROR
+    assert backend.box_calls == []
+    assert "finish_reason='content_filter'" in result.target.attempts[-1].reason
 
 
 def test_bbox_fallback_never_runs_after_a_text_candidate_passes(tmp_path: Path) -> None:

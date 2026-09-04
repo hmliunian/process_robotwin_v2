@@ -28,7 +28,12 @@ from robotwin_annotation_v2.adapters.sam3_adapter import (
 from robotwin_annotation_v2.application.mask_qc_artifacts import save_mask_qc_artifacts
 from robotwin_annotation_v2.application.sam_artifacts import save_sam_artifacts
 from robotwin_annotation_v2.config import PipelineConfig, load_config
-from robotwin_annotation_v2.domain import AnnotationMode, ObjectRole, annotation_spec
+from robotwin_annotation_v2.domain import (
+    AnnotationMode,
+    ObjectRole,
+    TargetProfile,
+    annotation_spec,
+)
 from robotwin_annotation_v2.models import (
     EpisodeRef,
     FrameWindow,
@@ -242,6 +247,7 @@ def run_qwen(
             config.qwen,
             client,
             check_health=check_health,
+            target_profile=config.annotation.profile,
         )
     except QwenStageError as exc:
         paths = store.save_qwen_failure(
@@ -293,6 +299,7 @@ def _load_saved_semantic_plan(
     store: ArtifactStore,
     run_id: str,
     context: LoopContext,
+    target_profile: TargetProfile,
 ) -> SemanticPlan:
     episode_dir = store.episode_dir(run_id, context.episode)
     loop_path = episode_dir / "loop.json"
@@ -313,6 +320,7 @@ def _load_saved_semantic_plan(
         context=context,
         model=str(saved_plan.get("model", "")),
         rendered_prompt=rendered_prompt,
+        target_profile=target_profile,
     )
     if saved_plan != plan.to_json():
         raise ValueError("saved semantic_plan.json fails provenance validation")
@@ -479,10 +487,7 @@ def _execute_gripper_episode(
     ref = _episode_ref(config, episode_index)
     context = _build_context(config, dataset, ref)
     store = ArtifactStore(config.output_root)
-    shape_values = tuple(int(value) for value in dataset.manifest["frame_shape_hw"])
-    if len(shape_values) != 2:
-        raise ValueError(f"invalid dataset frame shape: {shape_values}")
-    frame_shape = (shape_values[0], shape_values[1])
+    frame_shape = dataset.frame_shape(ref)
     sam_result = _load_completed_sam_stage(
         config,
         store,
@@ -522,7 +527,7 @@ def _execute_gripper_episode(
         store,
         run_id,
         context,
-        _load_saved_semantic_plan(store, run_id, context),
+        _load_saved_semantic_plan(store, run_id, context, config.annotation.profile),
         sam_result,
         seed_images=seed_images,
         gripper_result=gripper_result,
@@ -549,11 +554,8 @@ def _execute_sam_episode(
     ref = _episode_ref(config, episode_index)
     context = _build_context(config, dataset, ref)
     store = ArtifactStore(config.output_root)
-    plan = _load_saved_semantic_plan(store, run_id, context)
-    shape_values = tuple(int(value) for value in dataset.manifest["frame_shape_hw"])
-    if len(shape_values) != 2:
-        raise ValueError(f"invalid dataset frame shape: {shape_values}")
-    frame_shape = (shape_values[0], shape_values[1])
+    plan = _load_saved_semantic_plan(store, run_id, context, config.annotation.profile)
+    frame_shape = dataset.frame_shape(ref)
     semantic_frame_ids = {frame.frame_id for frame in context.semantic_frames}
     stage_images = dataset.read_frames(ref, semantic_frame_ids)
     seed_frame_ids = {

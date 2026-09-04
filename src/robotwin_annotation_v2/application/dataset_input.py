@@ -21,7 +21,10 @@ class DatasetTarget:
     task: str
     camera: str
     episode_ids: tuple[int, ...]
+    mode: AnnotationMode
     task_kind: TargetOnlyTaskKind | None = None
+    manifest_path: Path | None = None
+    manifest_data: dict[str, Any] | None = None
 
     @property
     def profile(self) -> TargetProfile:
@@ -77,9 +80,26 @@ def read_dataset_task_kind(root: Path) -> TargetOnlyTaskKind | None:
     return _parse_task_kind(_read_manifest(resolved), root=resolved)
 
 
-def _task_target(root: Path, mode: AnnotationMode) -> DatasetTarget:
+def _manifest_mode(manifest: dict[str, Any], *, root: Path) -> AnnotationMode:
+    raw = manifest.get("profile")
+    aliases = {
+        "pickplace": AnnotationMode.PICK_PLACE,
+        "pick_place": AnnotationMode.PICK_PLACE,
+        "targetonly": AnnotationMode.TARGET_ONLY,
+        "target_only": AnnotationMode.TARGET_ONLY,
+        "grasp_manipulation": AnnotationMode.TARGET_ONLY,
+        "contact_press": AnnotationMode.TARGET_ONLY,
+        "door_open": AnnotationMode.TARGET_ONLY,
+    }
+    if not isinstance(raw, str) or raw.strip().lower().replace("-", "_") not in aliases:
+        raise ValueError(f"dataset manifest has unsupported profile {raw!r}: {root}")
+    return aliases[raw.strip().lower().replace("-", "_")]
+
+
+def _task_target(root: Path, mode: AnnotationMode | None) -> DatasetTarget:
     manifest = _read_manifest(root)
-    if manifest.get("profile") != mode.value:
+    declared_mode = _manifest_mode(manifest, root=root)
+    if mode is not None and declared_mode is not mode:
         raise ValueError(
             f"dataset profile {manifest.get('profile')!r} does not match "
             f"--{mode.value.replace('_', '-')}"
@@ -102,7 +122,7 @@ def _task_target(root: Path, mode: AnnotationMode) -> DatasetTarget:
     target_profile = target_profile_for_task_kind(task_kind)
     if (
         target_profile is TargetProfile.CONTACT_PRESS
-        and mode is not AnnotationMode.TARGET_ONLY
+        and declared_mode is not AnnotationMode.TARGET_ONLY
     ):
         raise ValueError("contact_press task_kind requires target_only dataset profile")
     for directory in ("data", "videos", "sidecars", "meta"):
@@ -113,14 +133,17 @@ def _task_target(root: Path, mode: AnnotationMode) -> DatasetTarget:
         task,
         camera,
         unique_ids,
+        declared_mode,
         task_kind=task_kind,
+        manifest_path=root / "EXTRACT_MANIFEST.json",
+        manifest_data=manifest,
     )
 
 
 def resolve_dataset_input(
     path: Path,
     *,
-    mode: AnnotationMode,
+    mode: AnnotationMode | None = None,
     task: str | None = None,
 ) -> DatasetInput:
     """Resolve and validate one task dataset or a task collection."""
@@ -136,7 +159,8 @@ def resolve_dataset_input(
             raise ValueError(f"requested task {task!r} does not match dataset task {target.task!r}")
         return DatasetInput(root, (target,), False)
 
-    if manifest.get("profile") != mode.value:
+    collection_mode = _manifest_mode(manifest, root=root)
+    if mode is not None and collection_mode is not mode:
         raise ValueError(
             f"dataset profile {manifest.get('profile')!r} does not match "
             f"--{mode.value.replace('_', '-')}"
@@ -155,7 +179,7 @@ def resolve_dataset_input(
     unknown = sorted(set(selected) - set(names))
     if unknown:
         raise ValueError(f"requested collection task is absent: {unknown}")
-    targets = tuple(_task_target(root / name, mode) for name in sorted(selected))
+    targets = tuple(_task_target(root / name, collection_mode) for name in sorted(selected))
     return DatasetInput(root, targets, True)
 
 

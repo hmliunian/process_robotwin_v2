@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import copy
+import json
 import math
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -120,6 +123,40 @@ class DatasetConfig:
     smoke_episode_ids: tuple[int, ...]
     regression_episode_ids: tuple[int, ...]
     manifest_data: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class DatasetBinding:
+    """Dataset identity supplied at runtime to a reusable pipeline profile."""
+
+    root: Path
+    task: str
+    camera: str
+    episode_ids: Sequence[int]
+    manifest_path: Path | None = None
+    manifest_data: Mapping[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        ids = tuple(self.episode_ids)
+        if (
+            not ids
+            or any(
+                isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in ids
+            )
+            or len(ids) != len(set(ids))
+        ):
+            raise ConfigError("dataset binding episode_ids must be unique non-negative integers")
+        if not self.task.strip() or Path(self.task).name != self.task:
+            raise ConfigError("dataset binding task must be one path component")
+        if not self.camera.strip() or Path(self.camera).name != self.camera:
+            raise ConfigError("dataset binding camera must be one path component")
+        root = self.root.expanduser().resolve()
+        manifest_path = self.manifest_path or root / "EXTRACT_MANIFEST.json"
+        object.__setattr__(self, "root", root)
+        object.__setattr__(self, "episode_ids", ids)
+        object.__setattr__(self, "manifest_path", manifest_path.expanduser().resolve())
+        if self.manifest_data is not None:
+            object.__setattr__(self, "manifest_data", copy.deepcopy(dict(self.manifest_data)))
 
 
 @dataclass(frozen=True)
@@ -289,11 +326,10 @@ class AnnotationConfig:
     profile: TargetProfile = TargetProfile.GRASP_MANIPULATION
 
     def __post_init__(self) -> None:
-        if (
-            self.profile is TargetProfile.CONTACT_PRESS
-            and self.mode is not AnnotationMode.TARGET_ONLY
+        if self.profile is not TargetProfile.GRASP_MANIPULATION and (
+            self.mode is not AnnotationMode.TARGET_ONLY
         ):
-            raise ConfigError("annotation.profile=contact_press requires target_only mode")
+            raise ConfigError(f"annotation.profile={self.profile.value} requires target_only mode")
 
     @property
     def spec(self) -> AnnotationSpec:
@@ -317,19 +353,51 @@ class PipelineConfig:
             raise ConfigError("parallel SAM workers require qwen.runtime=api")
 
 
-def load_config(path: Path) -> PipelineConfig:
-    """Load and validate one YAML config, resolving paths relative to it."""
+@dataclass(frozen=True)
+class PipelineProfile:
+    """Reusable algorithm settings before dataset identity is bound."""
 
+    config_path: Path
+    qwen: QwenConfig
+    sam3: Sam3Config
+    mask: MaskConfig
+    gripper_roi: GripperRoiConfig
+    output_root: Path
+    annotation: AnnotationConfig
+    parallel: ParallelConfig
+
+    def __post_init__(self) -> None:
+        if self.parallel.enabled and self.qwen.runtime != "api":
+            raise ConfigError("parallel SAM workers require qwen.runtime=api")
+
+
+def _read_yaml(path: Path) -> tuple[Path, dict[str, Any]]:
     config_path = path.expanduser().resolve()
     if not config_path.is_file():
         raise ConfigError(f"config file does not exist: {config_path}")
-    with config_path.open(encoding="utf-8") as handle:
-        raw = yaml.safe_load(handle) or {}
+    try:
+        with config_path.open(encoding="utf-8") as handle:
+            raw = yaml.safe_load(handle) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        raise ConfigError(f"cannot read config file {config_path}: {exc}") from exc
     if not isinstance(raw, dict):
         raise ConfigError("top-level config must be a mapping")
+    return config_path, raw
+
+
+def _parse_config(
+    config_path: Path,
+    raw: dict[str, Any],
+    *,
+    require_dataset: bool,
+) -> PipelineConfig | PipelineProfile:
+    """Parse one resolved config mapping without duplicating field validation."""
+
     base_dir = config_path.parent
 
-    dataset_raw = _required(raw, "dataset")
+    dataset_raw = raw.get("dataset")
+    if require_dataset and dataset_raw is None:
+        dataset_raw = _required(raw, "dataset")
     qwen_raw = _required(raw, "qwen")
     sam3_raw = _required(raw, "sam3")
     mask_raw = raw.get("mask", {})
@@ -338,7 +406,6 @@ def load_config(path: Path) -> PipelineConfig:
     output_raw = raw.get("output", {})
     annotation_raw = raw.get("annotation", {"mode": AnnotationMode.PICK_PLACE.value})
     sections = (
-        dataset_raw,
         qwen_raw,
         sam3_raw,
         mask_raw,
@@ -347,7 +414,9 @@ def load_config(path: Path) -> PipelineConfig:
         output_raw,
         annotation_raw,
     )
-    if not all(isinstance(item, dict) for item in sections):
+    if not all(isinstance(item, dict) for item in sections) or (
+        dataset_raw is not None and not isinstance(dataset_raw, dict)
+    ):
         raise ConfigError(
             "dataset, qwen, sam3, mask, parallel, gripper_roi, output and annotation "
             "must be mappings"
@@ -375,33 +444,37 @@ def load_config(path: Path) -> PipelineConfig:
     if not isinstance(prompt_roi_raw, dict) or not isinstance(hard_roi_raw, dict):
         raise ConfigError("gripper_roi.prompt and gripper_roi.hard must be mappings")
 
-    smoke = _integers(
-        _required(dataset_raw, "smoke_episode_ids", section="dataset"),
-        field="dataset.smoke_episode_ids",
-    )
-    regression = _integers(
-        _required(dataset_raw, "regression_episode_ids", section="dataset"),
-        field="dataset.regression_episode_ids",
-    )
-    if not smoke or not regression or not set(smoke).issubset(regression):
-        raise ConfigError("smoke episodes must be non-empty and included in regression episodes")
+    dataset: DatasetConfig | None = None
+    if dataset_raw is not None:
+        smoke = _integers(
+            _required(dataset_raw, "smoke_episode_ids", section="dataset"),
+            field="dataset.smoke_episode_ids",
+        )
+        regression = _integers(
+            _required(dataset_raw, "regression_episode_ids", section="dataset"),
+            field="dataset.regression_episode_ids",
+        )
+        if not smoke or not regression or not set(smoke).issubset(regression):
+            raise ConfigError(
+                "smoke episodes must be non-empty and included in regression episodes"
+            )
 
-    dataset = DatasetConfig(
-        root=_path(
-            _required(dataset_raw, "root", section="dataset"),
-            base_dir=base_dir,
-            field="dataset.root",
-        ),
-        manifest=_path(
-            _required(dataset_raw, "manifest", section="dataset"),
-            base_dir=base_dir,
-            field="dataset.manifest",
-        ),
-        task=str(_required(dataset_raw, "task", section="dataset")),
-        camera=str(_required(dataset_raw, "camera", section="dataset")),
-        smoke_episode_ids=smoke,
-        regression_episode_ids=regression,
-    )
+        dataset = DatasetConfig(
+            root=_path(
+                _required(dataset_raw, "root", section="dataset"),
+                base_dir=base_dir,
+                field="dataset.root",
+            ),
+            manifest=_path(
+                _required(dataset_raw, "manifest", section="dataset"),
+                base_dir=base_dir,
+                field="dataset.manifest",
+            ),
+            task=str(_required(dataset_raw, "task", section="dataset")),
+            camera=str(_required(dataset_raw, "camera", section="dataset")),
+            smoke_episode_ids=smoke,
+            regression_episode_ids=regression,
+        )
     qwen_runtime = str(qwen_raw.get("runtime", "local"))
     api_key_env_raw = qwen_raw.get("api_key_env")
     if api_key_env_raw is not None and not isinstance(api_key_env_raw, str):
@@ -531,14 +604,125 @@ def load_config(path: Path) -> PipelineConfig:
         base_dir=base_dir,
         field="output.root",
     )
+    if dataset is None:
+        return PipelineProfile(
+            config_path,
+            qwen,
+            sam3,
+            mask,
+            gripper_roi,
+            output_root,
+            annotation,
+            parallel,
+        )
     return PipelineConfig(
-        config_path=config_path,
-        dataset=dataset,
-        qwen=qwen,
-        sam3=sam3,
-        mask=mask,
-        gripper_roi=gripper_roi,
-        output_root=output_root,
-        annotation=annotation,
-        parallel=parallel,
+        config_path,
+        dataset,
+        qwen,
+        sam3,
+        mask,
+        gripper_roi,
+        output_root,
+        annotation,
+        parallel,
     )
+
+
+def load_config(path: Path) -> PipelineConfig:
+    """Load a legacy config that contains a dataset block."""
+
+    config_path, raw = _read_yaml(path)
+    parsed = _parse_config(config_path, raw, require_dataset=True)
+    assert isinstance(parsed, PipelineConfig)
+    return parsed
+
+
+def _merge(base: Mapping[str, Any], overlay: Mapping[str, Any]) -> dict[str, Any]:
+    result = copy.deepcopy(dict(base))
+    for key, value in overlay.items():
+        if isinstance(result.get(key), Mapping) and isinstance(value, Mapping):
+            result[key] = _merge(result[key], value)
+        else:
+            result[key] = copy.deepcopy(value)
+    return result
+
+
+def load_profile(
+    path: Path,
+    *,
+    mode: AnnotationMode,
+    target_profile: TargetProfile = TargetProfile.GRASP_MANIPULATION,
+) -> PipelineProfile:
+    """Load shared defaults plus the selected workflow overlay."""
+
+    if mode is AnnotationMode.PICK_PLACE and target_profile is not TargetProfile.GRASP_MANIPULATION:
+        raise ConfigError("pick_place only supports grasp_manipulation")
+    selector = (
+        mode.value
+        if mode is AnnotationMode.PICK_PLACE
+        else {
+            TargetProfile.GRASP_MANIPULATION: "target_only",
+            TargetProfile.CONTACT_PRESS: "contact_press",
+            TargetProfile.DOOR_OPEN: "door_open",
+        }[target_profile]
+    )
+    config_path, raw = _read_yaml(path)
+    defaults = raw.get("defaults")
+    modes = raw.get("modes")
+    if not isinstance(defaults, Mapping) or not isinstance(modes, Mapping):
+        raise ConfigError("shared profile requires defaults and modes mappings")
+    overlay = modes.get(selector)
+    if not isinstance(overlay, Mapping):
+        raise ConfigError(f"shared profile has no {selector!r} mode")
+    if "dataset" in defaults or any(
+        isinstance(value, Mapping) and "dataset" in value for value in modes.values()
+    ):
+        raise ConfigError("shared profile must not contain dataset settings")
+    parsed = _parse_config(config_path, _merge(defaults, overlay), require_dataset=False)
+    assert isinstance(parsed, PipelineProfile)
+    return parsed
+
+
+def bind_dataset(profile: PipelineProfile, binding: DatasetBinding) -> PipelineConfig:
+    """Return the existing runtime config shape with an in-memory dataset manifest."""
+
+    manifest = (
+        copy.deepcopy(dict(binding.manifest_data))
+        if binding.manifest_data is not None
+        else json.loads(_binding_manifest_path(binding).read_text(encoding="utf-8"))
+    )
+    if not isinstance(manifest, dict):
+        raise ConfigError("dataset manifest must be a JSON object")
+    ids = tuple(binding.episode_ids)
+    manifest.update(
+        dataset_root=str(binding.root),
+        task=binding.task,
+        camera=binding.camera,
+        smoke_episode_ids=[ids[0]],
+        regression_episode_ids=list(ids),
+    )
+    dataset = DatasetConfig(
+        root=binding.root,
+        manifest=_binding_manifest_path(binding),
+        task=binding.task,
+        camera=binding.camera,
+        smoke_episode_ids=(ids[0],),
+        regression_episode_ids=ids,
+        manifest_data=manifest,
+    )
+    return PipelineConfig(
+        config_path=profile.config_path,
+        dataset=dataset,
+        qwen=profile.qwen,
+        sam3=profile.sam3,
+        mask=profile.mask,
+        gripper_roi=profile.gripper_roi,
+        output_root=profile.output_root,
+        annotation=profile.annotation,
+        parallel=profile.parallel,
+    )
+
+
+def _binding_manifest_path(binding: DatasetBinding) -> Path:
+    assert binding.manifest_path is not None
+    return binding.manifest_path

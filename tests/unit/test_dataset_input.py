@@ -50,8 +50,17 @@ def test_resolve_single_task_dataset(tmp_path: Path) -> None:
     assert resolved.targets[0].task == "adjust_bottle"
     assert resolved.targets[0].camera == "cam_high"
     assert resolved.targets[0].episode_ids == (1, 2)
+    assert resolved.targets[0].mode is AnnotationMode.TARGET_ONLY
     assert resolved.targets[0].task_kind is None
     assert resolved.targets[0].profile is TargetProfile.GRASP_MANIPULATION
+
+
+def test_resolve_infers_mode_from_manifest(tmp_path: Path) -> None:
+    _write_task(tmp_path, "move_pillbottle_pad", profile="pick_place")
+
+    target = resolve_dataset_input(tmp_path).targets[0]
+
+    assert target.mode is AnnotationMode.PICK_PLACE
 
 
 @pytest.mark.parametrize(
@@ -61,6 +70,7 @@ def test_resolve_single_task_dataset(tmp_path: Path) -> None:
         ("single_movable_target_conditional", TargetProfile.GRASP_MANIPULATION),
         ("contact_action_site", TargetProfile.CONTACT_PRESS),
         ("articulated_action_site", TargetProfile.GRASP_MANIPULATION),
+        ("door_open_action_site", TargetProfile.DOOR_OPEN),
     ),
 )
 def test_target_only_task_kind_selects_profile(

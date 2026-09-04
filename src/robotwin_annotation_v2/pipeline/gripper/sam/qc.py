@@ -344,6 +344,14 @@ def run_gripper_seed_qc(
             rendered_prompt=rendered,
             health=health,
         )
+    if completion.finish_reason not in {None, "stop"}:
+        return forced_result(
+            f"gripper QC response ended with finish_reason={completion.finish_reason!r}",
+            model=completion.model,
+            raw_response=completion.content,
+            rendered_prompt=rendered,
+            health=health,
+        )
     try:
         decision, selected, confidence, reason = parse_mask_qc_response(
             completion.content,

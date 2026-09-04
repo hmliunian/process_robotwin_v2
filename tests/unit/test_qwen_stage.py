@@ -10,7 +10,7 @@ from PIL import Image
 
 from robotwin_annotation_v2.adapters import QwenCompletion
 from robotwin_annotation_v2.config import QwenConfig
-from robotwin_annotation_v2.domain import AnnotationMode
+from robotwin_annotation_v2.domain import AnnotationMode, TargetProfile
 from robotwin_annotation_v2.models import (
     EpisodeRef,
     FramePurpose,
@@ -125,8 +125,9 @@ def _target_only_response() -> str:
 class FakeQwenClient:
     model_id = "fake-qwen"
 
-    def __init__(self, response: str) -> None:
+    def __init__(self, response: str, *, finish_reason: str | None = None) -> None:
         self.response = response
+        self.finish_reason = finish_reason
         self.messages: list[dict[str, Any]] | None = None
 
     def health(self) -> dict[str, Any]:
@@ -140,7 +141,11 @@ class FakeQwenClient:
     ) -> QwenCompletion:
         assert max_tokens == 800
         self.messages = messages
-        return QwenCompletion(content=self.response, model=self.model_id)
+        return QwenCompletion(
+            content=self.response,
+            model=self.model_id,
+            finish_reason=self.finish_reason,
+        )
 
 
 def test_qwen_request_interleaves_frame_label_and_image() -> None:
@@ -258,6 +263,112 @@ def test_target_only_qwen_contract_accepts_exactly_target() -> None:
         )
 
 
+def test_semantic_plan_records_specialized_target_profile() -> None:
+    payload = json.loads(_target_only_response())
+    payload["target"].update(
+        {
+            "category_query": "handle",
+            "color_category_query": None,
+            "shape_category_query": None,
+            "general_fallback_query": None,
+            "recommended_order": ["category_query"],
+        }
+    )
+    plan = parse_semantic_plan(
+        json.dumps(payload),
+        context=_target_only_context(),
+        model="fake-qwen",
+        rendered_prompt="rendered prompt",
+        target_profile=TargetProfile.DOOR_OPEN,
+    )
+
+    assert plan.target_profile is TargetProfile.DOOR_OPEN
+    assert plan.to_json()["target_profile"] == "door_open"
+
+
+def test_door_open_queries_are_handle_headed_and_deterministically_ordered() -> None:
+    payload = json.loads(_target_only_response())
+    payload["target"].update(
+        {
+            "category_query": "microwave door handle",
+            "color_category_query": "white microwave door handle",
+            "shape_category_query": "vertical handle",
+            "general_fallback_query": "door handle",
+            "recommended_order": [
+                "shape_category_query",
+                "color_category_query",
+                "category_query",
+                "general_fallback_query",
+            ],
+        }
+    )
+
+    target = parse_semantic_plan(
+        json.dumps(payload),
+        context=_target_only_context(),
+        model="fake-qwen",
+        rendered_prompt="prompt",
+        target_profile=TargetProfile.DOOR_OPEN,
+    ).target
+
+    assert target.query_bank is not None
+    assert target.query_bank.category_query == "handle"
+    assert target.query_bank.color_category_query == "white handle"
+    assert target.query_bank.recommended_order == (
+        "category_query",
+        "color_category_query",
+        "shape_category_query",
+        "general_fallback_query",
+    )
+
+
+@pytest.mark.parametrize("query", ("vertical bar", "microwave body", "door latch"))
+def test_door_open_rejects_non_handle_targets(query: str) -> None:
+    payload = json.loads(_target_only_response())
+    payload["target"]["category_query"] = query
+
+    with pytest.raises(QwenStageError, match="handle"):
+        parse_semantic_plan(
+            json.dumps(payload),
+            context=_target_only_context(),
+            model="fake-qwen",
+            rendered_prompt="prompt",
+            target_profile=TargetProfile.DOOR_OPEN,
+        )
+
+
+def test_door_panel_proxy_must_be_the_only_query() -> None:
+    payload = json.loads(_target_only_response())
+    payload["target"].update(
+        {
+            "category_query": "moving door panel",
+            "color_category_query": None,
+            "shape_category_query": None,
+            "general_fallback_query": None,
+            "recommended_order": ["category_query"],
+        }
+    )
+    plan = parse_semantic_plan(
+        json.dumps(payload),
+        context=_target_only_context(),
+        model="fake-qwen",
+        rendered_prompt="prompt",
+        target_profile=TargetProfile.DOOR_OPEN,
+    )
+    assert plan.target.primary_query == "moving door panel"
+
+    payload["target"]["general_fallback_query"] = "handle"
+    payload["target"]["recommended_order"].append("general_fallback_query")
+    with pytest.raises(QwenStageError, match="sole category_query"):
+        parse_semantic_plan(
+            json.dumps(payload),
+            context=_target_only_context(),
+            model="fake-qwen",
+            rendered_prompt="prompt",
+            target_profile=TargetProfile.DOOR_OPEN,
+        )
+
+
 def test_target_only_semantic_prompt_contains_only_target_contract() -> None:
     template = (
         PROJECT_ROOT / "configs/prompts/target_only_semantic.txt"
@@ -300,6 +411,21 @@ def test_target_only_open_set_semantic_prompt_uses_target_only_timeline() -> Non
     assert "hold_end: 19" in request.rendered_prompt
     assert "open_start" not in request.rendered_prompt
     assert "open_done" not in request.rendered_prompt
+
+
+def test_door_open_semantic_prompt_renders_handle_contract() -> None:
+    template = (
+        PROJECT_ROOT / "configs/prompts/target_only_door_open_semantic_open_set.txt"
+    ).read_text(encoding="utf-8")
+    frames = {frame_id: _frames()[frame_id] for frame_id in (0, 9)}
+
+    request = build_qwen_request(_target_only_context(), frames, template)
+    prompt = " ".join(request.rendered_prompt.split())
+
+    assert "complete graspable door handle" in prompt
+    assert "set every other query field to null" in prompt
+    assert "Do not mix a panel proxy with any handle query" in prompt
+    assert "<image frame_id=0>" in request.rendered_prompt
 
 
 def test_target_only_semantic_prompt_ends_hold_before_reopen() -> None:
@@ -455,3 +581,23 @@ def test_run_qwen_stage_preserves_invalid_raw_response(tmp_path: Path) -> None:
 
     assert captured.value.raw_response == "not json"
     assert captured.value.rendered_prompt is not None
+
+
+def test_run_qwen_stage_rejects_truncated_completion(tmp_path: Path) -> None:
+    prompt_path = tmp_path / "prompt.txt"
+    prompt_path.write_text("{labeled_multimodal_frames}", encoding="utf-8")
+    config = QwenConfig(
+        endpoint="http://127.0.0.1:18086/v1/chat/completions",
+        model="fake-qwen",
+        prompt_template=prompt_path,
+    )
+
+    with pytest.raises(QwenStageError, match="finish_reason='length'") as captured:
+        run_qwen_stage(
+            _context(),
+            _frames(),
+            config,
+            FakeQwenClient('{"target":', finish_reason="length"),
+        )
+
+    assert captured.value.raw_response == '{"target":'

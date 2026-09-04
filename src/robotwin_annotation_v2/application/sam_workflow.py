@@ -597,6 +597,7 @@ class SamWorkflow[BackendT: SamBackend, SamExecutionT, GripperExecutionT]:
             backend=backend_record,
             passed=passed,
             stage_mode="object_source_only" if source_only else "full_sam",
+            target_profile=self.config.annotation.profile.value,
         )
         persisted_summary = summary_model.to_json()
         summary_path = store.write_json(
