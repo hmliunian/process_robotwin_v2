@@ -475,6 +475,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Use the SAM gripper stage or generate it from URDF after target/receiver",
     )
     parser.add_argument(
+        "--object-source-only",
+        action="store_true",
+        help="Run Qwen and object SAM only; skip gripper masks and canonical publication",
+    )
+    parser.add_argument(
         "--source-run-dir",
         help=(
             "Optional frozen run containing QC-passed target/receiver masks; when "
@@ -716,7 +721,7 @@ def _run_from_args(
     output_root = config.output_root if args.output_dir is None else args.output_dir
     source_run_dir = _optional_cli_path(args.source_run_dir)
     urdf_path = _optional_cli_path(args.urdf_path)
-    if args.gripper_backend == "sam":
+    if args.gripper_backend == "sam" or args.object_source_only:
         if (
             source_run_dir is not None
             or urdf_path is not None
@@ -761,6 +766,7 @@ def _run_from_args(
                 episode_ids=selected.episode_ids,
                 force=args.force,
                 skip_render=selected.skip_render,
+                object_source_only=args.object_source_only,
                 reporter=reporter,
             )
 

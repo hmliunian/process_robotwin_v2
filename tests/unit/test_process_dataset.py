@@ -842,6 +842,7 @@ def test_parse_args_defaults_to_urdf_and_preserves_just_sentinel_paths() -> None
     )
 
     assert args.gripper_backend == "urdf"
+    assert args.object_source_only is False
     assert args.config == process_module.DEFAULT_PROCESS_CONFIG
     assert args.output_dir is None
     assert args.urdf_depth_tolerance_mm is None
@@ -866,6 +867,13 @@ def test_parse_args_accepts_parallel_sam_controls() -> None:
     assert args.sam_worker_gpus == (1, 4, 7)
     assert args.qwen_max_in_flight == 3
     assert process_module._parse_args(["--sam-worker-gpus", ""]).sam_worker_gpus == ()
+
+
+def test_parse_args_accepts_object_source_only() -> None:
+    args = process_module._parse_args(["--object-source-only"])
+
+    assert args.object_source_only is True
+    assert args.gripper_backend == "urdf"
 
 
 @pytest.mark.parametrize(
@@ -1216,6 +1224,45 @@ def test_main_legacy_cli_dispatches_sam_without_urdf_path(
     assert calls["force"] is False
     assert calls["skip_render"] is False
     assert isinstance(calls["reporter"], process_module.ProcessUI)
+
+
+def test_main_cli_dispatches_object_source_without_urdf(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _cli_config(tmp_path)
+    calls: dict[str, Any] = {}
+
+    def fake_process(received_config: Any, **kwargs: Any) -> dict[str, Any]:
+        calls["config"] = received_config
+        calls.update(kwargs)
+        return {"passed": True, "stage_mode": "object_source_only"}
+
+    monkeypatch.setattr(process_module, "load_config", lambda _path: config)
+    monkeypatch.setattr(process_module, "process_dataset", fake_process)
+    monkeypatch.setattr(
+        process_module,
+        "process_live_urdf_pipeline",
+        lambda **_kwargs: pytest.fail("object-source CLI must not enter live URDF mode"),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "process_dataset.py",
+            "--object-source-only",
+            "--dataset-root",
+            str(tmp_path / "dataset"),
+            "--output-dir",
+            str(tmp_path / "output"),
+        ],
+    )
+
+    process_module.main()
+
+    assert calls["config"] is config
+    assert calls["object_source_only"] is True
+    assert calls["dataset_root"] == tmp_path / "dataset"
 
 
 def test_cli_uses_config_output_root_without_explicit_override(
