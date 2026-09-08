@@ -174,7 +174,7 @@ def load_text_records(path: Path) -> tuple[TextRecord, ...]:
     return tuple(records)
 
 
-def _import_mcap_reader() -> Any:
+def mcap_reader_factory() -> Any:
     try:
         from mcap.reader import make_reader
     except ImportError as exc:
@@ -185,7 +185,7 @@ def _import_mcap_reader() -> Any:
 
 
 def read_source_metadata(path: Path) -> SourceMetadata:
-    make_reader = _import_mcap_reader()
+    make_reader = mcap_reader_factory()
     try:
         with path.open("rb") as handle:
             reader = make_reader(handle)
@@ -264,6 +264,12 @@ def _read_byte_vector(data: bytes, field_index: int) -> bytes:
     return data[vector + 4 : vector + 4 + length]
 
 
+def parse_compressed_video_payload(data: bytes) -> bytes:
+    """Decode the H264 payload from one foxglove.CompressedVideo message."""
+
+    return _read_byte_vector(data, 2)
+
+
 def _read_table_vector(data: bytes, table: int, field_index: int) -> tuple[int, ...]:
     field = _table_field(data, table, field_index)
     if field is None:
@@ -285,8 +291,8 @@ def _read_double(data: bytes, table: int, field_index: int, *, default: float = 
     return float(struct.unpack_from("<d", data, field)[0])
 
 
-def parse_joint_positions(data: bytes) -> NDArray:
-    """Decode one foxglove.JointStates FlatBuffer in canonical j0..j7 order."""
+def parse_named_joint_positions(data: bytes) -> dict[str, float]:
+    """Decode names and positions from one foxglove.JointStates message."""
 
     root = _table_root(data)
     values: dict[str, float] = {}
@@ -298,6 +304,13 @@ def parse_joint_positions(data: bytes) -> NDArray:
         if name in values:
             raise RealMcapError(f"JointStates contains duplicate joint {name!r}")
         values[name] = _read_double(data, joint_table, 1)
+    return values
+
+
+def parse_joint_positions(data: bytes) -> NDArray:
+    """Decode one foxglove.JointStates FlatBuffer in canonical j0..j7 order."""
+
+    values = parse_named_joint_positions(data)
     if set(values) != set(JOINT_NAMES):
         raise RealMcapError(f"JointStates names must be {list(JOINT_NAMES)}, got {sorted(values)}")
     return np.asarray([values[name] for name in JOINT_NAMES], dtype=np.float64)
@@ -334,7 +347,7 @@ def parse_eef_pose(data: bytes) -> tuple[NDArray, NDArray]:
 def read_mcap_episode(source: SourceMetadata, *, camera_topic: str = CAMERA_TOPIC) -> McapEpisode:
     """Read the one camera and state streams needed by the no-depth conversion."""
 
-    make_reader = _import_mcap_reader()
+    make_reader = mcap_reader_factory()
     video_times: list[int] = []
     video_payloads: list[bytes] = []
     joint_times: list[int] = []
@@ -353,7 +366,7 @@ def read_mcap_episode(source: SourceMetadata, *, camera_topic: str = CAMERA_TOPI
                     if schema.name != "foxglove.CompressedVideo":
                         raise RealMcapError(f"unexpected camera schema: {schema.name}")
                     video_times.append(int(message.log_time))
-                    video_payloads.append(_read_byte_vector(message.data, 2))
+                    video_payloads.append(parse_compressed_video_payload(message.data))
                 elif channel.topic == JOINT_TOPIC:
                     if schema.name != "foxglove.JointStates":
                         raise RealMcapError(f"unexpected joint schema: {schema.name}")
@@ -701,7 +714,7 @@ def _write_sidecar(
         gripper.attrs["release_frame"] = aligned.release_frame
 
 
-def _write_jsonl(path: Path, records: Iterable[dict[str, Any]]) -> None:
+def write_jsonl(path: Path, records: Iterable[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         for record in records:
@@ -871,12 +884,12 @@ def _write_dataset_metadata(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    _write_jsonl(staging / "meta" / "episodes.jsonl", map(_episode_metadata, converted))
-    _write_jsonl(
+    write_jsonl(staging / "meta" / "episodes.jsonl", map(_episode_metadata, converted))
+    write_jsonl(
         staging / "meta" / "episodes_stats.jsonl",
         ({"episode_index": item.episode_id, "stats": item.stats} for item in converted),
     )
-    _write_jsonl(
+    write_jsonl(
         staging / "meta" / "tasks.jsonl",
         (
             {
@@ -1104,10 +1117,14 @@ __all__ = [
     "load_text_records",
     "main",
     "materialize_real_mcap_dataset",
+    "mcap_reader_factory",
     "normalize_gripper_loop",
+    "parse_compressed_video_payload",
     "parse_eef_pose",
     "parse_joint_positions",
+    "parse_named_joint_positions",
     "read_mcap_episode",
     "read_source_metadata",
+    "write_jsonl",
     "write_video",
 ]
