@@ -12,7 +12,7 @@ import av
 import numpy as np
 import pandas as pd
 
-from robotwin_annotation_v2.domain import TargetOnlyTaskKind
+from robotwin_annotation_v2.domain import TargetOnlyTaskKind, TimelineSource
 
 CHUNK_PATTERN = re.compile(r"chunk-(\d{3})$")
 EPISODE_FILE_PATTERN = re.compile(r"episode_(\d+)\.parquet$")
@@ -168,6 +168,7 @@ def build_dynamic_manifest(
     episodes: Sequence[DiscoveredEpisode],
     measure_episode_fn: Callable[[DiscoveredEpisode], EpisodeMeasurement] | None = None,
     task_kind: TargetOnlyTaskKind | str | None = None,
+    timeline_source: TimelineSource | str | None = None,
 ) -> dict[str, Any]:
     """Build the manifest contract expected by RoboTwinDataset in memory."""
 
@@ -200,6 +201,15 @@ def build_dynamic_manifest(
             choices = ", ".join(item.value for item in TargetOnlyTaskKind)
             raise ValueError(
                 f"unsupported dynamic-manifest task_kind {task_kind!r}; choose {choices}"
+            ) from exc
+    if timeline_source is not None:
+        try:
+            manifest["timeline_source"] = TimelineSource(timeline_source).value
+        except (TypeError, ValueError) as exc:
+            choices = ", ".join(item.value for item in TimelineSource)
+            raise ValueError(
+                f"unsupported dynamic-manifest timeline_source {timeline_source!r}; "
+                f"choose {choices}"
             ) from exc
     return manifest
 

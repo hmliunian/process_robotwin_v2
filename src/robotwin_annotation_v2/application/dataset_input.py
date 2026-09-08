@@ -11,6 +11,7 @@ from robotwin_annotation_v2.domain import (
     AnnotationMode,
     TargetOnlyTaskKind,
     TargetProfile,
+    TimelineSource,
     target_profile_for_task_kind,
 )
 
@@ -80,6 +81,26 @@ def read_dataset_task_kind(root: Path) -> TargetOnlyTaskKind | None:
     return _parse_task_kind(_read_manifest(resolved), root=resolved)
 
 
+def _parse_timeline_source(manifest: dict[str, Any], *, root: Path) -> TimelineSource:
+    try:
+        return TimelineSource(manifest.get("timeline_source", TimelineSource.ROBOT_STATE))
+    except (TypeError, ValueError) as exc:
+        choices = ", ".join(item.value for item in TimelineSource)
+        raise ValueError(
+            f"dataset manifest has unsupported timeline_source "
+            f"{manifest.get('timeline_source')!r}: {root}; choose {choices}"
+        ) from exc
+
+
+def read_dataset_timeline_source(root: Path) -> TimelineSource:
+    """Read the declared timeline source, defaulting legacy extracts to robot state."""
+
+    resolved = root.expanduser().resolve()
+    if not (resolved / "EXTRACT_MANIFEST.json").is_file():
+        return TimelineSource.ROBOT_STATE
+    return _parse_timeline_source(_read_manifest(resolved), root=resolved)
+
+
 def _manifest_mode(manifest: dict[str, Any], *, root: Path) -> AnnotationMode:
     raw = manifest.get("profile")
     aliases = {
@@ -119,12 +140,18 @@ def _task_target(root: Path, mode: AnnotationMode | None) -> DatasetTarget:
     if len(unique_ids) != len(episode_ids):
         raise ValueError(f"dataset manifest contains duplicate episode_indices: {root}")
     task_kind = _parse_task_kind(manifest, root=root)
+    timeline_source = _parse_timeline_source(manifest, root=root)
     target_profile = target_profile_for_task_kind(task_kind)
     if (
         target_profile is TargetProfile.CONTACT_PRESS
         and declared_mode is not AnnotationMode.TARGET_ONLY
     ):
         raise ValueError("contact_press task_kind requires target_only dataset profile")
+    if (
+        timeline_source is TimelineSource.EPISODE_METADATA
+        and declared_mode is not AnnotationMode.TARGET_ONLY
+    ):
+        raise ValueError("episode_metadata timeline_source requires target_only profile")
     for directory in ("data", "videos", "sidecars", "meta"):
         if not (root / directory).is_dir():
             raise ValueError(f"task dataset is missing {directory}/: {root}")
@@ -187,5 +214,6 @@ __all__ = [
     "DatasetInput",
     "DatasetTarget",
     "read_dataset_task_kind",
+    "read_dataset_timeline_source",
     "resolve_dataset_input",
 ]

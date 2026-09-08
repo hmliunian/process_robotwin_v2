@@ -16,6 +16,7 @@ from robotwin_annotation_v2.adapters.robotwin_dataset import RoboTwinDataset
 from robotwin_annotation_v2.application.dataset_input import (
     DatasetTarget,
     read_dataset_task_kind,
+    read_dataset_timeline_source,
     resolve_dataset_input,
 )
 from robotwin_annotation_v2.application.dataset_pipeline import (
@@ -152,6 +153,7 @@ def build_dynamic_manifest(
         episodes=episodes,
         measure_episode_fn=_measure_episode,
         task_kind=read_dataset_task_kind(root),
+        timeline_source=read_dataset_timeline_source(root),
     )
 
 

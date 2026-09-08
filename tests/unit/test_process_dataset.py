@@ -405,12 +405,37 @@ def test_dynamic_manifest_preserves_typed_task_kind(tmp_path: Path) -> None:
     assert manifest["task_kind"] == "contact_action_site"
 
 
+def test_dynamic_manifest_preserves_timeline_source(tmp_path: Path) -> None:
+    episode = DiscoveredEpisode(
+        episode_id=7,
+        parquet=tmp_path / "episode_000007.parquet",
+        video=tmp_path / "episode_000007.mp4",
+        sidecar=tmp_path / "episode_000007.hdf5",
+    )
+
+    manifest = build_dynamic_manifest(
+        tmp_path,
+        task="task",
+        camera="cam_high",
+        episodes=(episode,),
+        measure_episode_fn=lambda _episode: (24, (240, 320), 0),
+        timeline_source="episode_metadata",
+    )
+
+    assert manifest["timeline_source"] == "episode_metadata"
+
+
 def test_runtime_dynamic_manifest_copies_extract_task_kind(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     (tmp_path / "EXTRACT_MANIFEST.json").write_text(
-        json.dumps({"task_kind": "articulated_action_site"}),
+        json.dumps(
+            {
+                "task_kind": "articulated_action_site",
+                "timeline_source": "episode_metadata",
+            }
+        ),
         encoding="utf-8",
     )
     episode = DiscoveredEpisode(
@@ -433,6 +458,7 @@ def test_runtime_dynamic_manifest_copies_extract_task_kind(
     )
 
     assert manifest["task_kind"] == "articulated_action_site"
+    assert manifest["timeline_source"] == "episode_metadata"
 
 
 def test_process_dataset_reports_sam_stages_without_embedded_json(

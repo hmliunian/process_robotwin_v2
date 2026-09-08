@@ -7,12 +7,14 @@ import pytest
 
 from robotwin_annotation_v2.application.dataset_input import (
     read_dataset_task_kind,
+    read_dataset_timeline_source,
     resolve_dataset_input,
 )
 from robotwin_annotation_v2.domain import (
     AnnotationMode,
     TargetOnlyTaskKind,
     TargetProfile,
+    TimelineSource,
     target_profile_for_task_kind,
 )
 
@@ -23,6 +25,7 @@ def _write_task(
     *,
     profile: str = "target_only",
     task_kind: str | None = None,
+    timeline_source: str | None = None,
 ) -> None:
     for name in ("data", "videos", "sidecars", "meta"):
         (root / name).mkdir(parents=True, exist_ok=True)
@@ -34,6 +37,8 @@ def _write_task(
     }
     if task_kind is not None:
         manifest["task_kind"] = task_kind
+    if timeline_source is not None:
+        manifest["timeline_source"] = timeline_source
     (root / "EXTRACT_MANIFEST.json").write_text(
         json.dumps(manifest),
         encoding="utf-8",
@@ -53,6 +58,7 @@ def test_resolve_single_task_dataset(tmp_path: Path) -> None:
     assert resolved.targets[0].mode is AnnotationMode.TARGET_ONLY
     assert resolved.targets[0].task_kind is None
     assert resolved.targets[0].profile is TargetProfile.GRASP_MANIPULATION
+    assert read_dataset_timeline_source(tmp_path) is TimelineSource.ROBOT_STATE
 
 
 def test_resolve_infers_mode_from_manifest(tmp_path: Path) -> None:
@@ -156,3 +162,18 @@ def test_contact_task_kind_is_invalid_for_pick_place_extract(tmp_path: Path) -> 
 
     with pytest.raises(ValueError, match="requires target_only"):
         resolve_dataset_input(tmp_path, mode=AnnotationMode.PICK_PLACE)
+
+
+def test_episode_metadata_timeline_is_target_only(tmp_path: Path) -> None:
+    _write_task(tmp_path, "pick_up_real", timeline_source="episode_metadata")
+
+    assert read_dataset_timeline_source(tmp_path) is TimelineSource.EPISODE_METADATA
+
+    _write_task(
+        tmp_path,
+        "pick_up_real",
+        profile="pick_place",
+        timeline_source="episode_metadata",
+    )
+    with pytest.raises(ValueError, match="requires target_only"):
+        resolve_dataset_input(tmp_path)

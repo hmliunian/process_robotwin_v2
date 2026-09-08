@@ -19,6 +19,13 @@ class AnnotationMode(StrEnum):
     TARGET_ONLY = "target_only"
 
 
+class TimelineSource(StrEnum):
+    """Dataset source used to establish episode event boundaries."""
+
+    ROBOT_STATE = "robot_state"
+    EPISODE_METADATA = "episode_metadata"
+
+
 class TargetProfile(StrEnum):
     """Target identity semantics selected independently of the timeline mode."""
 
