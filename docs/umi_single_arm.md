@@ -51,3 +51,42 @@ UMI 的低相邻 IoU 与中心位移可能是同一次相机／物体运动，�
 - `process_summary.json`：任务完成／失败记录。进程结束不等于全部通过；失败或隔离段不可当成有效空 mask 使用。
 
 试跑目录名含 `smoke`，不作为最终训练输入。批次结果和复核结论另行记录，不将生成数据提交到 Git。
+
+## 2026-09-09 批次结果
+
+59 段全部结束，41 段产出所需对象通道及叠加视频；其中 12 段自动质检通过、29 段带时序警告，
+另外 18 段未通过。自动质检通过也不等于逐帧人工验收。
+
+| 任务 | 自动质检通过 | 需时序复核 | 未通过 | 所需对象输出／总数 |
+| --- | ---: | ---: | ---: | ---: |
+| push_real | 1 | 8 | 1 | 9/10 |
+| pull_real | 3 | 7 | 0 | 10/10 |
+| turn_over_real | 5 | 3 | 2 | 8/10 |
+| scoop_real | 1 | 3 | 6 | 4/10 |
+| stir_real | 0 | 2 | 8 | 2/10 |
+| wipe_real | 2 | 6 | 1 | 8/9 |
+
+本地[结果索引](../artifacts/umi_single_arm_review/index.html)包含每段源文件、操作侧、
+最终 run、mask、原视频、叠加视频和失败原因；同目录下有 `results.json`、`results.csv`。
+按此索引选取结果，不要直接合并所有 run 目录：
+
+- 默认使用 `umi-<task 去掉 _real 并将下划线替换为连字符>-origin-v1`。
+- `pull_real` 的 episode 0、1、6 改用 `umi-pull-origin-v2`，修正跨视角把手身份等问题。
+- `turn_over_real` 的 episode 0、3、5、6 改用 `umi-turn-over-origin-v2`；其中 5、6 仍未通过。
+- `smoke`、`initial` 目录及上述被替代的 v1 段只保留诊断用途。
+
+已抽查全部 41 段产物的早期和末期叠加图，并对部分难例追加动作中段检查；不是逐帧人工质检。
+例如 [turn_over_real episode 4](../artifacts/runs/umi-turn-over-origin-v1/rendered_videos/episode_000004_cam_high_overlay.mp4)
+可查看完整物体翻转的叠加视频。搅拌细工具与小把手仍容易定位或跟踪失败；stir episode 0 末帧
+工具 mask 的离散小块、wipe episode 7 手臂遮挡处的 receiver 边界已在索引中列为复核备注。
+原始跟踪保留供复核：隔离可能来自实际漂移，也可能来自真实大幅运动，不能仅凭隔离状态认定
+所有像素都错，更不能把失败角色的空输出当作训练标注。
+
+验证结果：
+
+- 59 段数据 preflight 通过；所有已有 mask 的维度、实例顺序、空夹爪通道和 0/1 编码通过检查。
+- 41 段叠加视频逐帧解码通过，共 10,083 帧，长度与 mask 一致；索引的 190 个链接均存在。
+- target-only 的 receiver 为空；失败段保留状态，不计入上述完整对象输出。
+- `just test-all`：838 passed，1 skipped；`just lint` 和 `git diff --check` 通过。
+- 修改源码的严格类型检查通过；全量 mypy 仍有既存的
+  `pipeline/gripper/sam/annotator.py:251` OpenCV `fillConvexPoly` 颜色参数类型错误，未改动该路径。
