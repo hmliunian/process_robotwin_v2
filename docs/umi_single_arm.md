@@ -68,6 +68,16 @@ UMI 的低相邻 IoU 与中心位移可能是同一次相机／物体运动，�
 
 本地[结果索引](../artifacts/umi_single_arm_review/index.html)包含每段源文件、操作侧、
 最终 run、mask、原视频、叠加视频和失败原因；同目录下有 `results.json`、`results.csv`。
+全部 59 段的[整体 review sheet](../artifacts/umi_single_arm_review/review_sheets/overall_index.jpg)
+按任务排列，中期取 50% 帧；同目录的 `early.jpg`、`late.jpg` 分别取 25% 和末帧。
+失败段展示带红色状态的原始 RGB，并保留失败标记。可复现生成：
+
+```bash
+.venv/bin/python scripts/render_batch_review_sheets.py \
+  artifacts/umi_single_arm_review/results.json \
+  --datasets-root artifacts/datasets/umi_single_arm
+```
+
 按此索引选取结果，不要直接合并所有 run 目录：
 
 - 默认使用 `umi-<task 去掉 _real 并将下划线替换为连字符>-origin-v1`。
