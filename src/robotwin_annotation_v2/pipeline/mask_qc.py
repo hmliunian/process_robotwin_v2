@@ -6,6 +6,7 @@ import json
 import math
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Protocol, cast
 
@@ -15,6 +16,7 @@ from PIL import Image, ImageDraw
 from ..adapters.qwen_client import QwenCompletion, image_data_url
 from ..config import MaskConfig
 from ..models import (
+    FramePurpose,
     LoopContext,
     MaskQCAttemptMethod,
     MaskQCResult,
@@ -173,6 +175,8 @@ def _context_items(
         and role in frame.eligible_roles
         and frame.frame_id in context_images
     ]
+    if any(frame.purpose is FramePurpose.INTERACTION_SEED_CANDIDATE for frame in eligible):
+        limit = max(limit, 4)
 
     def sample(frame_ids: list[int], count: int) -> list[int]:
         if len(frame_ids) <= count:
@@ -972,6 +976,16 @@ def _resolve_role(
     mask_config: MaskConfig,
     client: MaskQCClient,
 ) -> RoleResolution:
+    if context.timeline_kind == "video_window":
+        context = replace(
+            context,
+            task_text=(
+                f"{context.task_text}\n"
+                f"Prior {role} identity hypothesis (verify against the action frames): "
+                f"{semantic.reason}\nExcluded alternatives: {', '.join(semantic.exclude)}"
+            ),
+        )
+
     def run_text_attempt(
         seed_frame_id: int,
         query_candidates: tuple[QueryCandidate, ...],

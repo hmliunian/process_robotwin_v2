@@ -17,6 +17,7 @@ from robotwin_annotation_v2.config import load_profile
 from robotwin_annotation_v2.domain import AnnotationMode, TargetProfile
 from robotwin_annotation_v2.models import EpisodeRef, LoopContext, VideoWindowEvents
 from robotwin_annotation_v2.models.timeline import derive_target_hold_window
+from robotwin_annotation_v2.pipeline.bbox_localization import render_bbox_prompt
 from robotwin_annotation_v2.pipeline.prompt_context import timeline_prompt_fields
 from robotwin_annotation_v2.pipeline.qwen_stage import build_qwen_request
 from robotwin_annotation_v2.pipeline.state_loop import build_loop_context, sample_semantic_frames
@@ -59,6 +60,17 @@ def test_video_window_roundtrip_without_fabricated_grasp(
         profile.qwen.prompt_template.read_text(),
     )
     assert "seed_candidate=yes" in request.rendered_prompt
+    assert profile.mask.qc_bbox_prompt_template is not None
+    bbox_prompt = render_bbox_prompt(
+        profile.mask.qc_bbox_prompt_template.read_text(),
+        task="video_task",
+        task_text=context.task_text,
+        episode_id="000000",
+        role="target",
+        seed_frame_id=0,
+    )
+    assert "video_task" in bbox_prompt
+    assert "000000" in bbox_prompt
     path = tmp_path / "loop.json"
     path.write_text(json.dumps(context.to_json()))
     loaded = load_authoritative_loop_context(

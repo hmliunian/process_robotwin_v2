@@ -1,4 +1,5 @@
 Localize exactly one visible physical object in a first-person manipulation image.
+Task: {task}; episode: {episode_id}
 Task and role definitions: {task_text}
 Requested role: {role}
 Frame: {seed_frame_id}

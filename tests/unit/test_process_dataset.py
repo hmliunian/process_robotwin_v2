@@ -549,12 +549,19 @@ def test_process_dataset_reports_sam_stages_without_embedded_json(
     assert backend_shutdown == [True]
 
 
+@pytest.mark.parametrize("timeline_source", ["robot_state", "video_window"])
+@pytest.mark.parametrize("skip_render", [False, True])
 def test_process_dataset_target_receiver_only_skips_gripper_and_uses_sam_resume(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    timeline_source: str,
+    skip_render: bool,
 ) -> None:
     dataset = tmp_path / "dataset"
     _touch_episode(dataset, 7)
+    (dataset / "EXTRACT_MANIFEST.json").write_text(
+        json.dumps({"timeline_source": timeline_source})
+    )
     monkeypatch.setattr(
         process_module,
         "_measure_episode",
@@ -583,6 +590,13 @@ def test_process_dataset_target_receiver_only_skips_gripper_and_uses_sam_resume(
         run_qwen=lambda *_args: calls.append("qwen"),
     )
     monkeypatch.setattr(process_module, "_load_sam_runtime", lambda: runtime)
+    render_calls: list[tuple[int, ...]] = []
+
+    def render_objects(*_args: Any, **kwargs: Any) -> dict[str, Any]:
+        render_calls.append(kwargs["episode_ids"])
+        return {"status": "completed"}
+
+    monkeypatch.setattr(process_module, "_render_processed", render_objects)
 
     summary = process_module.process_dataset(
         process_module.load_config(Path("configs/pilot_move_pillbottle_pad.yaml")),
@@ -592,7 +606,7 @@ def test_process_dataset_target_receiver_only_skips_gripper_and_uses_sam_resume(
         output_root=tmp_path / "output",
         run_id="target-receiver-source",
         episode_ids=(7,),
-        skip_render=True,
+        skip_render=skip_render,
         target_receiver_only=True,
     )
 
@@ -610,6 +624,9 @@ def test_process_dataset_target_receiver_only_skips_gripper_and_uses_sam_resume(
     assert summary["gripper_backend"] is None
     assert summary["backend"] == {"object_masks": "sam", "gripper": None}
     assert summary["stage_mode"] == "object_source_only"
+    assert render_calls == (
+        [(7,)] if timeline_source == "video_window" and not skip_render else []
+    )
 
 
 def test_parallel_sam_summary_records_pool_and_unhealthy_failure(

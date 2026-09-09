@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,7 @@ from robotwin_annotation_v2.models import (
     SemanticPlan,
     SemanticStatus,
     TargetOnlyEvents,
+    VideoWindowEvents,
 )
 from robotwin_annotation_v2.pipeline import (
     MaskQCError,
@@ -33,6 +35,7 @@ from robotwin_annotation_v2.pipeline import (
     save_mask_qc_artifacts,
 )
 from robotwin_annotation_v2.pipeline.mask_qc import _context_items
+from robotwin_annotation_v2.pipeline.state_loop import sample_semantic_frames
 
 FRAME_SHAPE = (12, 16)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -512,6 +515,41 @@ def test_context_sampling_prefers_action_evidence_over_extra_seed_frames() -> No
     sampled = _context_items(context, "target", 0, images)
 
     assert [frame_id for frame_id, _image in sampled] == [7, 15]
+
+
+def test_video_qc_keeps_mid_action_evidence_and_instance_identity(tmp_path: Path) -> None:
+    events = VideoWindowEvents("right", 0, 19)
+    context = replace(
+        _target_only_context(),
+        events=events,
+        semantic_frames=sample_semantic_frames(
+            events, frame_count=20, annotation_mode=AnnotationMode.TARGET_ONLY
+        ),
+    )
+    images = {frame.frame_id: Image.new("RGB", (16, 12)) for frame in context.semantic_frames}
+    sampled = _context_items(context, "target", 0, images)
+    assert len(sampled) == 4
+    assert any(6 <= frame_id <= 14 for frame_id, _image in sampled)
+    semantic = replace(
+        _target_only_plan().target,
+        reason="The manipulated instance is the lower bottle.",
+        exclude=("upper bottle",),
+    )
+    plan = replace(
+        _target_only_plan(),
+        role_plans=(semantic,),
+        input_frame_ids=tuple(images),
+    )
+    client = FakeQCClient([_response("A")])
+    result = run_mask_qc_stage(
+        context, plan, FakeCandidateBackend(), Path("/tmp/resource"),
+        seed_images=images, context_images=images, frame_shape=FRAME_SHAPE,
+        mask_config=_config(_prompt(tmp_path)), client=client,
+    )
+    assert result.target.status is MaskQCStatus.PASSED
+    assert "lower bottle" in result.target.rendered_prompt
+    assert "upper bottle" in result.target.rendered_prompt
+    assert "lower bottle" not in context.task_text
 
 
 def test_parse_mask_qc_response_validates_candidate_contract() -> None:

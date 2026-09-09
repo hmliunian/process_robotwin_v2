@@ -28,6 +28,9 @@
    已持有的物体可以作为 seed；不要自动选第一帧。被遮挡或出画部分不应被补全。
 5. 每条非空 query 是 1–4 个小写英文词的单数名词短语，不能含动作、位置、品牌、数字、
    冠词、所有格或 with。category_query 使用常见物体类别；颜色与形状只能来自真实画面。
+   query 禁用 held/holding/hold、moving/move、left/right、upper/lower 等操作或位置描述；
+   实例位置与动作只写入 reason/exclude。颜色／材质词必须修饰对象名词，不能单独成 query。
+   例如 spoon、transparent scoop、silver pot、round bowl 合法，held scooping tool 不合法。
 6. 各非空候选互不重复。无独立视觉依据的属性候选填 null。general_fallback_query 可为
    “视觉属性 + object”，但不能是裸 object/thing/item/stuff；非空时必须排在推荐顺序最后。
 7. recommended_order 恰好包含全部非空候选各一次。禁止合并两个角色或不同实例。

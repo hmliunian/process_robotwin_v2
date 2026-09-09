@@ -516,8 +516,9 @@ class SamWorkflow[BackendT: SamBackend, SamExecutionT, GripperExecutionT]:
             for record in records
             if record.get("status") in {"completed", "skipped_complete"}
         )
+        render_video_objects = manifest.get("timeline_source") == "video_window"
         if (
-            not source_only
+            (not source_only or render_video_objects)
             and not skip_render
             and fatal_error is None
             and renderable_ids
@@ -545,7 +546,7 @@ class SamWorkflow[BackendT: SamBackend, SamExecutionT, GripperExecutionT]:
         elif reporter is not None:
             reason = (
                 "object source stage"
-                if source_only
+                if source_only and not render_video_objects
                 else "disabled by --skip-render"
                 if skip_render
                 else "blocked by fatal CUDA error"
