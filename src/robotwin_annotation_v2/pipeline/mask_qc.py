@@ -147,8 +147,30 @@ def _panel_image(
     inner = mask & ~np.roll(mask, 1, axis=0)
     array[inner] = color
     panel = Image.fromarray(array, mode="RGB")
+    detail = None
+    if 0 < mask.mean() < 0.005:
+        rows, columns = np.nonzero(mask)
+        padding = max(32, round(min(width, height) * 0.15))
+        detail = panel.crop((
+            max(0, int(columns.min()) - padding),
+            max(0, int(rows.min()) - padding),
+            min(width, int(columns.max()) + padding + 1),
+            min(height, int(rows.max()) + padding + 1),
+        ))
+        factor = 384 / max(detail.size)
+        detail = detail.resize(
+            (round(detail.width * factor), round(detail.height * factor)),
+            Image.Resampling.NEAREST,
+        )
     if scale != 1:
         panel = panel.resize((width * scale, height * scale), Image.Resampling.NEAREST)
+    if detail is not None:
+        overview = panel
+        panel = Image.new(
+            "RGB", (overview.width + detail.width, max(overview.height, detail.height + 40))
+        )
+        panel.paste(overview, (0, 0))
+        panel.paste(detail, (overview.width, 40))
     draw = ImageDraw.Draw(panel)
     band_height = max(24, 16 * scale)
     draw.rectangle((0, 0, panel.width, band_height), fill=(0, 0, 0))
@@ -157,6 +179,8 @@ def _panel_image(
         f"candidate {candidate.candidate_id}",
         fill=(255, 255, 255),
     )
+    if detail is not None:
+        draw.text((width * scale + 6, 4), "same candidate: local detail", fill="white")
     return panel
 
 
