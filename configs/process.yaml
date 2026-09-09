@@ -102,6 +102,9 @@ modes:
       prompt_template: prompts/video_interaction_semantic.txt
       max_tokens: 600
     mask:
+      # Ego-camera/target motion can jointly lower IoU and move the centroid.
+      # Keep those two warnings as review; quarantine also needs an area jump.
+      temporal_qc_quarantine_signal_count: 3
       qc_prompt_template: prompts/video_interaction_mask_qc.txt
       qc_bbox_prompt_template: prompts/video_interaction_bbox.txt
 
@@ -112,5 +115,6 @@ modes:
       prompt_template: prompts/video_interaction_semantic.txt
       max_tokens: 1000
     mask:
+      temporal_qc_quarantine_signal_count: 3
       qc_prompt_template: prompts/video_interaction_mask_qc.txt
       qc_bbox_prompt_template: prompts/video_interaction_bbox.txt

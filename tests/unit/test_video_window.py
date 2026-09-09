@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import pytest
 from PIL import Image
@@ -15,9 +16,10 @@ from robotwin_annotation_v2.adapters.loop_context_codec import (
 from robotwin_annotation_v2.adapters.robotwin_dataset import DatasetError, RoboTwinDataset
 from robotwin_annotation_v2.config import load_profile
 from robotwin_annotation_v2.domain import AnnotationMode, TargetProfile
-from robotwin_annotation_v2.models import EpisodeRef, LoopContext, VideoWindowEvents
+from robotwin_annotation_v2.models import EpisodeRef, FrameWindow, LoopContext, VideoWindowEvents
 from robotwin_annotation_v2.models.timeline import derive_target_hold_window
 from robotwin_annotation_v2.pipeline.bbox_localization import render_bbox_prompt
+from robotwin_annotation_v2.pipeline.object_mask.temporal_qc import evaluate_temporal_mask
 from robotwin_annotation_v2.pipeline.prompt_context import timeline_prompt_fields
 from robotwin_annotation_v2.pipeline.qwen_stage import build_qwen_request
 from robotwin_annotation_v2.pipeline.state_loop import build_loop_context, sample_semantic_frames
@@ -54,6 +56,12 @@ def test_video_window_roundtrip_without_fabricated_grasp(
             else TargetProfile.GRASP_MANIPULATION
         ),
     )
+    moving_masks = np.zeros((4, 64, 128), dtype=bool)
+    for index in range(4):
+        moving_masks[index, 20:30, 10 + index * 10:20 + index * 10] = True
+    motion_review = evaluate_temporal_mask(moving_masks, FrameWindow(0, 3), profile.mask)
+    assert motion_review.status == "review"
+    assert set(motion_review.issues) == {"low_adjacent_iou_p05", "large_centroid_jump_p95"}
     request = build_qwen_request(
         context,
         {frame.frame_id: Image.new("RGB", (8, 8)) for frame in context.semantic_frames},
