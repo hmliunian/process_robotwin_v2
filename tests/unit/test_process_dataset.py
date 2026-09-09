@@ -310,6 +310,7 @@ def _cli_config(
             root=tmp_path / "configured-dataset",
             task="configured-task",
             camera="cam_high",
+            manifest_data=None,
         ),
         sam3=SimpleNamespace(gpus=(2,)),
         parallel=ParallelConfig(),

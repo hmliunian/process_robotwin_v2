@@ -14,7 +14,7 @@ import pandas as pd
 from PIL import Image
 
 from ..domain import TimelineSource
-from ..models import EpisodeRef, TargetOnlyEvents
+from ..models import EpisodeRef, TargetOnlyEvents, VideoWindowEvents
 
 NDArray = np.ndarray[Any, Any]
 
@@ -51,11 +51,11 @@ class EpisodeState:
 
 @dataclass(frozen=True)
 class EpisodeTimeline:
-    """State-free target-only timeline declared by episode metadata."""
+    """State-free timeline declared by episode metadata."""
 
     frame_count: int
     task_text: str
-    events: TargetOnlyEvents
+    events: TargetOnlyEvents | VideoWindowEvents
     paths: EpisodePaths
     source: Path
 
@@ -102,9 +102,7 @@ class RoboTwinDataset:
     @property
     def timeline_source(self) -> TimelineSource:
         try:
-            return TimelineSource(
-                self.manifest.get("timeline_source", TimelineSource.ROBOT_STATE)
-            )
+            return TimelineSource(self.manifest.get("timeline_source", TimelineSource.ROBOT_STATE))
         except (TypeError, ValueError) as exc:
             raise DatasetError(
                 f"unsupported timeline_source: {self.manifest.get('timeline_source')!r}"
@@ -197,23 +195,27 @@ class RoboTwinDataset:
             paths=paths,
         )
 
-    def load_target_only_timeline(self, ref: EpisodeRef) -> EpisodeTimeline:
-        """Load a checked close/hold timeline without requiring robot kinematics."""
+    def load_episode_timeline(self, ref: EpisodeRef) -> EpisodeTimeline:
+        """Load checked video or close/hold events without robot kinematics."""
 
-        if self.timeline_source is not TimelineSource.EPISODE_METADATA:
-            raise DatasetError("dataset does not declare an episode_metadata timeline")
+        if self.timeline_source is TimelineSource.ROBOT_STATE:
+            raise DatasetError("dataset does not declare a metadata timeline")
         payload = self._metadata_index().get(ref.episode_index)
         if payload is None:
             raise DatasetError(f"episode {ref.episode_index} is absent from episodes.jsonl")
-        raw_events = payload.get("target_only_events")
+        video_window = self.timeline_source is TimelineSource.VIDEO_WINDOW
+        key = "video_events" if video_window else "target_only_events"
+        raw_events = payload.get(key)
         if not isinstance(raw_events, dict):
-            raise DatasetError(f"episode {ref.episode_index} has no target_only_events")
-        required = {"active_arm", "t_remove_start", "t_close_start", "t_close_end"}
-        allowed = required | {"t_reopen_start"}
+            raise DatasetError(f"episode {ref.episode_index} has no {key}")
+        required = (
+            {"active_arm", "t_start", "t_end"}
+            if video_window
+            else {"active_arm", "t_remove_start", "t_close_start", "t_close_end"}
+        )
+        allowed = required if video_window else required | {"t_reopen_start"}
         if not required <= raw_events.keys() or not raw_events.keys() <= allowed:
-            raise DatasetError(
-                f"episode {ref.episode_index} target_only_events fields are invalid"
-            )
+            raise DatasetError(f"episode {ref.episode_index} {key} fields are invalid")
         frames = [value for name, value in raw_events.items() if name != "active_arm"]
         if any(
             value is not None and (isinstance(value, bool) or not isinstance(value, int))
@@ -221,11 +223,11 @@ class RoboTwinDataset:
         ):
             raise DatasetError(f"episode {ref.episode_index} event frames must be integers")
         try:
-            events = TargetOnlyEvents(**raw_events)
+            events = (
+                VideoWindowEvents(**raw_events) if video_window else TargetOnlyEvents(**raw_events)
+            )
         except (TypeError, ValueError) as exc:
-            raise DatasetError(
-                f"episode {ref.episode_index} target_only_events are invalid: {exc}"
-            ) from exc
+            raise DatasetError(f"episode {ref.episode_index} {key} are invalid: {exc}") from exc
         frame_count = len(self._read_episode_frame(ref))
         declared_count = payload.get("length")
         if declared_count != frame_count:
@@ -237,7 +239,7 @@ class RoboTwinDataset:
             events.operation_window(frame_count)
         except ValueError as exc:
             raise DatasetError(
-                f"episode {ref.episode_index} target_only_events exceed its frames: {exc}"
+                f"episode {ref.episode_index} {key} exceed its frames: {exc}"
             ) from exc
         return EpisodeTimeline(
             frame_count=frame_count,
@@ -324,8 +326,8 @@ class RoboTwinDataset:
             if all(path.is_file() for path in (paths.parquet, paths.video)):
                 try:
                     episode = (
-                        self.load_target_only_timeline(ref)
-                        if self.timeline_source is TimelineSource.EPISODE_METADATA
+                        self.load_episode_timeline(ref)
+                        if self.timeline_source is not TimelineSource.ROBOT_STATE
                         else self.load_state(ref)
                     )
                     video_count, video_shape = self.video_info(ref)

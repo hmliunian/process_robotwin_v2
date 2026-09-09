@@ -179,7 +179,36 @@ class TargetOnlyEvents:
         return payload
 
 
-type TimelineEvents = PickPlaceEvents | TargetOnlyEvents
+@dataclass(frozen=True)
+class VideoWindowEvents:
+    """Reviewed single-arm video interval, with no inferred grasp boundaries."""
+
+    active_arm: Literal["left", "right"]
+    t_start: int
+    t_end: int
+
+    def __post_init__(self) -> None:
+        if self.active_arm not in {"left", "right"}:
+            raise ValueError(f"invalid active arm: {self.active_arm}")
+        for value in (self.t_start, self.t_end):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError("video window frames must be integers")
+        FrameWindow(self.t_start, self.t_end)
+
+    @property
+    def target_window(self) -> FrameWindow:
+        return FrameWindow(self.t_start, self.t_end)
+
+    def operation_window(self, frame_count: int) -> FrameWindow:
+        if self.t_end >= frame_count:
+            raise ValueError("video window extends beyond the episode")
+        return self.target_window
+
+    def to_json(self) -> dict[str, object]:
+        return asdict(self)
+
+
+type TimelineEvents = PickPlaceEvents | TargetOnlyEvents | VideoWindowEvents
 
 
 @dataclass(frozen=True)
@@ -200,11 +229,21 @@ class EpisodeWindows:
         }
 
 
-def derive_episode_windows(events: TimelineEvents, *, frame_count: int) -> EpisodeWindows:
+def derive_episode_windows(
+    events: TimelineEvents, *, frame_count: int, include_receiver: bool = False
+) -> EpisodeWindows:
     """Derive all downstream windows in the one timeline-aware boundary."""
 
     if frame_count < 1:
         raise ValueError("frame_count must be positive")
+    if isinstance(events, VideoWindowEvents):
+        operation = events.operation_window(frame_count)
+        return EpisodeWindows(
+            operation=operation,
+            target=operation,
+            receiver=operation if include_receiver else None,
+            gripper=operation,
+        )
     if isinstance(events, TargetOnlyEvents):
         operation = events.operation_window(frame_count)
         return EpisodeWindows(
@@ -238,6 +277,9 @@ def derive_target_hold_window(
         return events.target_hold_window
     if isinstance(events, TargetOnlyEvents):
         return events.target_hold_window(frame_count)
+    if isinstance(events, VideoWindowEvents):
+        events.operation_window(frame_count)
+        return None
     raise TypeError(f"unsupported timeline events: {type(events).__name__}")
 
 
@@ -248,6 +290,7 @@ __all__ = [
     "PickPlaceEvents",
     "TargetOnlyEvents",
     "TimelineEvents",
+    "VideoWindowEvents",
     "derive_episode_windows",
     "derive_target_hold_window",
 ]

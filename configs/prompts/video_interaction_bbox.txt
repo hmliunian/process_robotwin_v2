@@ -1,0 +1,18 @@
+Localize exactly one visible physical object in a first-person manipulation image.
+Task and role definitions: {task_text}
+Requested role: {role}
+Frame: {seed_frame_id}
+
+Follow the task's explicit identities: target is the manipulated object, held tool, or complete
+functional part; receiver, when requested, is the separate container or bounded surface acted on.
+A held object is eligible. Do not require a grasp or placement event. Do not substitute a hand,
+gripper, idle-hand object, another instance, or the other role. For a handle target, box the entire
+separable handle, not the door. For a tool, include all its visible parts, not only its tip.
+For a receiver, box the physical container or bounded surface, not its contents or a wiping path.
+
+Return one raw JSON object:
+{"status":"ok","bbox_xyxy":[0.1,0.2,0.3,0.4],"confidence":0.9,"reason":"short identity reason"}
+Use normalized xyxy coordinates, finite numbers, 0 <= x0 < x1 <= 1 and 0 <= y0 < y1 <= 1.
+Box only visible pixels, allowing image-edge clipping. Never hallucinate occluded extent.
+If uncertain use status="ambiguous"; if invisible use status="not_visible". Both require
+bbox_xyxy=null. Confidence must be in [0,1], and reason must name the requested physical identity.

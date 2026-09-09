@@ -15,6 +15,8 @@ from ..models.timeline import (
     PickPlaceEvents,
     TargetOnlyEvents,
     TimelineEvents,
+    VideoWindowEvents,
+    derive_episode_windows,
     derive_target_hold_window,
 )
 
@@ -178,9 +180,7 @@ def _validate_versioned_windows(
     )
     if expected.receiver is None:
         if windows.get("receiver_0") is not None:
-            raise LoopContextCodecError(
-                "target_only source loop receiver_0 window must be null"
-            )
+            raise LoopContextCodecError("target_only source loop receiver_0 window must be null")
     else:
         _validate_recorded_window(
             windows,
@@ -214,9 +214,7 @@ def load_authoritative_loop_context(
     try:
         payload = json.loads(source.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as exc:
-        raise LoopContextCodecError(
-            f"failed to read source loop artifact {source}: {exc}"
-        ) from exc
+        raise LoopContextCodecError(f"failed to read source loop artifact {source}: {exc}") from exc
     if not isinstance(payload, Mapping):
         raise LoopContextCodecError("source loop artifact must contain a JSON object")
     format_version = payload.get("format_version")
@@ -225,10 +223,9 @@ def load_authoritative_loop_context(
         "robotwin_loop_context_v2",
         "robotwin_loop_context_v3",
         "robotwin_loop_context_v4",
+        "robotwin_loop_context_v5",
     }:
-        raise LoopContextCodecError(
-            f"unsupported source loop format: {format_version!r}"
-        )
+        raise LoopContextCodecError(f"unsupported source loop format: {format_version!r}")
 
     episode = _required_mapping(payload, "episode", description="source loop")
     expected_index = _validate_episode_index(expected_episode_index)
@@ -259,16 +256,21 @@ def load_authoritative_loop_context(
             f"unsupported source loop annotation_mode: {raw_mode!r}"
         ) from exc
     spec = annotation_spec(annotation_mode)
+    if annotation_mode is AnnotationMode.TOOL_USE and format_version != "robotwin_loop_context_v5":
+        raise LoopContextCodecError("tool_use requires robotwin_loop_context_v5")
     raw_roles = payload.get("required_object_roles")
     if raw_roles is not None and raw_roles != list(spec.required_role_names):
-        raise LoopContextCodecError(
-            "source loop required_object_roles differ from annotation_mode"
-        )
-    if format_version in {
-        "robotwin_loop_context_v2",
-        "robotwin_loop_context_v3",
-        "robotwin_loop_context_v4",
-    } and raw_roles is None:
+        raise LoopContextCodecError("source loop required_object_roles differ from annotation_mode")
+    if (
+        format_version
+        in {
+            "robotwin_loop_context_v2",
+            "robotwin_loop_context_v3",
+            "robotwin_loop_context_v4",
+            "robotwin_loop_context_v5",
+        }
+        and raw_roles is None
+    ):
         raise LoopContextCodecError(
             f"source loop {format_version} must declare required_object_roles"
         )
@@ -281,7 +283,27 @@ def load_authoritative_loop_context(
         )
     windows = _required_mapping(payload, "windows", description="source loop")
     events: TimelineEvents
-    if format_version == "robotwin_loop_context_v1":
+    if format_version == "robotwin_loop_context_v5":
+        if annotation_mode not in {AnnotationMode.TARGET_ONLY, AnnotationMode.TOOL_USE}:
+            raise LoopContextCodecError("video_window requires target_only or tool_use mode")
+        if payload.get("timeline_kind") != "video_window":
+            raise LoopContextCodecError("v5 source loop requires video_window timeline_kind")
+        if set(event_payload) != {"active_arm", "t_start", "t_end"}:
+            raise LoopContextCodecError("video_window events require active_arm, t_start, t_end")
+        try:
+            events = VideoWindowEvents(
+                active_arm=cast(ArmName, active_arm),
+                t_start=_required_integer(event_payload, "t_start", description="video_window"),
+                t_end=_required_integer(event_payload, "t_end", description="video_window"),
+            )
+            normalized_windows = derive_episode_windows(
+                events, frame_count=frame_count, include_receiver=spec.requires("receiver")
+            )
+        except ValueError as exc:
+            raise LoopContextCodecError(f"invalid video_window events: {exc}") from exc
+        timeline_kind = "video_window"
+        _validate_versioned_windows(windows, normalized_windows, format_version=format_version)
+    elif format_version == "robotwin_loop_context_v1":
         if annotation_mode is not AnnotationMode.PICK_PLACE:
             raise LoopContextCodecError(
                 "target_only close-and-hold requires robotwin_loop_context_v2"
@@ -296,8 +318,7 @@ def load_authoritative_loop_context(
         }
         if set(event_payload) != event_keys:
             raise LoopContextCodecError(
-                "pick_place source events must contain exactly "
-                f"{sorted(event_keys)}"
+                f"pick_place source events must contain exactly {sorted(event_keys)}"
             )
         event_values = {
             key: _required_integer(
@@ -346,9 +367,7 @@ def load_authoritative_loop_context(
     else:
         raw_timeline_kind = payload.get("timeline_kind")
         expected_kind = (
-            "pick_place"
-            if annotation_mode is AnnotationMode.PICK_PLACE
-            else "close_hold"
+            "pick_place" if annotation_mode is AnnotationMode.PICK_PLACE else "close_hold"
         )
         if raw_timeline_kind != expected_kind:
             raise LoopContextCodecError(
@@ -381,9 +400,7 @@ def load_authoritative_loop_context(
                     **event_values,
                 )
             except ValueError as exc:
-                raise LoopContextCodecError(
-                    f"invalid source loop events: {exc}"
-                ) from exc
+                raise LoopContextCodecError(f"invalid source loop events: {exc}") from exc
             normalized_windows = _pick_place_windows(
                 events,
                 include_held_target=format_version
@@ -423,13 +440,9 @@ def load_authoritative_loop_context(
                     **event_values,
                 )
             except ValueError as exc:
-                raise LoopContextCodecError(
-                    f"invalid source loop events: {exc}"
-                ) from exc
+                raise LoopContextCodecError(f"invalid source loop events: {exc}") from exc
             if events.t_close_end >= frame_count:
-                raise LoopContextCodecError(
-                    "target_only close_end exceeds the episode frame range"
-                )
+                raise LoopContextCodecError("target_only close_end exceeds the episode frame range")
             if events.t_reopen_start is not None and events.t_reopen_start >= frame_count:
                 raise LoopContextCodecError(
                     "target_only reopen_start exceeds the episode frame range"

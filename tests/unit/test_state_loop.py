@@ -206,7 +206,7 @@ def test_build_loop_context_uses_declared_metadata_timeline() -> None:
     class DatasetStub:
         timeline_source = TimelineSource.EPISODE_METADATA
 
-        def load_target_only_timeline(self, _ref: object) -> EpisodeTimeline:
+        def load_episode_timeline(self, _ref: object) -> EpisodeTimeline:
             return timeline
 
         def load_state(self, _ref: object) -> EpisodeState:

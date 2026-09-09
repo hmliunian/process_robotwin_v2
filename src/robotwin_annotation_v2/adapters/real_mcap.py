@@ -551,23 +551,46 @@ def _video_fps(timestamps_ns: NDArray) -> float:
     return 1_000_000_000.0 / median_delta
 
 
+def decode_h264_frames(payloads: Sequence[bytes]) -> list[av.VideoFrame]:
+    """Decode access units, preserving each source message index as frame PTS."""
+    decoder = av.CodecContext.create("h264", "r")
+    frames: list[av.VideoFrame] = []
+    packet_index = 0
+    for payload in (*payloads, b""):
+        for packet in decoder.parse(payload):
+            packet.pts = packet_index
+            packet.dts = packet_index
+            packet_index += 1
+            frames.extend(decoder.decode(packet))
+    frames.extend(decoder.decode(None))
+    if packet_index != len(payloads) or not frames:
+        raise RealMcapError("H264 requires one access unit per source message and visible frames")
+    indices = [frame.pts for frame in frames if frame.pts is not None]
+    if len(indices) != len(frames) or indices != sorted(set(indices)):
+        raise RealMcapError("decoded H264 source frame indices are missing or unordered")
+    return frames
+
+
 def write_video(
     payloads: Sequence[bytes], timestamps_ns: NDArray, path: Path
 ) -> tuple[int, int, int, float]:
     """Decode H264 access units and write one constant-rate H264 MP4 without resizing."""
 
-    decoder = av.CodecContext.create("h264", "r")
-    frames: list[av.VideoFrame] = []
-    for payload in payloads:
-        for packet in decoder.parse(payload):
-            frames.extend(decoder.decode(packet))
-    for packet in decoder.parse(b""):
-        frames.extend(decoder.decode(packet))
-    frames.extend(decoder.decode(None))
+    frames = decode_h264_frames(payloads)
     if len(frames) != len(payloads) or len(frames) != len(timestamps_ns):
         raise RealMcapError(
             f"head video decode count mismatch: messages={len(payloads)}, frames={len(frames)}"
         )
+    return encode_video_frames(frames, timestamps_ns, path)
+
+
+def encode_video_frames(
+    frames: Sequence[av.VideoFrame], timestamps_ns: NDArray, path: Path
+) -> tuple[int, int, int, float]:
+    """Write already decoded RGB frames without changing their resolution."""
+
+    if not frames or len(frames) != len(timestamps_ns):
+        raise RealMcapError("decoded video and timestamp counts differ")
     width = int(frames[0].width)
     height = int(frames[0].height)
     if any(frame.width != width or frame.height != height for frame in frames):

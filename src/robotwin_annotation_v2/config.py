@@ -659,11 +659,12 @@ def load_profile(
         raise ConfigError("pick_place only supports grasp_manipulation")
     selector = (
         mode.value
-        if mode is AnnotationMode.PICK_PLACE
+        if mode is not AnnotationMode.TARGET_ONLY
         else {
             TargetProfile.GRASP_MANIPULATION: "target_only",
             TargetProfile.CONTACT_PRESS: "contact_press",
             TargetProfile.DOOR_OPEN: "door_open",
+            TargetProfile.VIDEO_OBJECT: "video_object",
         }[target_profile]
     )
     config_path, raw = _read_yaml(path)

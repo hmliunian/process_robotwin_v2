@@ -93,3 +93,24 @@ modes:
       qc_bbox_prompt_template: prompts/target_only_door_open_bbox_localization.txt
       qc_bbox_max_tokens: 400
       qc_max_tokens: 400
+
+  video_object:
+    annotation:
+      mode: target_only
+      profile: video_object
+    qwen:
+      prompt_template: prompts/video_interaction_semantic.txt
+      max_tokens: 600
+    mask:
+      qc_prompt_template: prompts/video_interaction_mask_qc.txt
+      qc_bbox_prompt_template: prompts/video_interaction_bbox.txt
+
+  tool_use:
+    annotation:
+      mode: tool_use
+    qwen:
+      prompt_template: prompts/video_interaction_semantic.txt
+      max_tokens: 1000
+    mask:
+      qc_prompt_template: prompts/video_interaction_mask_qc.txt
+      qc_bbox_prompt_template: prompts/video_interaction_bbox.txt

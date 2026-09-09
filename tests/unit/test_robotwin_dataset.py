@@ -91,7 +91,7 @@ def test_load_target_only_timeline_needs_no_observation_state(tmp_path: Path) ->
         encoding="utf-8",
     )
 
-    timeline = dataset.load_target_only_timeline(ref)
+    timeline = dataset.load_episode_timeline(ref)
 
     assert dataset.timeline_source is TimelineSource.EPISODE_METADATA
     assert timeline.events == TargetOnlyEvents("left", 0, 5, 8)

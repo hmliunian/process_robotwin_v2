@@ -15,6 +15,7 @@ from ..models import (
     SemanticFrame,
     TargetOnlyEvents,
     TimelineEvents,
+    VideoWindowEvents,
     derive_episode_windows,
 )
 from . import timeline_detector as _timeline_detector
@@ -66,6 +67,20 @@ def sample_semantic_frames(
         raise ValueError("seed_count must be positive")
     if seed_safety_margin < 0:
         raise ValueError("seed_safety_margin must be non-negative")
+    if isinstance(events, VideoWindowEvents):
+        if mode is AnnotationMode.PICK_PLACE:
+            raise ValueError("pick_place semantic sampling requires PickPlaceEvents")
+        window = events.operation_window(frame_count)
+        roles = cast(
+            tuple[Literal["target", "receiver"], ...],
+            annotation_spec(mode).required_role_names,
+        )
+        return tuple(
+            SemanticFrame(frame_id, FramePurpose.INTERACTION_SEED_CANDIDATE, roles)
+            for frame_id in _uniform_frames(window.start, window.end, max(8, seed_count))
+        )
+    if mode is AnnotationMode.TOOL_USE:
+        raise ValueError("tool_use semantic sampling requires VideoWindowEvents")
     if mode is AnnotationMode.PICK_PLACE and not isinstance(events, PickPlaceEvents):
         raise ValueError("pick_place semantic sampling requires PickPlaceEvents")
     if mode is AnnotationMode.TARGET_ONLY and not isinstance(events, TargetOnlyEvents):
@@ -143,17 +158,18 @@ def build_loop_context(
     mode = AnnotationMode(annotation_mode)
     events: TimelineEvents
     if (
-        mode is AnnotationMode.TARGET_ONLY
-        and getattr(dataset, "timeline_source", TimelineSource.ROBOT_STATE)
-        is TimelineSource.EPISODE_METADATA
+        getattr(dataset, "timeline_source", TimelineSource.ROBOT_STATE)
+        is not TimelineSource.ROBOT_STATE
     ):
-        timeline = dataset.load_target_only_timeline(ref)
+        timeline = dataset.load_episode_timeline(ref)
         events = timeline.events
         frame_count = timeline.frame_count
         task_text = timeline.task_text
         state_source = str(timeline.source)
         video_source = str(timeline.paths.video)
     else:
+        if mode is AnnotationMode.TOOL_USE:
+            raise ValueError("tool_use requires a video_window timeline")
         state = dataset.load_state(ref)
         events = (
             detect_episode_loop(state)

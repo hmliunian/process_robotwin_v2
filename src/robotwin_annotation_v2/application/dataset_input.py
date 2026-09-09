@@ -111,6 +111,8 @@ def _manifest_mode(manifest: dict[str, Any], *, root: Path) -> AnnotationMode:
         "grasp_manipulation": AnnotationMode.TARGET_ONLY,
         "contact_press": AnnotationMode.TARGET_ONLY,
         "door_open": AnnotationMode.TARGET_ONLY,
+        "video_object": AnnotationMode.TARGET_ONLY,
+        "tool_use": AnnotationMode.TOOL_USE,
     }
     if not isinstance(raw, str) or raw.strip().lower().replace("-", "_") not in aliases:
         raise ValueError(f"dataset manifest has unsupported profile {raw!r}: {root}")
@@ -152,6 +154,16 @@ def _task_target(root: Path, mode: AnnotationMode | None) -> DatasetTarget:
         and declared_mode is not AnnotationMode.TARGET_ONLY
     ):
         raise ValueError("episode_metadata timeline_source requires target_only profile")
+    if (
+        timeline_source is TimelineSource.VIDEO_WINDOW
+        and declared_mode is AnnotationMode.PICK_PLACE
+    ):
+        raise ValueError("video_window requires target_only or tool_use profile")
+    if (
+        declared_mode is AnnotationMode.TOOL_USE
+        and timeline_source is not TimelineSource.VIDEO_WINDOW
+    ):
+        raise ValueError("tool_use requires video_window timeline_source")
     for directory in ("data", "videos", "sidecars", "meta"):
         if not (root / directory).is_dir():
             raise ValueError(f"task dataset is missing {directory}/: {root}")

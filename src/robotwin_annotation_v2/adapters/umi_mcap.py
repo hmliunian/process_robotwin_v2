@@ -10,13 +10,15 @@ import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 import h5py
 import numpy as np
 import pandas as pd
+import yaml
 
-from robotwin_annotation_v2.models import TargetOnlyEvents
+from robotwin_annotation_v2.domain import AnnotationMode
+from robotwin_annotation_v2.models import TargetOnlyEvents, VideoWindowEvents
 from robotwin_annotation_v2.pipeline.timeline_detector import (
     StateLoopError,
     detect_gripper_target_only_events,
@@ -26,6 +28,8 @@ from .real_mcap import (
     NDArray,
     RealMcapError,
     SourceMetadata,
+    decode_h264_frames,
+    encode_video_frames,
     mcap_reader_factory,
     parse_compressed_video_payload,
     parse_named_joint_positions,
@@ -55,8 +59,69 @@ class UmiMcapEpisode:
 @dataclass(frozen=True)
 class UmiTimeline:
     timestamps_s: NDArray
-    events: TargetOnlyEvents
-    gripper_travel: tuple[float, float]
+    events: TargetOnlyEvents | VideoWindowEvents
+    gripper_travel: tuple[float, float] | None = None
+    source_frame_indices: tuple[int, ...] | None = None
+    source_frame_count: int | None = None
+
+    @property
+    def metadata(self) -> dict[str, Any]:
+        if isinstance(self.events, VideoWindowEvents):
+            return {
+                "video_events": self.events.to_json(),
+                "timeline_provenance": {
+                    "signal": "reviewed_video_window",
+                    "active_arm_source": "task_config_review",
+                    "source_topics": [CAMERA_TOPIC],
+                    "source_frame_indices": list(self.source_frame_indices or ()),
+                    "source_frame_count": self.source_frame_count,
+                },
+            }
+        return {
+            "target_only_events": self.events.to_json(),
+            "timeline_provenance": {
+                "signal": "mcap_gripper_position",
+                "operation_start_policy": "episode_start",
+                "source_topics": list(GRIPPER_TOPICS),
+                "gripper_travel": list(self.gripper_travel or ()),
+            },
+        }
+
+
+@dataclass(frozen=True)
+class UmiTaskConfig:
+    """Task semantics and an explicit, reviewed single-arm source selection."""
+
+    mode: AnnotationMode
+    task_text: str
+    task_text_zh: str
+    episodes: dict[str, Literal["left", "right"]]
+
+    def __post_init__(self) -> None:
+        if self.mode not in {AnnotationMode.TARGET_ONLY, AnnotationMode.TOOL_USE}:
+            raise RealMcapError("UMI video tasks require target_only or tool_use mode")
+        if not self.task_text.strip() or not self.task_text_zh.strip() or not self.episodes:
+            raise RealMcapError("UMI task config requires task text and reviewed episodes")
+        for name, arm in self.episodes.items():
+            if (
+                Path(name).name != name
+                or not name.endswith(".mcap")
+                or arm not in {"left", "right"}
+            ):
+                raise RealMcapError(f"invalid reviewed single-arm source: {name!r}: {arm!r}")
+
+
+def load_umi_task_config(path: Path, task: str) -> UmiTaskConfig:
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))["tasks"][task]
+        return UmiTaskConfig(
+            mode=AnnotationMode(raw["annotation_mode"]),
+            task_text=raw["task_text"],
+            task_text_zh=raw["task_text_zh"],
+            episodes=raw["episodes"],
+        )
+    except (OSError, KeyError, TypeError, ValueError, AttributeError, yaml.YAMLError) as exc:
+        raise RealMcapError(f"cannot load UMI task config for {task}: {exc}") from exc
 
 
 @dataclass(frozen=True)
@@ -75,7 +140,9 @@ def _validate_timestamps(name: str, values: NDArray, source: Path) -> None:
         raise RealMcapError(f"{name} timestamps are not strictly increasing: {source}")
 
 
-def read_umi_mcap_episode(source: SourceMetadata) -> UmiMcapEpisode:
+def read_umi_mcap_episode(
+    source: SourceMetadata, *, require_grippers: bool = True
+) -> UmiMcapEpisode:
     """Read head-left H264 plus the two one-degree gripper streams."""
 
     video_times: list[int] = []
@@ -110,7 +177,7 @@ def read_umi_mcap_episode(source: SourceMetadata) -> UmiMcapEpisode:
     except OSError as exc:
         raise RealMcapError(f"cannot read MCAP {source.path}: {exc}") from exc
 
-    if not video_payloads or any(not values for values in gripper_values):
+    if not video_payloads or (require_grippers and any(not values for values in gripper_values)):
         raise RealMcapError(
             f"MCAP is missing required UMI streams: video={len(video_payloads)}, "
             f"left_gripper={len(gripper_values[0])}, "
@@ -161,6 +228,8 @@ def align_umi_timeline(episode: UmiMcapEpisode) -> UmiTimeline:
         )
     active_index = int(active[0])
     denominator = opened[active_index] - closed[active_index]
+    if denominator <= 0:
+        raise RealMcapError("UMI close/hold requires closing, not an opening-only episode")
     openness = np.clip(
         (aligned[:, active_index] - closed[active_index]) / denominator,
         0.0,
@@ -188,6 +257,7 @@ def _write_frame_parquet(
     episode_id: int,
     global_start: int,
     timestamps_s: NDArray,
+    source_frame_indices: tuple[int, ...] | None = None,
 ) -> None:
     frame_count = len(timestamps_s)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -197,6 +267,11 @@ def _write_frame_parquet(
             "frame_index": np.arange(frame_count, dtype=np.int64),
             "episode_index": np.full(frame_count, episode_id, dtype=np.int64),
             "index": np.arange(global_start, global_start + frame_count, dtype=np.int64),
+            **(
+                {"source_frame_index": source_frame_indices}
+                if source_frame_indices is not None
+                else {}
+            ),
         }
     ).to_parquet(path, index=False)
 
@@ -213,8 +288,12 @@ def _write_sidecar(
         "camera_topic": CAMERA_TOPIC,
         "depth_available": False,
         "robot_state_available": False,
-        "timeline_source": "derived_from_mcap_gripper_position",
-        "target_only_events": converted.timeline.events.to_json(),
+        "timeline_source": (
+            "reviewed_video_window"
+            if isinstance(converted.timeline.events, VideoWindowEvents)
+            else "derived_from_mcap_gripper_position"
+        ),
+        **converted.timeline.metadata,
     }
     with h5py.File(path, "w") as handle:
         handle.attrs["format_version"] = "robotwin_umi_object_sidecar_v1"
@@ -241,13 +320,7 @@ def _episode_metadata(
         "source_camera_topic": CAMERA_TOPIC,
         "depth_available": False,
         "robot_state_available": False,
-        "target_only_events": converted.timeline.events.to_json(),
-        "timeline_provenance": {
-            "signal": "mcap_gripper_position",
-            "operation_start_policy": "episode_start",
-            "source_topics": list(GRIPPER_TOPICS),
-            "gripper_travel": list(converted.timeline.gripper_travel),
-        },
+        **converted.timeline.metadata,
     }
 
 
@@ -260,6 +333,7 @@ def _write_metadata(
     task_text_zh: str,
     converted: Sequence[ConvertedUmiEpisode],
     limit: int | None,
+    task_config: UmiTaskConfig | None = None,
 ) -> None:
     if not converted:
         raise RealMcapError("conversion selected no UMI episodes")
@@ -268,15 +342,27 @@ def _write_metadata(
         raise RealMcapError("converted episodes do not share one video resolution")
     height, width = next(iter(shapes))
     episode_ids = [item.episode_id for item in converted]
+    video_window = task_config is not None
+    mode = AnnotationMode.TARGET_ONLY if task_config is None else task_config.mode
     manifest = {
-        "format": "robotwin_umi_target_only_extract_v1",
-        "profile": "target_only",
+        "format": "robotwin_umi_video_extract_v1"
+        if video_window
+        else "robotwin_umi_target_only_extract_v1",
+        "profile": mode.value,
+        "target_profile": (
+            "video_object"
+            if video_window and mode is AnnotationMode.TARGET_ONLY
+            else "grasp_manipulation"
+        ),
         "task": task,
-        "task_kind": "single_movable_target",
-        "target_profile": "grasp_manipulation",
+        **(
+            {"task_kind": "video_object" if video_window else "single_movable_target"}
+            if mode is AnnotationMode.TARGET_ONLY
+            else {}
+        ),
         "camera": OUTPUT_CAMERA,
         "source_camera_topic": CAMERA_TOPIC,
-        "timeline_source": "episode_metadata",
+        "timeline_source": "video_window" if video_window else "episode_metadata",
         "depth_available": False,
         "robot_state_available": False,
         "dataset_root": str(final_output.resolve()),
@@ -293,7 +379,7 @@ def _write_metadata(
                 "episode_index": item.episode_id,
                 "source_mcap": item.source.path.name,
                 "source_episode_index": item.source.values.get("episode_index"),
-                "target_only_events": item.timeline.events.to_json(),
+                **item.timeline.metadata,
             }
             for item in converted
         ],
@@ -360,11 +446,14 @@ def materialize_umi_mcap_dataset(
     task_text: str,
     task_text_zh: str,
     limit: int | None = None,
+    task_config: UmiTaskConfig | None = None,
 ) -> dict[str, Any]:
     """Atomically materialize a state-free UMI target-only dataset."""
 
     input_root = input_root.expanduser().resolve()
     output_root = output_root.expanduser().resolve()
+    if task_config is not None:
+        task_text, task_text_zh = task_config.task_text, task_config.task_text_zh
     if not input_root.is_dir():
         raise RealMcapError(f"source directory does not exist: {input_root}")
     if output_root.exists():
@@ -377,32 +466,49 @@ def materialize_umi_mcap_dataset(
         raise RealMcapError("limit must be positive")
     output_root.parent.mkdir(parents=True, exist_ok=True)
     sources = _discover_sources(input_root)
+    if task_config is not None:
+        missing = set(task_config.episodes) - {source.path.name for source in sources}
+        if missing:
+            raise RealMcapError(f"reviewed UMI sources are missing: {sorted(missing)}")
+        sources = [source for source in sources if source.path.name in task_config.episodes]
     if limit is not None:
         sources = sources[:limit]
 
-    staging = Path(
-        tempfile.mkdtemp(prefix=f".{output_root.name}.staging-", dir=output_root.parent)
-    )
+    staging = Path(tempfile.mkdtemp(prefix=f".{output_root.name}.staging-", dir=output_root.parent))
     converted: list[ConvertedUmiEpisode] = []
     global_index = 0
     try:
         for episode_id, source in enumerate(sources):
-            episode = read_umi_mcap_episode(source)
-            timeline = align_umi_timeline(episode)
+            episode = (
+                read_umi_mcap_episode(source)
+                if task_config is None
+                else read_umi_mcap_episode(source, require_grippers=False)
+            )
             chunk = f"chunk-{episode_id // 1000:03d}"
             stem = f"episode_{episode_id:06d}"
             video_path = (
-                staging
-                / "videos"
-                / chunk
-                / f"observation.images.{OUTPUT_CAMERA}"
-                / f"{stem}.mp4"
+                staging / "videos" / chunk / f"observation.images.{OUTPUT_CAMERA}" / f"{stem}.mp4"
             )
-            frame_count, width, height, fps = write_video(
-                episode.video_payloads,
-                episode.video_times_ns,
-                video_path,
-            )
+            if task_config is None:
+                timeline = align_umi_timeline(episode)
+                frame_count, width, height, fps = write_video(
+                    episode.video_payloads, episode.video_times_ns, video_path
+                )
+            else:
+                frames = decode_h264_frames(episode.video_payloads)
+                source_indices = tuple(cast(int, frame.pts) for frame in frames)
+                timestamps = episode.video_times_ns[list(source_indices)]
+                timeline = UmiTimeline(
+                    timestamps_s=((timestamps - timestamps[0]) / 1e9).astype(np.float32),
+                    events=VideoWindowEvents(
+                        task_config.episodes[source.path.name], 0, len(frames) - 1
+                    ),
+                    source_frame_indices=source_indices,
+                    source_frame_count=len(episode.video_payloads),
+                )
+                frame_count, width, height, fps = encode_video_frames(
+                    frames, timestamps, video_path
+                )
             if frame_count != len(timeline.timestamps_s):
                 raise RealMcapError("video and derived timeline frame counts differ")
             _write_frame_parquet(
@@ -410,6 +516,7 @@ def materialize_umi_mcap_dataset(
                 episode_id=episode_id,
                 global_start=global_index,
                 timestamps_s=timeline.timestamps_s,
+                source_frame_indices=timeline.source_frame_indices,
             )
             item = ConvertedUmiEpisode(
                 episode_id,
@@ -431,6 +538,7 @@ def materialize_umi_mcap_dataset(
             task_text_zh=task_text_zh,
             converted=converted,
             limit=limit,
+            task_config=task_config,
         )
         os.replace(staging, output_root)
     except BaseException:
@@ -440,7 +548,9 @@ def materialize_umi_mcap_dataset(
         "format_version": "robotwin_umi_conversion_summary_v1",
         "output_root": str(output_root),
         "task": task,
-        "profile": "target_only",
+        "profile": AnnotationMode.TARGET_ONLY.value
+        if task_config is None
+        else task_config.mode.value,
         "camera": OUTPUT_CAMERA,
         "episode_count": len(converted),
         "frame_count": sum(item.frame_count for item in converted),
@@ -458,19 +568,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--task-text", default="Pick up the object.")
     parser.add_argument("--task-text-zh", default="拿起物体。")
     parser.add_argument("--limit", type=int)
+    parser.add_argument(
+        "--task-config", type=Path, help="reviewed single-arm video task selection YAML"
+    )
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    task = args.task or args.input_root.name
     try:
         summary = materialize_umi_mcap_dataset(
             args.input_root,
             args.output_root,
-            task=args.task or args.input_root.name,
+            task=task,
             task_text=args.task_text,
             task_text_zh=args.task_text_zh,
             limit=args.limit,
+            task_config=None
+            if args.task_config is None
+            else load_umi_task_config(args.task_config, task),
         )
     except RealMcapError as exc:
         raise SystemExit(str(exc)) from exc

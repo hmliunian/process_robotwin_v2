@@ -17,6 +17,7 @@ class AnnotationMode(StrEnum):
 
     PICK_PLACE = "pick_place"
     TARGET_ONLY = "target_only"
+    TOOL_USE = "tool_use"
 
 
 class TimelineSource(StrEnum):
@@ -24,6 +25,7 @@ class TimelineSource(StrEnum):
 
     ROBOT_STATE = "robot_state"
     EPISODE_METADATA = "episode_metadata"
+    VIDEO_WINDOW = "video_window"
 
 
 class TargetProfile(StrEnum):
@@ -32,6 +34,7 @@ class TargetProfile(StrEnum):
     GRASP_MANIPULATION = "grasp_manipulation"
     CONTACT_PRESS = "contact_press"
     DOOR_OPEN = "door_open"
+    VIDEO_OBJECT = "video_object"
 
 
 class TargetOnlyTaskKind(StrEnum):
@@ -42,6 +45,7 @@ class TargetOnlyTaskKind(StrEnum):
     CONTACT_ACTION_SITE = "contact_action_site"
     ARTICULATED_ACTION_SITE = "articulated_action_site"
     DOOR_OPEN_ACTION_SITE = "door_open_action_site"
+    VIDEO_OBJECT = "video_object"
 
 
 def target_profile_for_task_kind(
@@ -67,6 +71,8 @@ def target_profile_for_task_kind(
         return TargetProfile.CONTACT_PRESS
     if resolved is TargetOnlyTaskKind.DOOR_OPEN_ACTION_SITE:
         return TargetProfile.DOOR_OPEN
+    if resolved is TargetOnlyTaskKind.VIDEO_OBJECT:
+        return TargetProfile.VIDEO_OBJECT
     return TargetProfile.GRASP_MANIPULATION
 
 
@@ -131,6 +137,10 @@ ANNOTATION_SPECS: dict[AnnotationMode, AnnotationSpec] = {
     AnnotationMode.TARGET_ONLY: AnnotationSpec(
         mode=AnnotationMode.TARGET_ONLY,
         required_object_roles=(ObjectRole.TARGET,),
+    ),
+    AnnotationMode.TOOL_USE: AnnotationSpec(
+        mode=AnnotationMode.TOOL_USE,
+        required_object_roles=(ObjectRole.TARGET, ObjectRole.RECEIVER),
     ),
 }
 
