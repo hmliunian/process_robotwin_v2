@@ -29,6 +29,7 @@ from .object_mask.temporal_qc import (
 NDArray = np.ndarray[Any, Any]
 
 INSTANCE_NAMES = ("target_0", "receiver_0", "gripper_left", "gripper_right")
+_ABRUPT_HOLD_EXPANSION_FACTOR = 2.0
 
 
 class SamStageError(RuntimeError):
@@ -144,6 +145,25 @@ def dilate_envelope(mask: NDArray, padding: int) -> NDArray:
                 column_start : column_start + width,
             ]
     return envelope
+
+
+def _abrupt_hold_expansion_frame(
+    masks: NDArray,
+    *,
+    start_frame: int,
+    end_frame: int,
+    reference_area: int,
+) -> int | None:
+    minimum_previous_area = max(1, reference_area // 2)
+    for frame_id in range(max(1, start_frame), end_frame + 1):
+        previous_area = int(masks[frame_id - 1].sum())
+        current_area = int(masks[frame_id].sum())
+        if (
+            previous_area >= minimum_previous_area
+            and current_area > previous_area * _ABRUPT_HOLD_EXPANSION_FACTOR
+        ):
+            return frame_id
+    return None
 
 
 def _empty_role(
@@ -281,6 +301,29 @@ def _run_role(
     expected_shape = (context.frame_count, *frame_shape)
     if native.shape != expected_shape:
         raise SamStageError(f"{role} native track has shape {native.shape}")
+
+    expansion_frame = _abrupt_hold_expansion_frame(
+        native,
+        start_frame=max(seed_frame + 1, temporal_qc_window.end + 1),
+        end_frame=output_window.end,
+        reference_area=int(seed_mask.sum()),
+    )
+    if expansion_frame is not None:
+        restart_frame = expansion_frame - 1
+        restarted = backend.propagate_mask(
+            resource_path,
+            native[restart_frame],
+            seed_frame=restart_frame,
+            frame_count=context.frame_count,
+            frame_shape=frame_shape,
+            tracking_window=(restart_frame, output_window.end),
+        ).astype(bool, copy=False)
+        if restarted.shape != expected_shape:
+            raise SamStageError(f"{role} restarted track has shape {restarted.shape}")
+        native = native.copy()
+        native[restart_frame : output_window.end + 1] = restarted[
+            restart_frame : output_window.end + 1
+        ]
 
     visible = compose_visible_mask(native, output_window)
     temporal_qc = evaluate_temporal_mask(

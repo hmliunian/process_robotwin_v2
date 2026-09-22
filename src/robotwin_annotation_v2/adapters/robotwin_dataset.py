@@ -13,7 +13,8 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
-from ..models import EpisodeRef
+from ..domain import TimelineSource
+from ..models import EpisodeRef, TargetOnlyEvents, VideoWindowEvents
 
 NDArray = np.ndarray[Any, Any]
 
@@ -46,6 +47,17 @@ class EpisodeState:
     gripper_states: NDArray
     eef_states: NDArray
     paths: EpisodePaths
+
+
+@dataclass(frozen=True)
+class EpisodeTimeline:
+    """State-free timeline declared by episode metadata."""
+
+    frame_count: int
+    task_text: str
+    events: TargetOnlyEvents | VideoWindowEvents
+    paths: EpisodePaths
+    source: Path
 
 
 class RoboTwinDataset:
@@ -86,6 +98,15 @@ class RoboTwinDataset:
                 f"dataset root does not match manifest: {self.root} != {manifest_root}"
             )
         return payload
+
+    @property
+    def timeline_source(self) -> TimelineSource:
+        try:
+            return TimelineSource(self.manifest.get("timeline_source", TimelineSource.ROBOT_STATE))
+        except (TypeError, ValueError) as exc:
+            raise DatasetError(
+                f"unsupported timeline_source: {self.manifest.get('timeline_source')!r}"
+            ) from exc
 
     @staticmethod
     def _chunk(episode_index: int) -> str:
@@ -134,13 +155,17 @@ class RoboTwinDataset:
             raise DatasetError(f"episode {episode_index} has no task text")
         return tasks[0].strip()
 
-    def load_state(self, ref: EpisodeRef) -> EpisodeState:
+    def _read_episode_frame(
+        self,
+        ref: EpisodeRef,
+        *extra_columns: str,
+    ) -> pd.DataFrame:
         paths = self.paths(ref)
         if not paths.parquet.is_file():
             raise DatasetError(f"episode parquet is missing: {paths.parquet}")
         frame = pd.read_parquet(
             paths.parquet,
-            columns=["frame_index", "episode_index", "observation.state"],
+            columns=["frame_index", "episode_index", *extra_columns],
         )
         if frame.empty:
             raise DatasetError(f"episode parquet is empty: {paths.parquet}")
@@ -150,6 +175,11 @@ class RoboTwinDataset:
         episode_indices = frame["episode_index"].to_numpy(dtype=np.int64)
         if not np.all(episode_indices == ref.episode_index):
             raise DatasetError("parquet episode_index does not match requested episode")
+        return frame
+
+    def load_state(self, ref: EpisodeRef) -> EpisodeState:
+        paths = self.paths(ref)
+        frame = self._read_episode_frame(ref, "observation.state")
         state = np.stack(frame["observation.state"].to_numpy()).astype(np.float64)
         if state.shape != (len(frame), 14):
             raise DatasetError(f"observation.state must be [T,14], got {state.shape}")
@@ -163,6 +193,60 @@ class RoboTwinDataset:
             gripper_states=grippers,
             eef_states=eef,
             paths=paths,
+        )
+
+    def load_episode_timeline(self, ref: EpisodeRef) -> EpisodeTimeline:
+        """Load checked video or close/hold events without robot kinematics."""
+
+        if self.timeline_source is TimelineSource.ROBOT_STATE:
+            raise DatasetError("dataset does not declare a metadata timeline")
+        payload = self._metadata_index().get(ref.episode_index)
+        if payload is None:
+            raise DatasetError(f"episode {ref.episode_index} is absent from episodes.jsonl")
+        video_window = self.timeline_source is TimelineSource.VIDEO_WINDOW
+        key = "video_events" if video_window else "target_only_events"
+        raw_events = payload.get(key)
+        if not isinstance(raw_events, dict):
+            raise DatasetError(f"episode {ref.episode_index} has no {key}")
+        required = (
+            {"active_arm", "t_start", "t_end"}
+            if video_window
+            else {"active_arm", "t_remove_start", "t_close_start", "t_close_end"}
+        )
+        allowed = required if video_window else required | {"t_reopen_start"}
+        if not required <= raw_events.keys() or not raw_events.keys() <= allowed:
+            raise DatasetError(f"episode {ref.episode_index} {key} fields are invalid")
+        frames = [value for name, value in raw_events.items() if name != "active_arm"]
+        if any(
+            value is not None and (isinstance(value, bool) or not isinstance(value, int))
+            for value in frames
+        ):
+            raise DatasetError(f"episode {ref.episode_index} event frames must be integers")
+        try:
+            events = (
+                VideoWindowEvents(**raw_events) if video_window else TargetOnlyEvents(**raw_events)
+            )
+        except (TypeError, ValueError) as exc:
+            raise DatasetError(f"episode {ref.episode_index} {key} are invalid: {exc}") from exc
+        frame_count = len(self._read_episode_frame(ref))
+        declared_count = payload.get("length")
+        if declared_count != frame_count:
+            raise DatasetError(
+                f"episode {ref.episode_index} metadata length {declared_count!r} "
+                f"!= parquet frame count {frame_count}"
+            )
+        try:
+            events.operation_window(frame_count)
+        except ValueError as exc:
+            raise DatasetError(
+                f"episode {ref.episode_index} {key} exceed its frames: {exc}"
+            ) from exc
+        return EpisodeTimeline(
+            frame_count=frame_count,
+            task_text=self.task_text(ref.episode_index),
+            events=events,
+            paths=self.paths(ref),
+            source=self.root / "meta" / "episodes.jsonl",
         )
 
     def read_frames(self, ref: EpisodeRef, frame_ids: Iterable[int]) -> dict[int, Image.Image]:
@@ -241,11 +325,15 @@ class RoboTwinDataset:
                 issues.append(f"episode {episode_index}: missing metadata")
             if all(path.is_file() for path in (paths.parquet, paths.video)):
                 try:
-                    state = self.load_state(ref)
+                    episode = (
+                        self.load_episode_timeline(ref)
+                        if self.timeline_source is not TimelineSource.ROBOT_STATE
+                        else self.load_state(ref)
+                    )
                     video_count, video_shape = self.video_info(ref)
-                    surplus = video_count - state.frame_count
+                    surplus = video_count - episode.frame_count
                     content[str(episode_index)] = {
-                        "usable_frame_count": state.frame_count,
+                        "usable_frame_count": episode.frame_count,
                         "raw_video_frame_count": video_count,
                         "raw_video_frame_surplus": surplus,
                         "frame_shape_hw": list(video_shape),
@@ -276,6 +364,7 @@ class RoboTwinDataset:
             "episode_count": len(ids),
             "episode_ids": list(ids),
             "usable_frame_count_source": "parquet",
+            "timeline_source": self.timeline_source.value,
             "content": content,
             "passed": not issues,
             "issues": issues,

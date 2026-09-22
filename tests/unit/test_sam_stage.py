@@ -261,6 +261,30 @@ class DiscontinuousHoldSamBackend(FakeSamBackend):
         return output
 
 
+class ExpandingHoldSamBackend(FakeSamBackend):
+    """Simulate one held-target propagation that suddenly absorbs the background."""
+
+    def propagate_mask(
+        self,
+        resource_path: Path,
+        seed_mask: np.ndarray,
+        *,
+        frame_count: int,
+        tracking_window: tuple[int, int],
+        **kwargs: Any,
+    ) -> np.ndarray:
+        output = super().propagate_mask(
+            resource_path,
+            seed_mask,
+            frame_count=frame_count,
+            tracking_window=tracking_window,
+            **kwargs,
+        )
+        if len(self.propagation_seed_frames) == 1:
+            output[12:] = True
+        return output
+
+
 def test_visible_composition_preserves_native_pixels_and_applies_window() -> None:
     native = np.zeros((4, 3, 3), dtype=bool)
     native[:, 0:2, 1:3] = True
@@ -368,6 +392,24 @@ def test_target_temporal_qc_does_not_quarantine_normal_hold_motion(
     hold_masks = result.target.visible_mask[hold_start : hold_end + 1]
     assert hold_masks.any(axis=(1, 2)).all()
     assert not np.array_equal(hold_masks[0], hold_masks[1])
+
+
+def test_target_only_sam_restarts_before_abrupt_hold_expansion() -> None:
+    backend = ExpandingHoldSamBackend()
+
+    result = run_sam_stage(
+        _target_only_context(),
+        _target_only_plan(),
+        backend,
+        Path("/tmp/fake-resource"),
+        frame_shape=FRAME_SHAPE,
+        mask_config=MaskConfig(0, 0),
+    )
+
+    assert backend.propagation_seed_frames == [0, 11]
+    assert backend.tracking_windows == [(0, 19), (11, 19)]
+    assert (result.target.native_track.sum(axis=(1, 2))[2:] == 4).all()
+    assert result.target.status is MaskStatus.OK
 
 
 def test_dilate_envelope_expands_seed_by_configured_radius() -> None:

@@ -12,6 +12,7 @@ from .timeline import (
     PickPlaceEvents,
     TargetOnlyEvents,
     TimelineEvents,
+    VideoWindowEvents,
     derive_episode_windows,
 )
 
@@ -24,6 +25,7 @@ class FramePurpose(StrEnum):
     PRE_GRASP_SEED_CANDIDATE = "pre_grasp_seed_candidate"
     POST_GRASP_CONTEXT = "post_grasp_context"
     PLACE_CONTEXT = "place_context"
+    INTERACTION_SEED_CANDIDATE = "interaction_seed_candidate"
 
 
 @dataclass(frozen=True)
@@ -73,7 +75,10 @@ class SemanticFrame:
 
     @property
     def seed_eligible(self) -> bool:
-        return self.purpose is FramePurpose.PRE_GRASP_SEED_CANDIDATE
+        return self.purpose in {
+            FramePurpose.PRE_GRASP_SEED_CANDIDATE,
+            FramePurpose.INTERACTION_SEED_CANDIDATE,
+        }
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -109,20 +114,25 @@ class LoopContext:
             raise ValueError("task_text must be non-empty")
         if self.frame_count < 1:
             raise ValueError("frame_count must be positive")
-        expected_type = (
-            PickPlaceEvents
-            if self.annotation_mode is AnnotationMode.PICK_PLACE
-            else TargetOnlyEvents
-        )
+        expected_type = {
+            AnnotationMode.PICK_PLACE: (PickPlaceEvents,),
+            AnnotationMode.TARGET_ONLY: (TargetOnlyEvents, VideoWindowEvents),
+            AnnotationMode.TOOL_USE: (VideoWindowEvents,),
+        }[self.annotation_mode]
         if not isinstance(self.events, expected_type):
             raise TypeError(
                 f"annotation mode {self.annotation_mode.value} requires "
-                f"{expected_type.__name__}, got {type(self.events).__name__}"
+                f"{', '.join(item.__name__ for item in expected_type)}, "
+                f"got {type(self.events).__name__}"
             )
         object.__setattr__(
             self,
             "windows",
-            derive_episode_windows(self.events, frame_count=self.frame_count),
+            derive_episode_windows(
+                self.events,
+                frame_count=self.frame_count,
+                include_receiver=self.annotation_spec.requires(ObjectRole.RECEIVER),
+            ),
         )
         if not self.semantic_frames:
             raise ValueError("semantic_frames must not be empty")
@@ -146,11 +156,13 @@ class LoopContext:
         return annotation_spec(self.annotation_mode)
 
     @property
-    def timeline_kind(self) -> Literal["pick_place", "close_hold"]:
+    def timeline_kind(self) -> Literal["pick_place", "close_hold", "video_window"]:
         """Stable JSON discriminator for the concrete event state machine."""
 
         if isinstance(self.events, PickPlaceEvents):
             return "pick_place"
+        if isinstance(self.events, VideoWindowEvents):
+            return "video_window"
         return "close_hold"
 
     def seed_candidates(self, role: RoleName) -> tuple[int, ...]:
@@ -164,7 +176,11 @@ class LoopContext:
 
     def to_json(self) -> dict[str, Any]:
         return {
-            "format_version": "robotwin_loop_context_v4",
+            "format_version": (
+                "robotwin_loop_context_v5"
+                if isinstance(self.events, VideoWindowEvents)
+                else "robotwin_loop_context_v4"
+            ),
             "annotation_mode": self.annotation_mode.value,
             "timeline_kind": self.timeline_kind,
             "required_object_roles": list(self.annotation_spec.required_role_names),

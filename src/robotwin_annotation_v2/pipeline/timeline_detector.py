@@ -102,6 +102,55 @@ def _motion_start(
     return close_start if start is None or start >= close_start else start
 
 
+def _target_only_close_boundaries(
+    gripper_values: NDArray,
+    *,
+    stable_frames: int,
+) -> tuple[int, int, int | None]:
+    filtered, close_start, close_end = _close_transition(
+        gripper_values,
+        stable_frames=stable_frames,
+    )
+    if not bool((filtered[:stable_frames] >= OPEN_THRESHOLD).all()):
+        raise StateLoopError("target-only gripper must begin stably open")
+    reopen_run = _first_run(
+        filtered >= OPEN_THRESHOLD,
+        start=close_end + 1,
+        length=stable_frames,
+    )
+    if reopen_run is None:
+        return close_start, close_end, None
+    last_closed = close_end + int(
+        np.flatnonzero(filtered[close_end:reopen_run] <= CLOSED_THRESHOLD)[-1]
+    )
+    return close_start, close_end, last_closed + 1
+
+
+def detect_gripper_target_only_events(
+    gripper_values: NDArray,
+    *,
+    arm: str,
+    operation_start: int = 0,
+    stable_frames: int = 3,
+) -> TargetOnlyEvents:
+    """Detect close/hold events when only gripper aperture is available."""
+
+    close_start, close_end, reopen_start = _target_only_close_boundaries(
+        gripper_values,
+        stable_frames=stable_frames,
+    )
+    try:
+        return TargetOnlyEvents(
+            active_arm=arm,  # type: ignore[arg-type]
+            t_remove_start=operation_start,
+            t_close_start=close_start,
+            t_close_end=close_end,
+            t_reopen_start=reopen_start,
+        )
+    except ValueError as exc:
+        raise StateLoopError(str(exc)) from exc
+
+
 def detect_loop_events(
     gripper_values: NDArray,
     eef_values: NDArray,
@@ -174,24 +223,10 @@ def detect_target_only_events(
     eef = np.asarray(eef_values, dtype=np.float64)
     if eef.shape != (gripper.size, 6):
         raise StateLoopError(f"eef_values must have shape {(gripper.size, 6)}")
-    filtered, close_start, close_end = _close_transition(
+    close_start, close_end, reopen_start = _target_only_close_boundaries(
         gripper,
         stable_frames=stable_frames,
     )
-    if not bool((filtered[:stable_frames] >= OPEN_THRESHOLD).all()):
-        raise StateLoopError("target-only gripper must begin stably open")
-    reopen_start: int | None = None
-    reopen_run = _first_run(
-        filtered >= OPEN_THRESHOLD,
-        start=close_end + 1,
-        length=stable_frames,
-    )
-    if reopen_run is not None:
-        last_closed = close_end + int(
-            np.flatnonzero(filtered[close_end:reopen_run] <= CLOSED_THRESHOLD)[-1]
-        )
-        reopen_start = last_closed + 1
-
     remove_start = _motion_start(
         eef,
         close_start=close_start,
@@ -297,6 +332,7 @@ __all__ = [
     "detect_arm_loops",
     "detect_episode_loop",
     "detect_episode_target_only",
+    "detect_gripper_target_only_events",
     "detect_loop_events",
     "detect_target_only_events",
 ]

@@ -61,5 +61,9 @@ run-parallel *process_args:
 convert-real input_root output_root *convert_args:
     @exec env PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" {{quote(python)}} scripts/convert_real_mcap_dataset.py "$@"
 
+# Convert UMI video plus gripper timing to a state-free target-only task layout.
+convert-umi input_root output_root *convert_args:
+    @exec env PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" {{quote(python)}} scripts/convert_umi_mcap_dataset.py "$@"
+
 check-gpu:
     nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv

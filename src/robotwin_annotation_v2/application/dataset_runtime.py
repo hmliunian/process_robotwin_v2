@@ -16,6 +16,7 @@ from robotwin_annotation_v2.adapters.robotwin_dataset import RoboTwinDataset
 from robotwin_annotation_v2.application.dataset_input import (
     DatasetTarget,
     read_dataset_task_kind,
+    read_dataset_timeline_source,
     resolve_dataset_input,
 )
 from robotwin_annotation_v2.application.dataset_pipeline import (
@@ -52,6 +53,7 @@ from robotwin_annotation_v2.config import (
 from robotwin_annotation_v2.domain import (
     AnnotationMode,
     GripperBackend,
+    TimelineSource,
 )
 from robotwin_annotation_v2.models import ProcessRequest
 from robotwin_annotation_v2.terminal_ui import UI_MODES, ProcessUI, create_process_ui
@@ -64,11 +66,7 @@ from robotwin_annotation_v2.urdf_gripper_publisher import (
 GRIPPER_BACKENDS = ("sam", "urdf")
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_BUNDLED_URDF_PATH = (
-    PROJECT_ROOT
-    / "configs"
-    / "assets"
-    / "aloha-agilex"
-    / "arx5_description_isaac_gripper.urdf"
+    PROJECT_ROOT / "configs" / "assets" / "aloha-agilex" / "arx5_description_isaac_gripper.urdf"
 )
 DEFAULT_PROCESS_CONFIG = PROJECT_ROOT / "configs" / "process.yaml"
 CHUNK_PATTERN = _discovery.CHUNK_PATTERN
@@ -152,6 +150,7 @@ def build_dynamic_manifest(
         episodes=episodes,
         measure_episode_fn=_measure_episode,
         task_kind=read_dataset_task_kind(root),
+        timeline_source=read_dataset_timeline_source(root),
     )
 
 
@@ -313,11 +312,7 @@ def process_dataset(
         raise ValueError(
             "object_source_only and deprecated target_receiver_only cannot both be set"
         )
-    source_only = (
-        target_receiver_only
-        if object_source_only is None
-        else bool(object_source_only)
-    )
+    source_only = target_receiver_only if object_source_only is None else bool(object_source_only)
     hooks = SamWorkflowHooks(
         runtime_loader=_load_sam_runtime,
         discover_episodes=discover_episodes,
@@ -414,6 +409,7 @@ def process_live_urdf_pipeline(
         reporter=reporter,
     )
 
+
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset-root", type=Path)
@@ -473,6 +469,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Use the SAM gripper stage or generate it from URDF after target/receiver",
     )
     parser.add_argument(
+        "--object-source-only",
+        action="store_true",
+        help="Run Qwen and object SAM only; skip gripper masks and canonical publication",
+    )
+    parser.add_argument(
         "--source-run-dir",
         help=(
             "Optional frozen run containing QC-passed target/receiver masks; when "
@@ -481,10 +482,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--urdf-path",
-        help=(
-            "RoboTwin Aloha URDF; defaults to the bundled render asset for the "
-            "URDF backend"
-        ),
+        help=("RoboTwin Aloha URDF; defaults to the bundled render asset for the URDF backend"),
     )
     parser.add_argument("--urdf-mesh-root", type=Path)
     parser.add_argument("--urdf-depth-tolerance-mm", type=float)
@@ -711,10 +709,16 @@ def _run_from_args(
         raise ValueError("--target-only/--pick-place require --data-path")
     config = getattr(args, "bound_config", None) or load_config(args.config)
     config = _apply_parallel_cli_overrides(config, args)
+    if (
+        config.dataset.manifest_data is not None
+        and config.dataset.manifest_data.get("timeline_source") == TimelineSource.VIDEO_WINDOW.value
+        and not args.object_source_only
+    ):
+        raise ValueError("video_window timelines require --object-source-only")
     output_root = config.output_root if args.output_dir is None else args.output_dir
     source_run_dir = _optional_cli_path(args.source_run_dir)
     urdf_path = _optional_cli_path(args.urdf_path)
-    if args.gripper_backend == "sam":
+    if args.gripper_backend == "sam" or args.object_source_only:
         if (
             source_run_dir is not None
             or urdf_path is not None
@@ -729,9 +733,7 @@ def _run_from_args(
             raise ValueError("URDF-only options require --gripper-backend urdf")
         if args.dry_run or args.resume:
             raise ValueError("--dry-run/--resume are only supported by the URDF backend")
-        dataset_root = (
-            config.dataset.root if args.dataset_root is None else args.dataset_root
-        )
+        dataset_root = config.dataset.root if args.dataset_root is None else args.dataset_root
         task = config.dataset.task if args.task is None else args.task
         camera = config.dataset.camera if args.camera is None else args.camera
         request = ProcessRequest(
@@ -759,6 +761,7 @@ def _run_from_args(
                 episode_ids=selected.episode_ids,
                 force=args.force,
                 skip_render=selected.skip_render,
+                object_source_only=args.object_source_only,
                 reporter=reporter,
             )
 
@@ -777,12 +780,8 @@ def _run_from_args(
             )
         if args.dry_run and args.resume:
             raise ValueError("--dry-run and --resume cannot be used together")
-        resolved_urdf_path = (
-            DEFAULT_BUNDLED_URDF_PATH if urdf_path is None else urdf_path
-        )
-        selected_episode_ids = (
-            None if args.episode_ids is None else tuple(args.episode_ids)
-        )
+        resolved_urdf_path = DEFAULT_BUNDLED_URDF_PATH if urdf_path is None else urdf_path
+        selected_episode_ids = None if args.episode_ids is None else tuple(args.episode_ids)
         depth_tolerance_mm = (
             DEFAULT_URDF_DEPTH_TOLERANCE_MM
             if args.urdf_depth_tolerance_mm is None
@@ -791,12 +790,9 @@ def _run_from_args(
         if source_run_dir is None:
             if args.dry_run or args.resume:
                 raise ValueError(
-                    "live URDF mode is fresh-only; --dry-run/--resume require "
-                    "--source-run-dir"
+                    "live URDF mode is fresh-only; --dry-run/--resume require --source-run-dir"
                 )
-            dataset_root = (
-                config.dataset.root if args.dataset_root is None else args.dataset_root
-            )
+            dataset_root = config.dataset.root if args.dataset_root is None else args.dataset_root
             task = config.dataset.task if args.task is None else args.task
             camera = config.dataset.camera if args.camera is None else args.camera
             request = ProcessRequest(
@@ -854,16 +850,8 @@ def _run_from_args(
                 if args.dataset_root is None
                 else args.dataset_root
             )
-            task = (
-                str(source_summary.get("task", ""))
-                if args.task is None
-                else args.task
-            )
-            camera = (
-                str(source_summary.get("camera", ""))
-                if args.camera is None
-                else args.camera
-            )
+            task = str(source_summary.get("task", "")) if args.task is None else args.task
+            camera = str(source_summary.get("camera", "")) if args.camera is None else args.camera
             if not task or not camera:
                 raise ValueError("source process summary does not define task/camera")
             request = ProcessRequest(

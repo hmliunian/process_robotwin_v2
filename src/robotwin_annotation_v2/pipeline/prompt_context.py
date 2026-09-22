@@ -8,7 +8,7 @@ other's business rules.
 
 from __future__ import annotations
 
-from ..models import LoopContext, PickPlaceEvents, TargetOnlyEvents
+from ..models import LoopContext, PickPlaceEvents, TargetOnlyEvents, VideoWindowEvents
 
 
 def timeline_prompt_fields(context: LoopContext) -> dict[str, str]:
@@ -24,6 +24,12 @@ def timeline_prompt_fields(context: LoopContext) -> dict[str, str]:
         "active_arm": events.active_arm,
         "episode_end": str(context.frame_count - 1),
     }
+    if isinstance(events, VideoWindowEvents):
+        return {
+            **common,
+            "operation_start": str(events.t_start),
+            "operation_end": str(events.t_end),
+        }
     if isinstance(events, TargetOnlyEvents):
         hold = events.target_hold_window(context.frame_count)
         return {

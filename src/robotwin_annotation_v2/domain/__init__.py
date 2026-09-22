@@ -8,6 +8,7 @@ from .annotation_spec import (
     ObjectRole,
     TargetOnlyTaskKind,
     TargetProfile,
+    TimelineSource,
     annotation_spec,
     target_profile_for_task_kind,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "ObjectRole",
     "TargetOnlyTaskKind",
     "TargetProfile",
+    "TimelineSource",
     "annotation_spec",
     "target_profile_for_task_kind",
 ]

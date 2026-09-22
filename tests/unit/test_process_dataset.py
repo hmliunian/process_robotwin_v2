@@ -310,6 +310,7 @@ def _cli_config(
             root=tmp_path / "configured-dataset",
             task="configured-task",
             camera="cam_high",
+            manifest_data=None,
         ),
         sam3=SimpleNamespace(gpus=(2,)),
         parallel=ParallelConfig(),
@@ -405,12 +406,37 @@ def test_dynamic_manifest_preserves_typed_task_kind(tmp_path: Path) -> None:
     assert manifest["task_kind"] == "contact_action_site"
 
 
+def test_dynamic_manifest_preserves_timeline_source(tmp_path: Path) -> None:
+    episode = DiscoveredEpisode(
+        episode_id=7,
+        parquet=tmp_path / "episode_000007.parquet",
+        video=tmp_path / "episode_000007.mp4",
+        sidecar=tmp_path / "episode_000007.hdf5",
+    )
+
+    manifest = build_dynamic_manifest(
+        tmp_path,
+        task="task",
+        camera="cam_high",
+        episodes=(episode,),
+        measure_episode_fn=lambda _episode: (24, (240, 320), 0),
+        timeline_source="episode_metadata",
+    )
+
+    assert manifest["timeline_source"] == "episode_metadata"
+
+
 def test_runtime_dynamic_manifest_copies_extract_task_kind(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     (tmp_path / "EXTRACT_MANIFEST.json").write_text(
-        json.dumps({"task_kind": "articulated_action_site"}),
+        json.dumps(
+            {
+                "task_kind": "articulated_action_site",
+                "timeline_source": "episode_metadata",
+            }
+        ),
         encoding="utf-8",
     )
     episode = DiscoveredEpisode(
@@ -433,6 +459,7 @@ def test_runtime_dynamic_manifest_copies_extract_task_kind(
     )
 
     assert manifest["task_kind"] == "articulated_action_site"
+    assert manifest["timeline_source"] == "episode_metadata"
 
 
 def test_process_dataset_reports_sam_stages_without_embedded_json(
@@ -522,12 +549,19 @@ def test_process_dataset_reports_sam_stages_without_embedded_json(
     assert backend_shutdown == [True]
 
 
+@pytest.mark.parametrize("timeline_source", ["robot_state", "video_window"])
+@pytest.mark.parametrize("skip_render", [False, True])
 def test_process_dataset_target_receiver_only_skips_gripper_and_uses_sam_resume(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    timeline_source: str,
+    skip_render: bool,
 ) -> None:
     dataset = tmp_path / "dataset"
     _touch_episode(dataset, 7)
+    (dataset / "EXTRACT_MANIFEST.json").write_text(
+        json.dumps({"timeline_source": timeline_source})
+    )
     monkeypatch.setattr(
         process_module,
         "_measure_episode",
@@ -556,6 +590,13 @@ def test_process_dataset_target_receiver_only_skips_gripper_and_uses_sam_resume(
         run_qwen=lambda *_args: calls.append("qwen"),
     )
     monkeypatch.setattr(process_module, "_load_sam_runtime", lambda: runtime)
+    render_calls: list[tuple[int, ...]] = []
+
+    def render_objects(*_args: Any, **kwargs: Any) -> dict[str, Any]:
+        render_calls.append(kwargs["episode_ids"])
+        return {"status": "completed"}
+
+    monkeypatch.setattr(process_module, "_render_processed", render_objects)
 
     summary = process_module.process_dataset(
         process_module.load_config(Path("configs/pilot_move_pillbottle_pad.yaml")),
@@ -565,7 +606,7 @@ def test_process_dataset_target_receiver_only_skips_gripper_and_uses_sam_resume(
         output_root=tmp_path / "output",
         run_id="target-receiver-source",
         episode_ids=(7,),
-        skip_render=True,
+        skip_render=skip_render,
         target_receiver_only=True,
     )
 
@@ -583,6 +624,9 @@ def test_process_dataset_target_receiver_only_skips_gripper_and_uses_sam_resume(
     assert summary["gripper_backend"] is None
     assert summary["backend"] == {"object_masks": "sam", "gripper": None}
     assert summary["stage_mode"] == "object_source_only"
+    assert render_calls == (
+        [(7,)] if timeline_source == "video_window" and not skip_render else []
+    )
 
 
 def test_parallel_sam_summary_records_pool_and_unhealthy_failure(
@@ -816,6 +860,7 @@ def test_parse_args_defaults_to_urdf_and_preserves_just_sentinel_paths() -> None
     )
 
     assert args.gripper_backend == "urdf"
+    assert args.object_source_only is False
     assert args.config == process_module.DEFAULT_PROCESS_CONFIG
     assert args.output_dir is None
     assert args.urdf_depth_tolerance_mm is None
@@ -840,6 +885,13 @@ def test_parse_args_accepts_parallel_sam_controls() -> None:
     assert args.sam_worker_gpus == (1, 4, 7)
     assert args.qwen_max_in_flight == 3
     assert process_module._parse_args(["--sam-worker-gpus", ""]).sam_worker_gpus == ()
+
+
+def test_parse_args_accepts_object_source_only() -> None:
+    args = process_module._parse_args(["--object-source-only"])
+
+    assert args.object_source_only is True
+    assert args.gripper_backend == "urdf"
 
 
 @pytest.mark.parametrize(
@@ -1190,6 +1242,45 @@ def test_main_legacy_cli_dispatches_sam_without_urdf_path(
     assert calls["force"] is False
     assert calls["skip_render"] is False
     assert isinstance(calls["reporter"], process_module.ProcessUI)
+
+
+def test_main_cli_dispatches_object_source_without_urdf(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _cli_config(tmp_path)
+    calls: dict[str, Any] = {}
+
+    def fake_process(received_config: Any, **kwargs: Any) -> dict[str, Any]:
+        calls["config"] = received_config
+        calls.update(kwargs)
+        return {"passed": True, "stage_mode": "object_source_only"}
+
+    monkeypatch.setattr(process_module, "load_config", lambda _path: config)
+    monkeypatch.setattr(process_module, "process_dataset", fake_process)
+    monkeypatch.setattr(
+        process_module,
+        "process_live_urdf_pipeline",
+        lambda **_kwargs: pytest.fail("object-source CLI must not enter live URDF mode"),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "process_dataset.py",
+            "--object-source-only",
+            "--dataset-root",
+            str(tmp_path / "dataset"),
+            "--output-dir",
+            str(tmp_path / "output"),
+        ],
+    )
+
+    process_module.main()
+
+    assert calls["config"] is config
+    assert calls["object_source_only"] is True
+    assert calls["dataset_root"] == tmp_path / "dataset"
 
 
 def test_cli_uses_config_output_root_without_explicit_override(

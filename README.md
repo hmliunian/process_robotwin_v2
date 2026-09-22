@@ -33,7 +33,8 @@ just process DATASET_ROOT --episode-ids EPISODE_ID --ui plain
 
 `just process` 会从 manifest 推断 mode 和 target profile。默认 Qwen runtime 使用配置中的 API；
 环境变量 `QWEN_API_KEY` 优先于 Git 忽略的本地 secret 文件。默认 gripper backend 是 URDF，
-因此需要 depth。没有 depth 的 pick-place 数据可使用 `--gripper-backend sam`。
+因此需要 depth。没有 depth 的 pick-place 数据可使用 `--gripper-backend sam`；只需要对象
+mask 时使用 `--object-source-only`，它会跳过 gripper 与 canonical publication。
 
 结果写入 `artifacts/runs/<run-id>/`。机器可读入口是 `process_summary.json`，overlay 和 review
 sheets 位于 `rendered_videos/`。

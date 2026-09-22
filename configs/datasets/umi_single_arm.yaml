@@ -1,0 +1,102 @@
+# Reviewed single-arm UMI selection; source filenames are relative to each task directory.
+# Video-window semantics do not require gripper or robot state.
+version: 1
+excluded:
+  wipe_real:
+    01af5625e4b77cedb925ca5ef69cd4a4.mcap: Other hand may steady the tray; exclude conservatively.
+tasks:
+  push_real:
+    annotation_mode: target_only
+    task_text: >-
+      Use one gripper to open or close a drawer. Target: the complete independent handle or knob directly driven by the active gripper. Only if no separable handle exists, use the moving drawer front panel. Follow the actual video direction, not the directory verb. Do not select the drawer interior, whole cabinet, or neighboring handles.
+    task_text_zh: 单手操作抽屉，标注实际被驱动的完整把手；无独立把手时标移动前面板。
+    episodes:
+      134586a596f9f9c0073a3b5d9572dae4.mcap: right
+      10a0c0cadbaf8a0324e6498b49991bb5.mcap: right
+      129c155b86632f70dc840563951f1f64.mcap: right
+      02f0361398b68292c48797bde32ea5d6.mcap: right
+      07779029f76f393073ec4ee7ee8673f4.mcap: right
+      0b6ea5aaef55bd600d3596cbd6499500.mcap: right
+      1117ca833a62090ddfd6d21dc2c3f030.mcap: right
+      107fb7a46c627d59c93fda420d1b06e9.mcap: right
+      0afb7de7f000d6d126144c990f98e38b.mcap: right
+      1199f43d5991947bba87a63453d3fd5e.mcap: right
+  pull_real:
+    annotation_mode: target_only
+    task_text: >-
+      Use one gripper to open or close a cabinet or appliance door. Target: the complete separable handle directly driven by the active gripper, including its attached mounting parts. Only if no separable handle exists, use the moving door panel. Follow the actual action, not the directory verb. Do not select the cabinet body or an adjacent door.
+    task_text_zh: 单手操作柜门或家电门，标注被驱动的完整把手；无独立把手时标移动门板。
+    episodes:
+      1434f54744173f0f3c16f47cc986b3ea.mcap: right
+      156b9f85d46a0f20c7fb5b64f9816c79.mcap: right
+      03c4d4a0ea4f0416779be276a38e84be.mcap: right
+      0abffe6d86c283f1a6134c56382e908b.mcap: right
+      135cddc71ba92c0860248582e6f8ff1e.mcap: right
+      0b8639216166de719b3f7b5d0d726ec2.mcap: right
+      0ef14cc17f4b4a882cfa71efaaa466d8.mcap: left
+      0963bbce5e0e134cf9a48e8893f7511f.mcap: left
+      151510703ab656cb6e6b0e6f89b8940e.mcap: left
+      17f2c42e58add658036bd7e38af8dd79.mcap: right
+  turn_over_real:
+    annotation_mode: target_only
+    task_text: >-
+      Turn over an object with one gripper. Target: the entire object actually picked up and flipped, including all visible connected parts. Use before, during and after flipping evidence to distinguish it from supporting furniture, containers and nearby objects. Only the manipulated object is required.
+    task_text_zh: 单手翻转物体，标注被翻转的完整物体，不标支撑家具或周围容器。
+    episodes:
+      00cf9a6019d77db2e462cb5bd34c7675.mcap: right
+      04f2d44456591ca77853c51ad83737d4.mcap: right
+      03967e9f019f9c1fd38e8f9f1414bc90.mcap: left
+      0408733cf5d1decbf4bbd7ba5407f13c.mcap: left
+      068eda03e5fa9992415a981683769516.mcap: right
+      0433c51f93185d1b9cb5b31b3b6bcd8b.mcap: right
+      044a78697fc7709dbbbdcf1ce3c6ad7f.mcap: right
+      05e7f6f01d9ed4bc7a3f1f28945a54fc.mcap: right
+      005dcf21f510302f761cc3713a155471.mcap: right
+      0620da1c1e192816b4f9abdf3c749d42.mcap: right
+  scoop_real:
+    annotation_mode: tool_use
+    task_text: >-
+      Perform a scooping action with a tool already held by one gripper. Target: the complete held spoon, scoop or ladle, including its visible handle and working head. Receiver: the independent vessel that the working tool enters during scooping, not the furniture supporting the vessel. No grasp or release event is required. Ignore any object held by the idle hand.
+    task_text_zh: 单手持工具舀取；target 为完整工具，receiver 为工具进入的独立容器。
+    episodes:
+      00e5a298d8dc141b910bf2c360ab68d5.mcap: right
+      0cbec52e9166196f9635f26acb6b1a3c.mcap: right
+      174279a1cb18e3ecfde0b0900ad2a178.mcap: right
+      0eea109f7b26e6cc52f9445caf8128f5.mcap: right
+      0955ecf1671379e3c84b0faed47cdee7.mcap: right
+      15533ccad2c2e42b87273b63fe14f31d.mcap: left
+      09a636cdb340663eb44abc4fd8b792f0.mcap: left
+      178b2d30761bebaad35ea6a5c41fa18a.mcap: left
+      1f8bec4384de2f0139834cb6c7f6d0fe.mcap: left
+      0b50784b0c9a5c3e155149007532e8e5.mcap: left
+  stir_real:
+    annotation_mode: tool_use
+    task_text: >-
+      Stir inside a container with a tool already held by one gripper. Target: the entire held spoon, stirrer or spatula, including all visible shaft and head pixels. Receiver: the complete cup, bowl or other independent container in which stirring occurs, not its contents or the supporting furniture. No grasp or release event is required. Ignore any idle-hand object.
+    task_text_zh: 单手搅拌；target 为完整搅拌工具，receiver 为被搅拌的完整容器。
+    episodes:
+      123f27bb0436e70f3b3d19c111e80b02.mcap: left
+      090a8fc5ea35e5644d9772ed6d4106f6.mcap: left
+      073678a127f346c9f44680e1b9951b3e.mcap: left
+      0bd8368c84dcd7ffac7b31b1131a3e17.mcap: left
+      1437e3bba8df66d95a560717b667733e.mcap: right
+      0f77c795edd3a4b3d165eee5ea12a4ef.mcap: left
+      007aacd7e31c7e57d1ad1c7e656184ac.mcap: left
+      0f24bf78f8cea716a49b023a926dc5f5.mcap: left
+      0d2278f84c968e9f68dae35bc0b58eb3.mcap: right
+      0f3e70a78f07fd163e7150f1beb75a3c.mcap: left
+  wipe_real:
+    annotation_mode: tool_use
+    task_text: >-
+      Wipe a surface with a cleaning tool already held by one gripper. Target: the complete held cleaning cloth or sponge, excluding the gripper. Receiver: the complete independent physical object being wiped, such as a chair, sofa, rack or table; an independently bounded removable surface is also eligible. Do not label an arbitrary contact patch, wiping trajectory, nearby cloth, or surrounding room. No grasp or release event is required.
+    task_text_zh: 单手擦拭；target 为完整清洁工具，receiver 为被擦拭的独立物体或有真实边界的独立表面。
+    episodes:
+      040fd426fc7fc9eef451c177c0dcd1cc.mcap: right
+      0084e120a7e9de4501e89d64e2b9c8f8.mcap: right
+      033160e48dde8ff428c384129dc1c3ed.mcap: right
+      0479a9b7f5d0e1385cd4242d087d1597.mcap: right
+      05edb9a106306e1c4255dbb7fedf3a0b.mcap: left
+      02e2aed591c72d7c256bd1a0e906d856.mcap: right
+      01d0bc08e3e7a51b59a3e577c6849e7d.mcap: left
+      03c2229220c27bd4f14b9840bf3be8f7.mcap: left
+      04bb5e529f2264fe0e83eb32210d594f.mcap: right

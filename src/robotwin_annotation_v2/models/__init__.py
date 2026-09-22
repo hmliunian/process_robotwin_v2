@@ -33,6 +33,7 @@ from .timeline import (
     PickPlaceEvents,
     TargetOnlyEvents,
     TimelineEvents,
+    VideoWindowEvents,
     derive_episode_windows,
     derive_target_hold_window,
 )
@@ -67,6 +68,7 @@ __all__ = [
     "SemanticStatus",
     "TargetOnlyEvents",
     "TimelineEvents",
+    "VideoWindowEvents",
     "derive_episode_windows",
     "derive_target_hold_window",
     "normalize_query",

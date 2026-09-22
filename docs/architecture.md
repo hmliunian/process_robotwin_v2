@@ -15,7 +15,7 @@ EXTRACT_MANIFEST.json + episode files
   -> 渲染 overlays 与 review sheets
 ```
 
-`configs/process.yaml` 由一个 defaults block 和四个 overlay 组成，不保存 dataset identity。
+`configs/process.yaml` 由共享 defaults 和各工作流 overlay 组成，不保存 dataset identity。
 运行时由 `DatasetBinding` 提供 root、task、camera、episode selection 和 extract manifest；
 `bind_dataset()` 生成本次运行使用的 immutable `PipelineConfig`。
 
@@ -25,6 +25,8 @@ EXTRACT_MANIFEST.json + episode files
 | `target_only` | `target_only` | `grasp_manipulation` | target |
 | `contact_press` | `target_only` | `contact_press` | target |
 | `door_open` | `target_only` | `door_open` | target |
+| `video_object` | `target_only` | `video_object` | target |
+| `tool_use` | `tool_use` | `grasp_manipulation` | target, receiver |
 
 Annotation mode 决定角色数和 timeline；target profile 只细化 target identity 与 prompts。
 Specialized profile 不能用于 `target_only` 以外的 mode。
@@ -33,10 +35,18 @@ Specialized profile 不能用于 `target_only` 以外的 mode。
 
 ### State timeline
 
-Parquet state 是 frame-count authority。RGB 可以包含 manifest 声明的尾帧 surplus，该部分会被
+Parquet 行数是 frame-count authority。RGB 可以包含 manifest 声明的尾帧 surplus，该部分会被
 忽略。Stage 1 推导一个 active arm 和有序事件边界。Pick-place 要求
 close/transport/reopen；target-only 要求 close-and-hold，并允许记录稍后的 reopen。只有标记为
 `seed_candidate=yes` 的帧能成为 semantic seed。
+
+UMI 单臂物体标注可显式声明 `timeline_source=video_window`。这种输入不要求
+夹爪开合或机械臂状态，而由逐段审核的 metadata 声明 active arm 和有效视频窗口。
+`video_window` 只允许 object-source-only，均匀抽取窗口内的可见候选，不伪造抓取事件。
+它使用 `robotwin_loop_context_v5`，target 和适用的 receiver 都在完整窗口内跟踪；
+没有确认的 held 区间，因此非空 mask 使用普通 visible 编码 1。已有 v1–v4 合同不变。
+`tool_use` 的 target 是完整工具，receiver 是被工具作用的独立容器或有明确边界的表面，
+不要求发生放置或松开。具体对象定义保存在任务配置中。
 
 输出 `loop.json`，包含 annotation mode、required roles、事件、输出窗口和 sparse semantic
 frames。无效或含糊的 state 会 fail closed。
@@ -91,7 +101,7 @@ source inputs、artifacts、assets 和 implementation identity 的 hashes。
     run_manifest.json
     frame_provenance.json
     target_0/...
-    receiver_0/...        # 仅 pick-place
+    receiver_0/...        # pick-place 或 tool-use
     gripper_<active>/...
   rendered_videos/
 ```

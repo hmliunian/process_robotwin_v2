@@ -4,8 +4,12 @@ from pathlib import Path
 
 import numpy as np
 
-from robotwin_annotation_v2.adapters.robotwin_dataset import EpisodePaths, EpisodeState
-from robotwin_annotation_v2.domain import AnnotationMode
+from robotwin_annotation_v2.adapters.robotwin_dataset import (
+    EpisodePaths,
+    EpisodeState,
+    EpisodeTimeline,
+)
+from robotwin_annotation_v2.domain import AnnotationMode, TimelineSource
 from robotwin_annotation_v2.models import (
     EpisodeRef,
     FramePurpose,
@@ -187,6 +191,37 @@ def test_build_loop_context_dispatches_target_only_timeline() -> None:
     assert context.timeline_kind == "close_hold"
     assert context.windows.gripper.end == frame_count - 1
     assert context.windows.receiver is None
+
+
+def test_build_loop_context_uses_declared_metadata_timeline() -> None:
+    paths = EpisodePaths(Path("frames.parquet"), Path("video.mp4"), Path("sidecar.hdf5"))
+    timeline = EpisodeTimeline(
+        frame_count=20,
+        task_text="pick up the object",
+        events=TargetOnlyEvents("right", 0, 6, 9),
+        paths=paths,
+        source=Path("episodes.jsonl"),
+    )
+
+    class DatasetStub:
+        timeline_source = TimelineSource.EPISODE_METADATA
+
+        def load_episode_timeline(self, _ref: object) -> EpisodeTimeline:
+            return timeline
+
+        def load_state(self, _ref: object) -> EpisodeState:
+            raise AssertionError("metadata timelines must not load robot state")
+
+    context = build_loop_context(
+        DatasetStub(),  # type: ignore[arg-type]
+        ref=EpisodeRef("pick_up_real", 0, "cam_high"),
+        annotation_mode=AnnotationMode.TARGET_ONLY,
+    )
+
+    assert context.events == timeline.events
+    assert context.windows.target.to_json() == [0, 19]
+    assert context.windows.receiver is None
+    assert context.state_source == "episodes.jsonl"
 
 
 def test_arm_detector_keeps_multiple_loops_visible() -> None:

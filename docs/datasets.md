@@ -81,3 +81,15 @@ just convert-real INPUT_ROOT OUTPUT_ROOT --limit 1
 
 Converter 只选择标记为 `complete_pick_place` 的记录，拒绝覆盖已有 output。转换结果没有 depth，
 因此应使用 SAM gripper backend。
+
+UMI 的 target-only 任务只提取 head-left RGB，并用左右夹爪各一个 aperture 信号派生真实的
+close/hold 边界；输出 Parquet 不包含机械臂 joint、EEF、state 或 action：
+
+```bash
+just convert-umi INPUT_ROOT OUTPUT_ROOT
+just process OUTPUT_ROOT --object-source-only --ui plain
+```
+
+转换后的 `timeline_source=episode_metadata`，target window 保守覆盖完整 episode；
+`--object-source-only` 仅生成 target/receiver 对象源，其中 target-only 的 receiver 为 N/A，
+不运行 gripper mask 或四通道 canonical publication。

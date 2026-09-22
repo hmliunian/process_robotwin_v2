@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Literal, cast
 
 import numpy as np
 
-from ..domain import AnnotationMode, annotation_spec
+from ..domain import AnnotationMode, TimelineSource, annotation_spec
 from ..models import (
     EpisodeRef,
     FramePurpose,
@@ -15,6 +15,7 @@ from ..models import (
     SemanticFrame,
     TargetOnlyEvents,
     TimelineEvents,
+    VideoWindowEvents,
     derive_episode_windows,
 )
 from . import timeline_detector as _timeline_detector
@@ -66,6 +67,20 @@ def sample_semantic_frames(
         raise ValueError("seed_count must be positive")
     if seed_safety_margin < 0:
         raise ValueError("seed_safety_margin must be non-negative")
+    if isinstance(events, VideoWindowEvents):
+        if mode is AnnotationMode.PICK_PLACE:
+            raise ValueError("pick_place semantic sampling requires PickPlaceEvents")
+        window = events.operation_window(frame_count)
+        roles = cast(
+            tuple[Literal["target", "receiver"], ...],
+            annotation_spec(mode).required_role_names,
+        )
+        return tuple(
+            SemanticFrame(frame_id, FramePurpose.INTERACTION_SEED_CANDIDATE, roles)
+            for frame_id in _uniform_frames(window.start, window.end, max(8, seed_count))
+        )
+    if mode is AnnotationMode.TOOL_USE:
+        raise ValueError("tool_use semantic sampling requires VideoWindowEvents")
     if mode is AnnotationMode.PICK_PLACE and not isinstance(events, PickPlaceEvents):
         raise ValueError("pick_place semantic sampling requires PickPlaceEvents")
     if mode is AnnotationMode.TARGET_ONLY and not isinstance(events, TargetOnlyEvents):
@@ -140,24 +155,43 @@ def build_loop_context(
 ) -> LoopContext:
     """Run the one mode-dispatch boundary for Stage 1."""
 
-    state = dataset.load_state(ref)
     mode = AnnotationMode(annotation_mode)
-    if mode is AnnotationMode.PICK_PLACE:
-        events: TimelineEvents = detect_episode_loop(state)
+    events: TimelineEvents
+    if (
+        getattr(dataset, "timeline_source", TimelineSource.ROBOT_STATE)
+        is not TimelineSource.ROBOT_STATE
+    ):
+        timeline = dataset.load_episode_timeline(ref)
+        events = timeline.events
+        frame_count = timeline.frame_count
+        task_text = timeline.task_text
+        state_source = str(timeline.source)
+        video_source = str(timeline.paths.video)
     else:
-        events = detect_episode_target_only(state)
+        if mode is AnnotationMode.TOOL_USE:
+            raise ValueError("tool_use requires a video_window timeline")
+        state = dataset.load_state(ref)
+        events = (
+            detect_episode_loop(state)
+            if mode is AnnotationMode.PICK_PLACE
+            else detect_episode_target_only(state)
+        )
+        frame_count = state.frame_count
+        task_text = state.task_text
+        state_source = str(state.paths.parquet)
+        video_source = str(state.paths.video)
     semantic_frames = sample_semantic_frames(
         events,
-        frame_count=state.frame_count,
+        frame_count=frame_count,
         annotation_mode=mode,
     )
     return LoopContext(
         episode=ref,
-        task_text=state.task_text,
-        frame_count=state.frame_count,
+        task_text=task_text,
+        frame_count=frame_count,
         events=events,
         semantic_frames=semantic_frames,
-        state_source=str(state.paths.parquet),
-        video_source=str(state.paths.video),
+        state_source=state_source,
+        video_source=video_source,
         annotation_mode=mode,
     )
