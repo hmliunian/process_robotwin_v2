@@ -1,0 +1,119 @@
+version: 1
+excluded_actions: [A_003]
+screen_prompt: ../prompts/umi_single_arm_screen.txt
+min_arm_confidence: 0.9
+# Assistant review of source head/wrist previews; these are exclusions, not human labels.
+excluded_episodes:
+  9ad416313eefe01e92036c9390ef6bd7: Both grippers manipulate the clothing and hanger.
+  fa8898680a1f686956e8eb2f4b89b598: One gripper steadies the bottle while the other handles its cap.
+  5ee33d1b0fdddf4efb984e024fe44253: Both grippers participate in the bottle and cap operation.
+  8eb63aef81257dfa83f71c648dfd568a: One gripper holds the bottle and the other handles its cap.
+  fa5b057640dc840fd00495fa267055e4: One gripper steadies the jar while the other replaces its lid.
+  d8cc7d8943755a17bf848ef0f4c68d30: One gripper holds the jar while the other removes its lid.
+  76e62e7fa1306a47473519d405a24603: Both grippers manipulate the bottle and cap.
+  502943eef1f3dbb4aac9752626e88933: Pending full-video review of possible assistance near the end.
+tasks:
+  A_001:
+    name: pick_up
+    annotation_mode: target_only
+    objects: >-
+      Target: the entire physical object actually picked up by the active gripper,
+      including all visible connected parts. Exclude the gripper and supporting furniture.
+  A_002:
+    name: put_down
+    annotation_mode: target_only
+    objects: >-
+      Target: the entire physical object actually placed down by the active gripper.
+      It may already be held at the start. Follow the same object after release.
+      Only this object is required; no receiver is requested.
+  A_004:
+    name: pull
+    annotation_mode: target_only
+    objects: >-
+      Target: the complete independent handle or knob actually pulled by the active gripper.
+      Only when no separable handle exists, use the moving door or drawer front panel.
+      Follow the video, not the directory verb. Exclude cabinet bodies and adjacent handles.
+  A_005:
+    name: push
+    annotation_mode: target_only
+    objects: >-
+      Target: the complete independent handle actually driven by the active gripper.
+      If the hand directly pushes a panel without using a separable handle, target the
+      complete moving door or drawer front panel. Exclude the fixed cabinet body.
+  A_006:
+    name: hang
+    annotation_mode: target_only
+    objects: >-
+      Target: the entire physical item being hung by the active gripper, such as the
+      garment, bag, hat or towel named in the task. A hanger is the target only if the
+      task is hanging that hanger itself. Exclude the fixed rack and supporting furniture.
+  A_007:
+    name: pour
+    annotation_mode: tool_use
+    objects: >-
+      Target: the entire source bottle, cup or jug held and tilted by the active gripper.
+      Receiver: the complete independent vessel receiving the poured contents.
+      Exclude liquid, contents and supporting furniture. No grasp or release is required.
+  A_008:
+    name: press_button
+    annotation_mode: target_only
+    objects: >-
+      Target: the complete visible physical button or bounded control actually pressed.
+      Do not substitute the whole remote control, appliance, gripper or arbitrary contact
+      patch. Use the action evidence to distinguish neighboring buttons.
+  A_009:
+    name: wipe
+    annotation_mode: tool_use
+    objects: >-
+      Target: the complete held cleaning cloth, towel or sponge. Receiver: the complete
+      independent physical object being wiped, or an independently bounded removable
+      surface. Exclude arbitrary wiping patches, trajectories, room surfaces and the gripper.
+  A_010:
+    name: insert
+    annotation_mode: target_only
+    objects: >-
+      Target: the entire physical object inserted by the active gripper, including all
+      visible parts of a pen, straw, toothbrush or other item. Follow its visible portion
+      after insertion. Only the inserted object is required, not the receiving vessel.
+  A_011:
+    name: rotate
+    annotation_mode: target_only
+    objects: >-
+      Target: the complete independent physical component actually rotated by the active
+      gripper, such as a knob, cap or handle. Do not select the entire fixed appliance or
+      the bottle body when only a separable cap is operated. Require actual action evidence.
+  A_012:
+    name: scoop
+    annotation_mode: tool_use
+    objects: >-
+      Target: the entire held scooping implement, which may be a spoon, scoop, spatula or
+      cup, including its working head and handle. Receiver: the independent vessel the
+      implement enters to scoop. Exclude the contents and supporting furniture.
+  A_013:
+    name: stir
+    annotation_mode: tool_use
+    objects: >-
+      Target: the entire held stirring tool, including its visible shaft and working head.
+      Receiver: the complete independent cup, bowl or pot in which stirring occurs.
+      Exclude its contents and supporting furniture. No grasp or release is required.
+  A_015:
+    name: turn_over
+    annotation_mode: target_only
+    objects: >-
+      Target: the entire physical object actually flipped by the active gripper, including
+      all connected visible parts. Keep the same object identity through the flip.
+      Exclude supporting furniture and surrounding containers.
+  A_019:
+    name: close
+    annotation_mode: target_only
+    objects: >-
+      Target: the complete independent handle or control actually used to close the object.
+      For direct panel contact without a separable handle, use the moving panel. For a
+      container lid, use the complete operated lid. Exclude the fixed body and nearby parts.
+  A_020:
+    name: open
+    annotation_mode: target_only
+    objects: >-
+      Target: the complete independent handle or control actually used to open the object.
+      Only if there is no separable handle, use the moving panel. For container opening,
+      use the complete operated lid or cap. Do not switch to the whole cabinet or bottle.

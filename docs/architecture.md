@@ -48,6 +48,14 @@ UMI 单臂物体标注可显式声明 `timeline_source=video_window`。这种输
 `tool_use` 的 target 是完整工具，receiver 是被工具作用的独立容器或有明确边界的表面，
 不要求发生放置或松开。具体对象定义保存在任务配置中。
 
+嵌套 UMI 批次可用 `scripts/process_umi_batch.py` 先按头部及左右腕部多时刻预览筛选。
+模型筛选只生成单臂候选，来源记录为 `qwen_multiframe_screen`，不等同于人工验收。
+双臂、低置信度、证据不足和接口失败分别留在批次索引中，不进入 masks 处理。
+转换兼容 head-left 的 `left_h264/video` 和旧 `left/video` topic；同一片段混用两者会拒绝。
+转换保留解码帧对应的源序号、时间戳、实际 topic、原始片段 ID 和逐段任务文本，
+按动作及实际解码分辨率分组。`scripts/run_umi_batch.py` 复用现有 SAM GPU worker，
+为每组生成 overlays 和 review sheets；video-window 产物始终标为需要视觉复核。
+
 输出 `loop.json`，包含 annotation mode、required roles、事件、输出窗口和 sparse semantic
 frames。无效或含糊的 state 会 fail closed。
 
