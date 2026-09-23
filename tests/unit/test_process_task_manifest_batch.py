@@ -62,6 +62,13 @@ def test_batch_reviews_every_selected_source_episode(
         )
     )
     monkeypatch.setenv("QWEN_API_KEY", "test-key")
+    (tmp_path / "review_notes.json").write_text(
+        json.dumps(
+            {
+                "source_b/episode_000000": "Check mounting plate coverage.",
+            }
+        )
+    )
 
     def process(config: Any, **kwargs: Any) -> dict[str, Any]:
         records = [
@@ -70,6 +77,16 @@ def test_batch_reviews_every_selected_source_episode(
         ]
         for record in records:
             kwargs["episode_terminal_callback"](record["episode"], record["status"])
+            if record["status"] == "failed":
+                directory = (
+                    kwargs["output_root"]
+                    / kwargs["run_id"]
+                    / "open_door"
+                    / f"episode_{record['episode']:06d}"
+                    / "head_left"
+                )
+                directory.mkdir(parents=True)
+                (directory / "qwen_failure.json").write_text(json.dumps({"error": "invalid seed"}))
         return {"records": records, "dynamic_manifest": config.dataset.manifest_data}
 
     def render(_config: Any, **kwargs: Any) -> dict[str, Any]:
@@ -113,6 +130,13 @@ def test_batch_reviews_every_selected_source_episode(
     assert len({r["episode_uid"] for r in result["episodes"]}) == expected
     assert reviews == [result]
     assert result["counts"].get("failed", 0) == (0 if smoke else 1)
+    assert result["counts"]["needs_temporal_review"] == 1
+    if not smoke:
+        assert (
+            next(r for r in result["episodes"] if r["status"] == "failed")["error"]
+            == "invalid seed"
+        )
+    assert result["episodes"][-1]["manual_review_note"] == "Check mounting plate coverage."
     progress = json.loads((tmp_path / "batch_status.json").read_text())
     assert progress["status"] == "finished"
     assert len(progress["records"]) == expected

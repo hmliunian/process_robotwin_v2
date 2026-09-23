@@ -32,6 +32,8 @@ def run_batch(batch_dir: Path, config_path: Path, *, gpu: int, smoke: bool) -> d
     manifest = json.loads((batch_dir / Path(plan["source_manifest"]).name).read_text())
     source_root = Path(plan["source_manifest"]).parent
     episodes = {e["episode_uid"]: e for e in manifest["episodes"]}
+    notes_path = batch_dir / "review_notes.json"
+    review_notes = json.loads(notes_path.read_text()) if notes_path.exists() else {}
     output = batch_dir / ("smoke" if smoke else "runs")
     phase_dir = output if smoke else batch_dir
     index: dict[str, Any] = {"phase": "smoke" if smoke else "full", "episodes": [], "groups": []}
@@ -166,6 +168,10 @@ def run_batch(batch_dir: Path, config_path: Path, *, gpu: int, smoke: bool) -> d
             temporal_path = episode_dir / "target_0/temporal_qc.json"
             temporal = json.loads(temporal_path.read_text()) if temporal_path.exists() else {}
             run_manifest = episode_dir / "run_manifest.json"
+            qwen_failure = episode_dir / "qwen_failure.json"
+            semantic_error = (
+                json.loads(qwen_failure.read_text()).get("error") if qwen_failure.exists() else None
+            )
             failures = []
             if not ready and run_manifest.exists():
                 for role in json.loads(run_manifest.read_text()).get("roles", []):
@@ -174,6 +180,7 @@ def run_batch(batch_dir: Path, config_path: Path, *, gpu: int, smoke: bool) -> d
             needs_review = (
                 temporal.get("status") not in {None, "pass"}
                 or target.manifest_data.get("timeline_source") == "video_window"
+                or uid in review_notes
             )
             index["episodes"].append(
                 {
@@ -190,8 +197,9 @@ def run_batch(batch_dir: Path, config_path: Path, *, gpu: int, smoke: bool) -> d
                     else "auto_complete",
                     "objects_ready": ready,
                     "process_status": record["status"],
-                    "error": record.get("error") or "; ".join(failures) or None,
+                    "error": semantic_error or record.get("error") or "; ".join(failures) or None,
                     "temporal_status": temporal.get("status"),
+                    "manual_review_note": review_notes.get(uid),
                     "timeline_source": target.manifest_data.get("timeline_source"),
                     "timeline_note": metadata[episode_id].get("timeline_derivation", {}).get(
                         "state_timeline_error"
