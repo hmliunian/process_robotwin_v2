@@ -36,9 +36,9 @@ def render_batch_sheets(
 
     report = json.loads(results_path.read_text(encoding="utf-8"))
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    seen: set[tuple[str, int]] = set()
+    seen: set[str] = set()
     for record in report["episodes"]:
-        key = (record["task"], record["episode"])
+        key = record.get("episode_uid", f"{record['task']}/episode_{record['episode']:06d}")
         if key in seen:
             raise ValueError(f"duplicate episode: {key}")
         seen.add(key)
@@ -62,6 +62,7 @@ def render_batch_sheets(
         )
     )
     font = ImageFont.truetype("DejaVuSans.ttf", 18)
+    source_font = ImageFont.truetype("DejaVuSans.ttf", 14)
     title_font = ImageFont.truetype("DejaVuSans.ttf", 28)
     counts = Counter(record["status"] for group in groups.values() for record in group)
     summary = " | ".join(f"{counts[status]} {label}" for status, (label, _) in STATUS_STYLE.items())
@@ -101,7 +102,7 @@ def render_batch_sheets(
             episode = record["episode"]
             raw = record["status"] == "failed"
             if raw:
-                video = (
+                video = Path(record["source_video"]) if record.get("source_video") else (
                     datasets_root
                     / task
                     / "videos/chunk-000/observation.images.cam_high"
@@ -132,8 +133,12 @@ def render_batch_sheets(
                 )
                 draw.text(
                     (x + 7, y + 3),
-                    f"ep {episode:03d} | {record['active_arm'][0].upper()} | frame {frame_id}",
-                    font=font,
+                    (
+                        f"{record['source_dataset'].split('_202')[0]} | ep {episode:06d}"
+                        if record.get("source_dataset")
+                        else f"ep {episode:03d} | {record['active_arm'][0].upper()} | frame {frame_id}"
+                    ),
+                    font=source_font if record.get("source_dataset") else font,
                     fill="white",
                 )
                 draw.text(
@@ -151,6 +156,11 @@ def render_batch_sheets(
                     "video": str(video),
                     "source_kind": source_kind,
                     "frame_ids": frame_ids,
+                    **{
+                        key: record[key]
+                        for key in ("episode_uid", "source_dataset")
+                        if key in record
+                    },
                 }
             )
         task_y += 48 + math.ceil(len(records) / columns) * (card_height + GAP)

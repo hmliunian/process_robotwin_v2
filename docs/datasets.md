@@ -14,8 +14,9 @@ DATASET_ROOT/
   meta/
 ```
 
-Chunk number 是 `episode_id // 1000`。当前 discovery 要求 Parquet、RGB video 和 HDF5
-sidecar；URDF 额外要求 depth video。Parquet `frame_index` 必须从零连续，并作为 usable frame
+Chunk number 是 `episode_id // 1000`。Discovery 要求 Parquet 和 RGB video；完整夹爪流程
+还要求 HDF5 sidecar，URDF 额外要求 depth video。`--object-source-only` 不要求 HDF5。
+Parquet `frame_index` 必须从零连续，并作为 usable frame
 count。
 
 最小 manifest：
@@ -67,6 +68,30 @@ Child path 根据本地 task name 解析，不信任复制 manifest 中过期的
 则把不完整 episode 记录为 skipped。
 
 ## 可复现 selection
+
+Remote-operation `task_manifest` 是跨来源索引。可以生成按来源、任务分组的只读输入视图：
+
+```bash
+.venv/bin/python scripts/prepare_task_manifest.py TASK_MANIFEST_JSON BATCH_ROOT \
+  --task-kind door_open_action_site
+```
+
+视图软链接原始 Parquet/RGB，保留源 episode 编号和 split，并从索引写入纠正后的任务文本。
+单右臂 7D 状态使用已有 real-MCAP 夹爪归一化规则，再重新推导 close/hold 时间线；
+末尾没有 reopen 时保持 terminal hold。无法确认 close 的 episode 单独绑定为完整视频窗口，
+在元数据中记录原因，不生成 held 编码。所有输入视图只用于 `--object-source-only`。
+`batch_plan.json` 记录原始索引 hash、分组和完整 episode selection。
+
+准备后可以逐组试跑，再以新的 runs 目录完整计算：
+
+```bash
+.venv/bin/python -m scripts.process_task_manifest_batch BATCH_ROOT --gpu 2 --smoke
+.venv/bin/python -m scripts.process_task_manifest_batch BATCH_ROOT --gpu 2
+```
+
+批次入口拒绝覆盖已有 run，写入 `batch_status.json` 和 `episode_results.json`，完成后生成
+`review_sheets/{overall_index,early,late}.jpg`。失败条目保留原始视频帧；同任务中来自不同
+数据集的相同 episode 编号通过 `episode_uid` 区分。
 
 仓库只在 `configs/datasets/` 提交精简 manifest。目前示例覆盖 pick-place coverage set、
 target-only selection 和审核后的 real-MCAP text labels。外部 video、Parquet/HDF5、depth、

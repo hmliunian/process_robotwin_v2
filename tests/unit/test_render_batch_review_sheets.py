@@ -100,3 +100,23 @@ def test_missing_final_overlay_does_not_fall_back_to_raw(tmp_path: Path) -> None
     (tmp_path / "task_a-0.mp4").unlink()
     with pytest.raises(FileNotFoundError):
         review.render_batch_sheets(path, tmp_path, tmp_path / "sheets", project_root=tmp_path)
+
+
+def test_batch_distinguishes_source_ids_and_uses_declared_raw_video(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _report(tmp_path)
+    payload = json.loads(path.read_text())
+    first, failed, _ = payload["episodes"]
+    failed.update(episode=0, source_video=str(tmp_path / "task_a-1.mp4"))
+    for record, source in ((first, "source_a"), (failed, "source_b")):
+        record.update(episode_uid=f"{source}/episode_000000", source_dataset=source)
+    path.write_text(json.dumps(payload))
+    monkeypatch.setattr(
+        review, "_decode_selected",
+        lambda _path, frames: {f: Image.new("RGB", (640, 352), "gray") for f in frames},
+    )
+    manifest = review.render_batch_sheets(path, tmp_path, tmp_path / "sheets", project_root=tmp_path)
+    assert manifest["samples"][0]["episode_uid"] == "source_a/episode_000000"
+    assert manifest["samples"][1]["episode_uid"] == "source_b/episode_000000"
+    assert manifest["samples"][1]["video"] == failed["source_video"]
