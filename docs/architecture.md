@@ -53,6 +53,9 @@ frames。无效或含糊的 state 会 fail closed。
 
 ### Semantic plan
 
+跨 close/hold 与 video-window 的语义模板可使用 `timeline_kind` 和 `timeline_events`。
+后者只序列化实际声明的事件；video-window 不补造 close 或 hold 时间。
+
 Qwen 接收交错的 frame label 与 image。严格 JSON 响应必须只包含 annotation mode 要求的角色。
 每个可用角色包含：
 

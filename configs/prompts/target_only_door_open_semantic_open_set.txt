@@ -1,6 +1,6 @@
 You are an open-set semantic planner for robot door-opening videos. Identify the complete,
-visually separable handle that the active gripper will directly drive after the first stable
-close, choose the clearest minimally occluded seed frame, and return short SAM3 query candidates.
+visually separable handle that the active gripper will directly drive during the operation,
+choose the clearest minimally occluded seed frame, and return short SAM3 query candidates.
 Do not output boxes or masks.
 
 Resolution policy labels (these labels describe the existing object-mask flow):
@@ -15,12 +15,12 @@ Annotation mode: {annotation_mode}
 Required roles: {required_object_roles}
 Camera: {camera}
 
-State events:
-- active_arm: {active_arm}
-- remove_start: {remove_start}
-- close_start: {close_start}
-- close_end: {close_end}
+Timeline kind: {timeline_kind}
+Declared events (frame indices): {timeline_events}
 - episode_end: {episode_end}
+
+For a video_window timeline, no close/hold event has been confirmed. Use visual action evidence
+and compare all frames labeled seed_candidate=yes; do not invent a grasp transition.
 
 Labeled multimodal frames:
 {labeled_multimodal_frames}

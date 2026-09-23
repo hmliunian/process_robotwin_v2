@@ -68,6 +68,19 @@ def test_video_window_roundtrip_without_fabricated_grasp(
         profile.qwen.prompt_template.read_text(),
     )
     assert "seed_candidate=yes" in request.rendered_prompt
+    if mode is AnnotationMode.TARGET_ONLY:
+        door_profile = load_profile(
+            Path("configs/process.yaml"), mode=mode, target_profile=TargetProfile.DOOR_OPEN
+        )
+        door_request = build_qwen_request(
+            context,
+            {frame.frame_id: Image.new("RGB", (8, 8)) for frame in context.semantic_frames},
+            door_profile.qwen.prompt_template.read_text(),
+        )
+        assert "Timeline kind: video_window" in door_request.rendered_prompt
+        assert '"t_start": 0' in door_request.rendered_prompt
+        assert '"t_close_start"' not in door_request.rendered_prompt
+        assert "complete graspable door handle" in door_request.rendered_prompt
     assert profile.mask.qc_bbox_prompt_template is not None
     bbox_prompt = render_bbox_prompt(
         profile.mask.qc_bbox_prompt_template.read_text(),

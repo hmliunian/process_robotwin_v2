@@ -8,6 +8,8 @@ other's business rules.
 
 from __future__ import annotations
 
+import json
+
 from ..models import LoopContext, PickPlaceEvents, TargetOnlyEvents, VideoWindowEvents
 
 
@@ -23,6 +25,8 @@ def timeline_prompt_fields(context: LoopContext) -> dict[str, str]:
     common = {
         "active_arm": events.active_arm,
         "episode_end": str(context.frame_count - 1),
+        "timeline_kind": context.timeline_kind,
+        "timeline_events": json.dumps(events.to_json(), ensure_ascii=False),
     }
     if isinstance(events, VideoWindowEvents):
         return {
