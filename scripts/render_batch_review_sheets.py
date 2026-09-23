@@ -53,7 +53,7 @@ def render_batch_sheets(
 
     columns = min(10, max(len(group) for group in groups.values()))
     card_height = IMAGE_HEIGHT + 2 * LABEL_HEIGHT
-    width = 2 * MARGIN + columns * TILE_WIDTH + (columns - 1) * GAP
+    width = max(1024, 2 * MARGIN + columns * TILE_WIDTH + (columns - 1) * GAP)
     height = (
         HEADER
         + MARGIN
@@ -79,6 +79,7 @@ def render_batch_sheets(
         )
         draw.text((MARGIN, 96), "MASK: green = target", font=font, fill="#69d39c")
         draw.text((MARGIN + 290, 96), "blue = receiver", font=font, fill="#78aeff")
+        draw.text((MARGIN + 560, 96), "yellow = held target", font=font, fill="#f4be55")
         draw.text(
             (MARGIN, 132),
             "Failed clips show RAW RGB. Frame samples are not frame-by-frame acceptance.",
@@ -143,7 +144,11 @@ def render_batch_sheets(
                 )
                 draw.text(
                     (x + 7, y + LABEL_HEIGHT + IMAGE_HEIGHT + 3),
-                    f"{label} | {source_kind} | {record['run_id'].rsplit('-', 1)[-1]}",
+                    (
+                        f"{label} | {source_kind} | f{frame_id}"
+                        if record.get("source_dataset")
+                        else f"{label} | {source_kind} | {record['run_id'].rsplit('-', 1)[-1]}"
+                    ),
                     font=font,
                     fill=color,
                 )
@@ -158,7 +163,7 @@ def render_batch_sheets(
                     "frame_ids": frame_ids,
                     **{
                         key: record[key]
-                        for key in ("episode_uid", "source_dataset")
+                        for key in ("episode_uid", "source_dataset", "manual_review_note", "error")
                         if key in record
                     },
                 }
