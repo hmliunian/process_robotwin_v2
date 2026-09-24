@@ -44,3 +44,18 @@ Parquet 的 `index` 按组连续排列，`source_frame_index` 保持原始解码
 `needs_temporal_review` 表示 masks 和 overlay 已生成，仍需视觉复核；`failed` 表示模型、
 转换后处理或渲染未完成。被排除、待确认、尚未筛选的片段保留原状态，不计为成功输出。
 UMI 只处理 object source；两个 gripper 通道为空，不补造抓取、持有或释放时刻。
+
+## 合并同一任务的不同分辨率
+
+批次结束后可以生成独立的任务视图，按任务并行重绘 review sheets：
+
+```bash
+.venv/bin/python -m scripts.merge_umi_runs "$BATCH_DIR/runs" "$MERGED_DIR" --workers 4
+```
+
+输出目录必须不存在。`pick_up_640x352`、`pick_up_640x480` 等分组归入 `pick_up/`，
+episode、原图和叠加视频通过软链接引用，保留原始尺寸、ID、状态和来源路径。
+每任务 `episode_results.json` 包含实际处理的片段；根清单和任务网页还保留筛选排除及
+待确认记录。每任务重绘早期、中期、末期三张 review sheet，失败段使用带标记的原图。
+`index.html` 是任务总览，`review_sheets/index.html` 集中展示合并后的检查图。
+`merge_status.json` 在所有任务完成后才标记 `finished`；失败的处理结果不会因此变成成功。

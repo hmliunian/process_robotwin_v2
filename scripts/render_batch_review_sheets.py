@@ -103,11 +103,15 @@ def render_batch_sheets(
             episode = record["episode"]
             raw = record["status"] == "failed"
             if raw:
-                video = Path(record["source_video"]) if record.get("source_video") else (
-                    datasets_root
-                    / task
-                    / "videos/chunk-000/observation.images.cam_high"
-                    / f"episode_{episode:06d}.mp4"
+                video = (
+                    Path(record["source_video"])
+                    if record.get("source_video")
+                    else (
+                        datasets_root
+                        / task
+                        / "videos/chunk-000/observation.images.cam_high"
+                        / f"episode_{episode:06d}.mp4"
+                    )
                 )
             else:
                 if not record.get("video"):
@@ -147,7 +151,8 @@ def render_batch_sheets(
                     (
                         f"{label} | {source_kind} | f{frame_id}"
                         if record.get("source_dataset")
-                        else f"{label} | {source_kind} | {record['run_id'].rsplit('-', 1)[-1]}"
+                        else f"{label} | {source_kind} | "
+                        f"{record.get('review_label') or record['run_id'].rsplit('-', 1)[-1]}"
                     ),
                     font=font,
                     fill=color,
