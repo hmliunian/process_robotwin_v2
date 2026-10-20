@@ -12,6 +12,8 @@ from typing import Any
 
 import numpy as np
 
+from .sam3_tracking_features import native_tracking_features
+
 NDArray = np.ndarray[Any, Any]
 
 
@@ -58,9 +60,7 @@ def extract_video_frames(
         raise Sam3Error(f"ffmpeg failed: {exc.stderr.strip()}") from exc
     frames = tuple(sorted(frame_dir.glob("*.jpg")))
     if len(frames) < minimum_frame_count:
-        raise Sam3Error(
-            f"decoded {len(frames)} frames, expected at least {minimum_frame_count}"
-        )
+        raise Sam3Error(f"decoded {len(frames)} frames, expected at least {minimum_frame_count}")
     return frames
 
 
@@ -155,9 +155,13 @@ class Sam3Adapter:
         checkpoint_path: Path,
         gpus: Sequence[int],
         predictor: Any | None = None,
+        seed_image_only: bool = False,
+        tracking_batch_size: int = 0,
     ) -> None:
         if len(gpus) != 1:
             raise ValueError("native mask propagation requires exactly one SAM3 GPU")
+        if type(tracking_batch_size) is not int or not 0 <= tracking_batch_size <= 16:
+            raise ValueError("tracking_batch_size must be an integer in [0, 16]")
         if predictor is None:
             if not checkpoint_path.is_file():
                 raise Sam3Error(f"SAM3 checkpoint does not exist: {checkpoint_path}")
@@ -167,9 +171,7 @@ class Sam3Adapter:
                 if not torch.cuda.is_available():
                     raise Sam3Error("CUDA is unavailable to the SAM3 process")
                 if gpus[0] >= torch.cuda.device_count():
-                    raise Sam3Error(
-                        f"SAM3 GPU {gpus[0]} is outside visible CUDA devices"
-                    )
+                    raise Sam3Error(f"SAM3 GPU {gpus[0]} is outside visible CUDA devices")
                 from sam3.model_builder import build_sam3_video_predictor
             except ImportError as exc:
                 raise Sam3Error("SAM3 is not installed in this environment") from exc
@@ -181,6 +183,20 @@ class Sam3Adapter:
             except (AssertionError, RuntimeError) as exc:
                 raise Sam3Error(f"failed to load SAM3: {exc}") from exc
         self.predictor = predictor
+        self.seed_image_only = seed_image_only
+        self.tracking_batch_size = tracking_batch_size
+
+    def _seed_resource(
+        self, resource_path: Path, frame_id: int, frame_count: int
+    ) -> tuple[Path, int]:
+        """Use one JPEG only when its numeric index unambiguously matches the video."""
+        if self.seed_image_only and resource_path.is_dir():
+            frames = tuple(sorted(resource_path.iterdir()))
+            if len(frames) >= frame_count and all(
+                path.name == f"{index:06d}.jpg" for index, path in enumerate(frames)
+            ):
+                return frames[frame_id], 0
+        return resource_path, frame_id
 
     @contextmanager
     def _session(self, resource_path: Path) -> Iterator[str]:
@@ -258,7 +274,7 @@ class Sam3Adapter:
         frame_count: int,
         frame_shape: tuple[int, int],
     ) -> dict[str, NDArray]:
-        """Evaluate distinct text candidates while loading one video session once."""
+        """Evaluate distinct text candidates in one video or opt-in image session."""
 
         queries = tuple(dict.fromkeys(" ".join(text.split()) for text in texts))
         if any(not query for query in queries):
@@ -267,6 +283,7 @@ class Sam3Adapter:
             raise ValueError(f"SAM3 text frame is outside [0, {frame_count})")
         if not queries:
             return {}
+        resource_path, frame_id = self._seed_resource(resource_path, frame_id, frame_count)
         with self._session(resource_path) as session_id:
             result: dict[str, NDArray] = {}
             for index, query in enumerate(queries):
@@ -302,6 +319,7 @@ class Sam3Adapter:
         if not 0 <= frame_id < frame_count:
             raise ValueError(f"SAM3 box frame is outside [0, {frame_count})")
         box_xywh = _normalized_box_xywh(box_xyxy)
+        resource_path, frame_id = self._seed_resource(resource_path, frame_id, frame_count)
         with self._session(resource_path) as session_id:
             response = self.predictor.handle_request(
                 request={
@@ -334,6 +352,7 @@ class Sam3Adapter:
         if not 0 <= frame_id < frame_count:
             raise ValueError(f"SAM3 text-box frame is outside [0, {frame_count})")
         box_xywh = _normalized_box_xywh(box_xyxy)
+        resource_path, frame_id = self._seed_resource(resource_path, frame_id, frame_count)
         with self._session(resource_path) as session_id:
             response = self.predictor.handle_request(
                 request={
@@ -380,9 +399,7 @@ class Sam3Adapter:
             obj_id=object_id,
             mask=torch.as_tensor(seed_mask, dtype=torch.bool),
         )
-        if int(frame_id) != seed_frame or object_id not in {
-            int(value) for value in object_ids
-        }:
+        if int(frame_id) != seed_frame or object_id not in {int(value) for value in object_ids}:
             raise Sam3Error("SAM3 failed to install native mask prompt")
         tracker.propagate_in_video_preflight(states[0], run_mem_encoder=True)
 
@@ -404,7 +421,14 @@ class Sam3Adapter:
         if not 0 <= window_start <= seed_frame <= window_end < frame_count:
             raise ValueError("tracking_window must contain seed_frame inside the episode")
 
-        with self._session(resource_path) as session_id:
+        with (
+            native_tracking_features(
+                self.predictor,
+                batch_size=self.tracking_batch_size,
+                tracking_window=tracking_window,
+            ),
+            self._session(resource_path) as session_id,
+        ):
             response = self.predictor.handle_request(
                 request={
                     "type": "add_prompt",
@@ -417,9 +441,7 @@ class Sam3Adapter:
                 }
             )
             registered = _mask_for_object(
-                response.get("outputs", {}),
-                object_id=object_id,
-                shape=frame_shape,
+                response.get("outputs", {}), object_id=object_id, shape=frame_shape
             )
             if registered is None or not registered.any():
                 raise Sam3Error("SAM3 failed to register the seed object")

@@ -16,6 +16,7 @@ from robotwin_annotation_v2.application.episode_pipeline import (
 from robotwin_annotation_v2.application.episode_pipeline_api import (
     EpisodePipeline as CompatibilityEpisodePipeline,
 )
+from robotwin_annotation_v2.config import Sam3Config
 from robotwin_annotation_v2.domain import AnnotationMode
 from robotwin_annotation_v2.models import EpisodeRef, MaskStatus
 
@@ -44,7 +45,7 @@ class FakeRoleResult:
 def _batch_config(tmp_path: Path) -> SimpleNamespace:
     return SimpleNamespace(
         output_root=tmp_path / "runs",
-        sam3=SimpleNamespace(checkpoint=Path("sam3.pt"), gpus=(2,)),
+        sam3=Sam3Config(checkpoint=Path("sam3.pt"), gpus=(2,)),
         dataset=SimpleNamespace(
             regression_episode_ids=(1, 2),
             task="task",
@@ -104,9 +105,7 @@ def test_episode_context_passes_annotation_mode_as_keyword() -> None:
 
     original = episode_pipeline.build_loop_context
     episode_pipeline.build_loop_context = fake_build_context
-    config = SimpleNamespace(
-        annotation=SimpleNamespace(mode=AnnotationMode.PICK_PLACE)
-    )
+    config = SimpleNamespace(annotation=SimpleNamespace(mode=AnnotationMode.PICK_PLACE))
 
     try:
         result = episode_pipeline._build_context(config, "dataset", "episode-ref")
@@ -162,9 +161,7 @@ def test_sam_batch_reuses_one_backend_for_multiple_episodes(tmp_path: Path) -> N
     assert episode_calls == [1, 2]
     assert backend.shutdown_calls == 1
     summary = json.loads(
-        (tmp_path / "runs/batch-test/sam_batch_summary.json").read_text(
-            encoding="utf-8"
-        )
+        (tmp_path / "runs/batch-test/sam_batch_summary.json").read_text(encoding="utf-8")
     )
     assert summary["resident_sam3"] is True
     assert [record["status"] for record in summary["records"]] == [
@@ -223,9 +220,7 @@ def test_sam_batch_skips_complete_episode(tmp_path: Path) -> None:
 
     assert episode_calls == [2]
     summary = json.loads(
-        (tmp_path / "runs/batch-test/sam_batch_summary.json").read_text(
-            encoding="utf-8"
-        )
+        (tmp_path / "runs/batch-test/sam_batch_summary.json").read_text(encoding="utf-8")
     )
     assert summary["records"][0] == {"episode": 1, "status": "skipped_complete"}
 
@@ -260,9 +255,7 @@ def test_target_only_sam_completion_accepts_receiver_not_applicable(
         {"roles": {"target": {"status": "passed"}}},
     )
 
-    assert module["_sam_episode_complete"](
-        config, store, "target-only", ref
-    )
+    assert module["_sam_episode_complete"](config, store, "target-only", ref)
 
 
 def test_sam_batch_stops_after_fatal_cuda_error(tmp_path: Path) -> None:
@@ -288,9 +281,7 @@ def test_sam_batch_stops_after_fatal_cuda_error(tmp_path: Path) -> None:
     assert episode_calls == [1]
     assert backend.shutdown_calls == 1
     summary = json.loads(
-        (tmp_path / "runs/batch-test/sam_batch_summary.json").read_text(
-            encoding="utf-8"
-        )
+        (tmp_path / "runs/batch-test/sam_batch_summary.json").read_text(encoding="utf-8")
     )
     assert [record["status"] for record in summary["records"]] == [
         "failed",
@@ -317,9 +308,7 @@ def test_gripper_completion_treats_null_stage_as_incomplete(tmp_path: Path) -> N
         },
     )
 
-    assert not module["_gripper_episode_complete"](
-        config, store, "batch-test", ref
-    )
+    assert not module["_gripper_episode_complete"](config, store, "batch-test", ref)
 
 
 def test_gripper_batch_reuses_one_backend_for_multiple_episodes(
@@ -362,9 +351,7 @@ def test_gripper_batch_reuses_one_backend_for_multiple_episodes(
     assert episode_calls == [1, 2]
     assert backend.shutdown_calls == 1
     summary = json.loads(
-        (tmp_path / "runs/batch-test/gripper_batch_summary.json").read_text(
-            encoding="utf-8"
-        )
+        (tmp_path / "runs/batch-test/gripper_batch_summary.json").read_text(encoding="utf-8")
     )
     assert [record["status"] for record in summary["records"]] == [
         "completed",
@@ -398,9 +385,7 @@ def test_gripper_batch_records_missing_sam_precondition_as_failure(
 
     assert captured.value.code == 6
     summary = json.loads(
-        (tmp_path / "runs/batch-test/gripper_batch_summary.json").read_text(
-            encoding="utf-8"
-        )
+        (tmp_path / "runs/batch-test/gripper_batch_summary.json").read_text(encoding="utf-8")
     )
     assert summary["records"][0]["status"] == "failed"
     assert "required SAM artifacts are missing" in summary["records"][0]["error"]

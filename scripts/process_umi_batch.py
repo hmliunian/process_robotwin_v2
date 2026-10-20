@@ -30,6 +30,9 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--limit-per-action", type=int)
     parser.add_argument("--gpus", type=int, nargs="+")
+    parser.add_argument(
+        "--inference-mode", choices=("legacy", "resident", "async"), default="legacy"
+    )
     args = parser.parse_args()
     if args.workers < 1 or (args.limit_per_action is not None and args.limit_per_action < 1):
         parser.error("workers and limit-per-action must be positive")
@@ -60,7 +63,13 @@ def main() -> None:
         from scripts.run_umi_batch import run_batch
 
         prepare_batch(inventory, args.batch_dir.resolve(), workers=args.workers)
-        run_batch(args.batch_dir, args.config, gpus=tuple(args.gpus), qwen_workers=args.workers)
+        run_batch(
+            args.batch_dir,
+            args.config,
+            gpus=tuple(args.gpus),
+            qwen_workers=args.workers,
+            inference_mode=args.inference_mode,
+        )
 
 
 if __name__ == "__main__":

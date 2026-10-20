@@ -36,10 +36,38 @@ def run_batch(
     qwen_workers: int = 4,
     smoke: bool = False,
     only_groups: tuple[str, ...] = (),
+    inference_mode: str = "legacy",
+    tracking_batch_size: int = 1,
+    prefetch: int = 2,
+    render_buffer: int = 2,
+    cpu_threads: int = 8,
+    output_root: Path | None = None,
 ) -> dict[str, Any]:
+    if inference_mode not in {"legacy", "resident", "async"}:
+        raise ValueError("inference mode must be legacy, resident or async")
+    if inference_mode != "legacy":
+        from scripts.run_umi_fast_batch import run_fast_batch
+
+        result = run_fast_batch(
+            batch_dir,
+            config_path,
+            gpus=gpus,
+            qwen_workers=qwen_workers,
+            smoke=smoke,
+            only_groups=only_groups,
+            asynchronous=inference_mode == "async",
+            tracking_batch_size=tracking_batch_size,
+            prefetch=prefetch,
+            render_buffer=render_buffer,
+            cpu_threads=cpu_threads,
+            output_root=output_root,
+        )
+        output = (output_root or batch_dir / ("smoke" if smoke else "runs")).resolve()
+        write_index(output, result)
+        return result
     batch_dir = batch_dir.resolve()
     plan = _read(batch_dir / "batch_plan.json")
-    output = batch_dir / ("smoke" if smoke else "runs")
+    output = (output_root or batch_dir / ("smoke" if smoke else "runs")).resolve()
     output.mkdir(parents=True, exist_ok=True)
     result_path = output / "episode_results.json"
     results = {r["episode_index"]: r for r in plan["episodes"]}
@@ -206,6 +234,11 @@ def run_batch(
         )
     progress["status"] = "finished"
     index = save()
+    write_index(output, index)
+    return index
+
+
+def write_index(output: Path, index: dict[str, Any]) -> None:
     rows = []
     for row in index["episodes"]:
         video = row.get("video")
@@ -228,7 +261,6 @@ def run_batch(
         '<table border="1"><tr><th>Action</th><th>Source ID</th>'
         "<th>Status</th><th>Video</th><th>Reason</th></tr>" + "".join(rows) + "</table>",
     )
-    return index
 
 
 def main() -> None:
@@ -239,6 +271,14 @@ def main() -> None:
     parser.add_argument("--qwen-workers", type=int, default=4)
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--groups", nargs="*", default=[])
+    parser.add_argument(
+        "--inference-mode", choices=("legacy", "resident", "async"), default="legacy"
+    )
+    parser.add_argument("--tracking-batch-size", type=int, choices=(0, 1, 4), default=1)
+    parser.add_argument("--prefetch", type=int, default=2)
+    parser.add_argument("--render-buffer", type=int, default=2)
+    parser.add_argument("--cpu-threads", type=int, default=8)
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     run_batch(
         args.batch_dir,
@@ -247,6 +287,12 @@ def main() -> None:
         qwen_workers=args.qwen_workers,
         smoke=args.smoke,
         only_groups=tuple(args.groups),
+        inference_mode=args.inference_mode,
+        tracking_batch_size=args.tracking_batch_size,
+        prefetch=args.prefetch,
+        render_buffer=args.render_buffer,
+        cpu_threads=args.cpu_threads,
+        output_root=args.output,
     )
 
 

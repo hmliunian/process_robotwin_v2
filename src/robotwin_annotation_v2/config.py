@@ -205,12 +205,26 @@ class QwenConfig:
 class Sam3Config:
     checkpoint: Path
     gpus: tuple[int, ...] = (0,)
+    seed_image_only: bool = False
+    tracking_batch_size: int = 0
 
     def __post_init__(self) -> None:
+        if not isinstance(self.seed_image_only, bool):
+            raise ConfigError("sam3.seed_image_only must be a boolean")
+        if type(self.tracking_batch_size) is not int or not 0 <= self.tracking_batch_size <= 16:
+            raise ConfigError("sam3.tracking_batch_size must be an integer in [0, 16]")
         if len(self.gpus) != 1:
             raise ConfigError("sam3.gpus must contain exactly one GPU")
         if any(gpu < 0 for gpu in self.gpus):
             raise ConfigError("sam3.gpus must contain non-negative integers")
+
+    def backend_options(self) -> dict[str, Any]:
+        options: dict[str, Any] = {"checkpoint_path": self.checkpoint, "gpus": self.gpus}
+        if self.seed_image_only:
+            options["seed_image_only"] = True
+        if self.tracking_batch_size:
+            options["tracking_batch_size"] = self.tracking_batch_size
+        return options
 
 
 @dataclass(frozen=True)
@@ -507,6 +521,8 @@ def _parse_config(
             field="sam3.checkpoint",
         ),
         gpus=_integers(sam3_raw.get("gpus", [0]), field="sam3.gpus"),
+        seed_image_only=sam3_raw.get("seed_image_only", False),
+        tracking_batch_size=sam3_raw.get("tracking_batch_size", 0),
     )
     parallel = ParallelConfig(
         sam_worker_gpus=_gpu_ids(

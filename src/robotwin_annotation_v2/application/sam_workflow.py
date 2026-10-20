@@ -62,9 +62,7 @@ type EpisodeExecutor[BackendT, ExecutionT] = Callable[
     [PipelineConfig, int, str, BackendT], ExecutionT
 ]
 type ResultEmitter[ExecutionT] = Callable[[str, ExecutionT], bool]
-type EpisodeCompletionCheck = Callable[
-    [PipelineConfig, ArtifactStore, str, EpisodeRef], bool
-]
+type EpisodeCompletionCheck = Callable[[PipelineConfig, ArtifactStore, str, EpisodeRef], bool]
 type RunQwenStage = Callable[[PipelineConfig, int, str | None], None]
 
 
@@ -99,9 +97,7 @@ type WriteSourceEpisodeReceipt = Callable[..., Mapping[str, Any]]
 class SamWorkflowHooks[BackendT: SamBackend, SamExecutionT, GripperExecutionT]:
     """Explicit seams retained while the legacy runtime is being strangled."""
 
-    runtime_loader: Callable[
-        [], SamRuntime[BackendT, SamExecutionT, GripperExecutionT]
-    ]
+    runtime_loader: Callable[[], SamRuntime[BackendT, SamExecutionT, GripperExecutionT]]
     discover_episodes: DiscoverEpisodes
     build_dynamic_manifest: BuildDynamicManifest
     build_dynamic_config: BuildDynamicConfig
@@ -251,8 +247,7 @@ class SamWorkflow[BackendT: SamBackend, SamExecutionT, GripperExecutionT]:
         source_only = bool(object_source_only)
         if self.config.annotation.mode is AnnotationMode.TARGET_ONLY and not source_only:
             raise ValueError(
-                "target_only does not support --gripper-backend sam; "
-                "use the default URDF backend"
+                "target_only does not support --gripper-backend sam; use the default URDF backend"
             )
         if incremental_source and not source_only:
             raise ValueError("incremental source receipts require object_source_only mode")
@@ -357,9 +352,7 @@ class SamWorkflow[BackendT: SamBackend, SamExecutionT, GripperExecutionT]:
         records: list[dict[str, Any]] = list(discovery.skipped)
         pending: list[int] = []
         completion_check = (
-            runtime.sam_episode_complete
-            if source_only
-            else runtime.gripper_episode_complete
+            runtime.sam_episode_complete if source_only else runtime.gripper_episode_complete
         )
         for position, episode_id in enumerate(selected_ids, start=1):
             ref = EpisodeRef(task, episode_id, camera)
@@ -375,25 +368,18 @@ class SamWorkflow[BackendT: SamBackend, SamExecutionT, GripperExecutionT]:
                     position,
                     total=len(selected_ids),
                     episode_id=episode_id,
-                    status=(
-                        "pending" if episode_id in pending else "skipped_complete"
-                    ),
+                    status=("pending" if episode_id in pending else "skipped_complete"),
                 )
         if reporter is not None:
             reporter.phase_finished(
                 "resume_scan",
-                detail=(
-                    f"pending={len(pending)} "
-                    f"skipped={len(selected_ids) - len(pending)}"
-                ),
+                detail=(f"pending={len(pending)} skipped={len(selected_ids) - len(pending)}"),
             )
 
         factory = runtime.backend_factory if backend_factory is None else backend_factory
         backend: BackendT | None = None
         fatal_error: str | None = None
-        parallel_used = bool(
-            pending and dynamic.parallel.enabled and backend_factory is None
-        )
+        parallel_used = bool(pending and dynamic.parallel.enabled and backend_factory is None)
         if parallel_used:
             from .parallel_sam_runtime import run_parallel_sam_episodes
 
@@ -454,8 +440,7 @@ class SamWorkflow[BackendT: SamBackend, SamExecutionT, GripperExecutionT]:
                         reporter.phase_started("sam_backend_load")
                     try:
                         backend = factory(
-                            checkpoint_path=dynamic.sam3.checkpoint,
-                            gpus=dynamic.sam3.gpus,
+                            **dynamic.sam3.backend_options(),
                         )
                     except Exception as exc:
                         if reporter is not None:
@@ -583,9 +568,7 @@ class SamWorkflow[BackendT: SamBackend, SamExecutionT, GripperExecutionT]:
         summary_model = ProcessSummary(
             format_version=PROCESS_SUMMARY_FORMAT_VERSION,
             annotation_mode=self.config.annotation.mode.value,
-            required_object_roles=tuple(
-                self.config.annotation.spec.required_role_names
-            ),
+            required_object_roles=tuple(self.config.annotation.spec.required_role_names),
             gripper_backend=None if source_only else "sam",
             run_id=selected_run_id,
             dataset_root=str(dataset_root.expanduser().resolve()),
@@ -634,9 +617,7 @@ def load_sam_runtime() -> SamRuntime[SamBackend, Any, Any]:
     )
     from robotwin_annotation_v2.adapters.sam3_adapter import Sam3Adapter
 
-    episode_runtime = importlib.import_module(
-        "robotwin_annotation_v2.application.episode_pipeline"
-    )
+    episode_runtime = importlib.import_module("robotwin_annotation_v2.application.episode_pipeline")
 
     def run_qwen_without_health(
         config: PipelineConfig,
@@ -820,9 +801,7 @@ def render_sam_processed(
                 "annotation_status": dict(
                     zip(artifact.instance_names, artifact.annotation_status, strict=True)
                 ),
-                "qc_status": dict(
-                    zip(artifact.instance_names, artifact.qc_status, strict=True)
-                ),
+                "qc_status": dict(zip(artifact.instance_names, artifact.qc_status, strict=True)),
                 "output_video": output_path.name,
                 "output_sha256": render.file_sha256(output_path),
                 "output_bytes": output_path.stat().st_size,
@@ -855,9 +834,7 @@ def render_sam_processed(
     }
     manifest_path = ArtifactStore.write_json(video_dir / "manifest.json", manifest)
     sheets = render.build_sheets(manifest_path, video_dir / "review_sheets")
-    manifest["review_sheets"] = [
-        str(path.relative_to(video_dir)) for path in sheets
-    ]
+    manifest["review_sheets"] = [str(path.relative_to(video_dir)) for path in sheets]
     ArtifactStore.write_json(manifest_path, manifest)
     return {
         "manifest": str(manifest_path),

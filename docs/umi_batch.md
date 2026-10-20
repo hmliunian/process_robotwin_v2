@@ -45,6 +45,49 @@ Parquet 的 `index` 按组连续排列，`source_frame_index` 保持原始解码
 转换后处理或渲染未完成。被排除、待确认、尚未筛选的片段保留原状态，不计为成功输出。
 UMI 只处理 object source；两个 gripper 通道为空，不补造抓取、持有或释放时刻。
 
+## 快速推理
+
+`scripts/run_umi_batch.py` 增加显式选择的快速模式。默认仍为 `legacy`；其他数据工作流的
+默认参数保持原样。这里的 `legacy` 对应已提交分支的原路径，本次 10 帧测量另行冻结了包含
+原工作区文本单图补丁的基线，避免重复计算已经存在的收益。
+
+| 模式 | 行为 |
+| --- | --- |
+| `legacy` | 原有按组 worker 调度，使用 process profile 的 SAM 参数。 |
+| `resident` | 各 GPU 的 SAM 跨动作及分辨率组常驻；启用三类 seed 单图请求和 T1；规划与渲染同步。 |
+| `async` | 在 resident 基础上预取规划并后台渲染，SAM 始终由所属进程的同一线程调用。 |
+
+先用新输出目录运行，避免把旧产物当作新实现的结果：
+
+```bash
+# PROCESS_CONFIG 指向实际使用的 process.yaml，权重和凭据由环境及现有配置提供。
+OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 PYTHONPATH=src:. \
+  .venv/bin/python -m scripts.run_umi_batch "$BATCH_DIR" \
+  --config "$PROCESS_CONFIG" --gpus 0 \
+  --inference-mode async --tracking-batch-size 1 \
+  --prefetch 2 --render-buffer 2 --cpu-threads 8 \
+  --qwen-workers 4 --output "$FAST_OUTPUT"
+```
+
+将 `--inference-mode` 改成 `resident` 可保留同样的模型生命周期做串行对照。
+`--tracking-batch-size 0` 使用原传播路径，`1` 使用 T1，`4` 使用 T4；快速模式始终开启
+种子单图优化。T4 的额外收益需要按实际负载确认，当前默认候选为 T1。
+已有完整准备流程也接受 `scripts/process_umi_batch.py --phase all --inference-mode async`。
+
+多个 GPU 使用 `--gpus 0 1`。任务按输入帧数和角色数估算工作量，分配到跨组 worker；
+各 worker 有自己的规划及渲染队列。`--qwen-workers` 是整批请求上限，不是每 GPU 的上限。
+单卡限制规划线程数可为 QC 留出容量；多卡没有全局 QC 优先级。预取和渲染容量均按 worker
+限制，队列只传路径及小型元数据。`--cpu-threads` 设置各 worker 的 PyTorch/OpenCV 线程。
+
+使用相同命令重启会校验完整选择、输入、权重、配置、prompt、代码及调度参数，再继续处理。
+有效 masks 可只补渲染。改变 subset、GPU 分配或实现应使用新的输出目录。
+旧输出没有快速模式身份文件时会拒绝复用，不覆盖已有推理结果。批次状态及分组索引仍由
+协调端更新，原有分辨率合并入口可读取快速模式的 `episode_results.json`。
+
+首轮仅对固定 10 帧做真实 SAM 的 IoU 与速度对照，见
+[10 帧验证报告](umi_inference_fast_10frames_20261020.md)。本轮不以此宣称整批异步或多 GPU
+吞吐加速；`needs_temporal_review` 仍要求视觉复核。
+
 ## 合并同一任务的不同分辨率
 
 批次结束后可以生成独立的任务视图，按任务并行重绘 review sheets：
