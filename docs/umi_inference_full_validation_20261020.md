@@ -1,4 +1,4 @@
-# UMI 完整视频传播验证与端到端测试准备
+# UMI 完整视频传播验证
 
 日期：2026-10-20。分支：`feat/umi-inference-fast`。
 
@@ -7,7 +7,8 @@
 其中双方为空的 51 帧单独统计，其余 3,491 帧的 IoU 也全部为 1。
 
 本轮传播耗时合计 **250.00 → 155.36 秒，减少 37.86%**。这是一次固定 seed 的 SAM T1
-传播对照，不能解释为整条任务或异步流水线的加速比例。真实 Qwen 端到端三组测试尚未运行。
+传播对照，不能解释为整条任务或异步流水线的加速比例。后续已完成真实 Qwen 的三组
+端到端测试及一次异步复测，详见[端到端效率与 IoU 报告](umi_inference_end_to_end_20261020.md)。
 
 ## 完整视频结果
 
@@ -32,8 +33,9 @@
 | 合计 | — | 2,399 | 13 / 14 | 249.999 | 155.362 | 1 |
 
 `scoop.receiver` 在历史 QC 中被拒绝，没有批准的 seed，本轮明确保留为 skipped，缺少该角色
-的 221 帧对比，不能声称 14 个角色都通过。`pull.target` 和 `scoop.target` 虽在历史时序 QC 中隔离，仍有通过候选 QC
-的 seed，因此本轮比较其原始 track；原始传播一致不等于生产流程通过。
+的 221 帧对比，不能声称 14 个角色都通过。`pull.target` 和 `scoop.target` 虽在历史时序 QC
+中隔离，仍有通过候选 QC 的 seed，因此本轮比较其原始 track；原始传播一致不等于生产
+流程通过。
 
 五个非零 seed 为 pick_up 94、put_down 150、wipe.target 444、scoop.target 157、
 stir.target 71，包含 seed 之前的反向传播。最长的 wipe 519 帧和 stir 500 帧都完整覆盖。
@@ -83,10 +85,11 @@ env PYTHONPATH=src:. OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 \
   --output artifacts/umi_tracking_full_repeat
 ```
 
-## 端到端对比的待完成部分
+## 端到端对比
 
-已准备 `scripts/benchmark_umi_pipeline.py`，三组均使用同一固定清单和渲染要求，分别在同一
-GPU 的新进程运行。保留失败、隔离和未执行记录，整批墙钟包含失败成本及渲染 drain。
+`scripts/benchmark_umi_pipeline.py` 的三组及异步复测均已运行，使用同一固定清单和渲染要求，
+分别在同一 GPU 的新进程执行。保留全部失败成本及渲染 drain，结果见
+[端到端效率与 IoU 报告](umi_inference_end_to_end_20261020.md)。
 
 | mode | SAM | 生命周期 | 调度 |
 | --- | --- | --- | --- |
@@ -99,12 +102,8 @@ baseline 为复用相同 core/renderer 的受控重建，不是逐字节复现�
 整批墙钟分别报告，不能用 `整批耗时 / 10` 代替单条延迟。完整进程计时另用 `/usr/bin/time`。
 
 实际 Qwen 可能改变语义 query、seed、QC 和救援次数。离线脚本
-`scripts/summarize_umi_pipeline_benchmark.py` 已准备比较 canonical 与 native 两层逐帧 IoU，
+`scripts/summarize_umi_pipeline_benchmark.py` 比较 canonical 与 native 两层逐帧 IoU，
 单列缺失、隔离、双方空和决策差异，避免把少完成任务或空 mask 当成同质量加速。
-
-本次联网测试启动被自动审批拒绝，原因是尚缺把这些视频的抽帧和提示发送至配置中具体
-阿里云 Qwen 服务的明确授权。三组没有产生真实端到端数据，也没有替换为回放耗时。
-待确认外发授权后，用 `--mode baseline/resident/async` 各选新输出目录运行并补齐结果。
 
 ## 检查
 
