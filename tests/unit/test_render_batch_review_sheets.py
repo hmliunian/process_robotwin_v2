@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from scripts import render_batch_review_sheets as review
 
@@ -100,3 +101,72 @@ def test_missing_final_overlay_does_not_fall_back_to_raw(tmp_path: Path) -> None
     (tmp_path / "task_a-0.mp4").unlink()
     with pytest.raises(FileNotFoundError):
         review.render_batch_sheets(path, tmp_path, tmp_path / "sheets", project_root=tmp_path)
+
+
+def test_batch_distinguishes_source_ids_and_uses_declared_raw_video(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _report(tmp_path)
+    payload = json.loads(path.read_text())
+    first, failed, _ = payload["episodes"]
+    failed.update(episode=0, source_video=str(tmp_path / "task_a-1.mp4"))
+    for record, source in ((first, "source_a"), (failed, "source_b")):
+        record.update(episode_uid=f"{source}/episode_000000", source_dataset=source)
+    path.write_text(json.dumps(payload))
+    monkeypatch.setattr(
+        review,
+        "_decode_selected",
+        lambda _path, frames: {f: Image.new("RGB", (640, 352), "gray") for f in frames},
+    )
+    manifest = review.render_batch_sheets(
+        path, tmp_path, tmp_path / "sheets", project_root=tmp_path
+    )
+    assert manifest["samples"][0]["episode_uid"] == "source_a/episode_000000"
+    assert manifest["samples"][1]["episode_uid"] == "source_b/episode_000000"
+    assert manifest["samples"][1]["video"] == failed["source_video"]
+
+
+def test_short_review_labels_fit_cards_without_changing_run_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _report(tmp_path)
+    payload = json.loads(path.read_text())
+    for record, resolution in zip(payload["episodes"][:2], ("640x352", "640x480"), strict=True):
+        record.update(
+            run_id=f"insert_the_object_into_container_{resolution}", review_label=resolution
+        )
+    path.write_text(json.dumps(payload))
+    monkeypatch.setattr(
+        review,
+        "_decode_selected",
+        lambda _path, frames: {frame: Image.new("RGB", (640, 480)) for frame in frames},
+    )
+    drawn: list[tuple[str, float]] = []
+    original_text = ImageDraw.ImageDraw.text
+
+    def capture_text(
+        draw: ImageDraw.ImageDraw,
+        xy: tuple[float, float],
+        text: str,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        drawn.append((text, draw.textlength(text, font=kwargs.get("font"))))
+        original_text(draw, xy, text, *args, **kwargs)
+
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", capture_text)
+    manifest = review.render_batch_sheets(
+        path, tmp_path, tmp_path / "sheets", project_root=tmp_path
+    )
+
+    for caption in (
+        "AUTO QC | overlay | 640x352",
+        "FAILED | RAW RGB | 640x480",
+        "REVIEW | overlay | v2",
+    ):
+        widths = [width for text, width in drawn if text == caption]
+        assert len(widths) == 3
+        assert all(width <= review.TILE_WIDTH - 14 for width in widths)
+    assert [sample["run_id"] for sample in manifest["samples"]] == [
+        record["run_id"] for record in payload["episodes"]
+    ]

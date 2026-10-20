@@ -1,0 +1,77 @@
+{
+  "format": "robotwin_inference_benchmark_v1",
+  "selection": "Ten distinct prepared UMI actions, six target-only and four tool-use; smallest episode ID in each 640x480 group, fixed before inference; retain failures. Run with --pipeline umi.",
+  "camera": "cam_high",
+  "cases": [
+    {
+      "task": "pick_up_640x480",
+      "episode": 0,
+      "episode_uid": "01801ccda940da2fe17fc98ea869246a",
+      "frame_count": 166,
+      "active_arm": "right"
+    },
+    {
+      "task": "put_down_640x480",
+      "episode": 101,
+      "episode_uid": "051882adf55472dbbca40b7f9b2609e5",
+      "frame_count": 176,
+      "active_arm": "right"
+    },
+    {
+      "task": "pull_640x480",
+      "episode": 203,
+      "episode_uid": "09eadcae791fc9d54070e91dfb4b6acd",
+      "frame_count": 170,
+      "active_arm": "left"
+    },
+    {
+      "task": "push_640x480",
+      "episode": 301,
+      "episode_uid": "0378bae2af40f1c46a23a0d24a5151d9",
+      "frame_count": 212,
+      "active_arm": "right"
+    },
+    {
+      "task": "pour_640x480",
+      "episode": 500,
+      "episode_uid": "055e07a3675004356bcca27a03f88fc5",
+      "frame_count": 124,
+      "active_arm": "left"
+    },
+    {
+      "task": "wipe_640x480",
+      "episode": 700,
+      "episode_uid": "03ca04c182e12eda0c8fca49c6b5d818",
+      "frame_count": 519,
+      "active_arm": "left"
+    },
+    {
+      "task": "rotate_640x480",
+      "episode": 928,
+      "episode_uid": "4c5ff7ba4f1eaa2f505111b6c8e131ae",
+      "frame_count": 155,
+      "active_arm": "left"
+    },
+    {
+      "task": "scoop_640x480",
+      "episode": 1000,
+      "episode_uid": "01311188bf6b8889b64417113db47b7d",
+      "frame_count": 221,
+      "active_arm": "right"
+    },
+    {
+      "task": "stir_640x480",
+      "episode": 1101,
+      "episode_uid": "087041e91cdce5dfb6ce7fe592fd8dac",
+      "frame_count": 500,
+      "active_arm": "right"
+    },
+    {
+      "task": "turn_over_640x480",
+      "episode": 1203,
+      "episode_uid": "0c821d383ebbee85d7864556f5b9b399",
+      "frame_count": 156,
+      "active_arm": "left"
+    }
+  ]
+}

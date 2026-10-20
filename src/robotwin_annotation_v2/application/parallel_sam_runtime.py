@@ -108,8 +108,7 @@ def sam_worker_process_entry(
         install_qwen_request_gate(qwen_request_gate)
         runtime = load_sam_runtime()
         backend = runtime.backend_factory(
-            checkpoint_path=worker_config.sam3.checkpoint,
-            gpus=worker_config.sam3.gpus,
+            **worker_config.sam3.backend_options(),
         )
         connection.send(SamWorkerReady(worker_id=worker_id, gpu_id=gpu_id))
         while True:

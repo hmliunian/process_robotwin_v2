@@ -48,10 +48,38 @@ UMI 单臂物体标注可显式声明 `timeline_source=video_window`。这种输
 `tool_use` 的 target 是完整工具，receiver 是被工具作用的独立容器或有明确边界的表面，
 不要求发生放置或松开。具体对象定义保存在任务配置中。
 
+嵌套 UMI 批次可用 `scripts/process_umi_batch.py` 先按头部及左右腕部多时刻预览筛选。
+模型筛选只生成单臂候选，来源记录为 `qwen_multiframe_screen`，不等同于人工验收。
+双臂、低置信度、证据不足和接口失败分别留在批次索引中，不进入 masks 处理。
+转换兼容 head-left 的 `left_h264/video` 和旧 `left/video` topic；同一片段混用两者会拒绝。
+转换保留解码帧对应的源序号、时间戳、实际 topic、原始片段 ID 和逐段任务文本，
+按动作及实际解码分辨率分组。`scripts/run_umi_batch.py` 复用现有 SAM GPU worker，
+为每组生成 overlays 和 review sheets；video-window 产物始终标为需要视觉复核。
+
+UMI 批处理可显式选择 `--inference-mode resident` 或 `async`。每个 GPU 进程跨组持有一个
+SAM backend，任务携带各自的 dataset、mode 和 profile，每个角色使用独立 session。
+`async` 在同一个 SAM owner 线程周围重叠有界 Qwen 规划和磁盘文件可视化；候选 QC、
+bbox 救援、时序传播及 canonical 保存仍保持原有依赖。多 GPU 共享文件 token 限制 Qwen
+总请求数，各线程分别持有 token 句柄；不提供全局 QC 请求优先级。
+
+快速模式对文本、bbox、文本加 bbox 候选均可只加载对应 JPEG。多候选帧的搜索、query
+顺序和 QC 规则不变。原生传播可选择只计算跟踪所需的视觉特征，编码 batch 为 1 或 4，
+tracker 仍逐帧更新记忆，特征缓存只保留一个 chunk。`sam3.seed_image_only` 和
+`sam3.tracking_batch_size` 通过配置传入所有 backend 构造入口。
+
+快速批次在输出根的 `.pipeline/selection.json` 保存完整选择与输入、配置、权重和实现身份，
+在每个原有 episode 目录的 `.pipeline/` 中保存任务身份、结果和可视化。分组目录和 canonical
+mask 路径不变，结果索引中的 `video` 指向实际 overlay；分组 review sheets 仍统一生成。
+恢复先校验整批及逐任务身份，通过校验的有效 masks 可只补渲染。渲染就绪和推理完成分别
+记账；失败、中断和未执行任务均保留。模式和运行参数见 [UMI 批处理说明](umi_batch.md)。
+
 输出 `loop.json`，包含 annotation mode、required roles、事件、输出窗口和 sparse semantic
 frames。无效或含糊的 state 会 fail closed。
 
 ### Semantic plan
+
+跨 close/hold 与 video-window 的语义模板可使用 `timeline_kind` 和 `timeline_events`。
+后者只序列化实际声明的事件；video-window 不补造 close 或 hold 时间。
 
 Qwen 接收交错的 frame label 与 image。严格 JSON 响应必须只包含 annotation mode 要求的角色。
 每个可用角色包含：

@@ -378,9 +378,7 @@ def _load_completed_sam_stage(
     manifest_path = episode_dir / "run_manifest.json"
     masks_path = episode_dir / "masks.npz"
     if not manifest_path.is_file() or not masks_path.is_file():
-        raise ValueError(
-            f"required SAM artifacts are missing for gripper stage: {episode_dir}"
-        )
+        raise ValueError(f"required SAM artifacts are missing for gripper stage: {episode_dir}")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if manifest.get("episode") != context.episode.to_json():
         raise ValueError("saved run_manifest.json episode differs from current context")
@@ -402,12 +400,9 @@ def _load_completed_sam_stage(
             if config.mask.qc_enabled and record.get("qc_status") != "passed":
                 raise ValueError(f"gripper stage requires {role} qc_status=passed")
         elif (
-            record.get("status") != "not_applicable"
-            or record.get("qc_status") != "not_applicable"
+            record.get("status") != "not_applicable" or record.get("qc_status") != "not_applicable"
         ):
-            raise ValueError(
-                f"gripper stage requires non-applicable {role} to remain empty"
-            )
+            raise ValueError(f"gripper stage requires non-applicable {role} to remain empty")
 
     def load_role(role: str) -> RoleMaskData:
         record = role_records[role]
@@ -432,11 +427,7 @@ def _load_completed_sam_stage(
         visible = compose_visible_mask(native, output_window)
         temporal_qc = evaluate_temporal_mask(
             visible,
-            (
-                context.events.target_window
-                if role == "target"
-                else output_window
-            ),
+            (context.events.target_window if role == "target" else output_window),
             config.mask,
             reference_mask=seed_mask,
         )
@@ -471,8 +462,7 @@ def _load_completed_sam_stage(
         frame_count=context.frame_count,
         frame_shape=frame_shape,
         role_masks=tuple(
-            load_role(role.value)
-            for role in context.annotation_spec.required_object_roles
+            load_role(role.value) for role in context.annotation_spec.required_object_roles
         ),
     )
 
@@ -558,9 +548,7 @@ def _execute_sam_episode(
     frame_shape = dataset.frame_shape(ref)
     semantic_frame_ids = {frame.frame_id for frame in context.semantic_frames}
     stage_images = dataset.read_frames(ref, semantic_frame_ids)
-    seed_frame_ids = {
-        frame.frame_id for frame in context.semantic_frames if frame.seed_eligible
-    }
+    seed_frame_ids = {frame.frame_id for frame in context.semantic_frames if frame.seed_eligible}
     seed_images = {frame_id: stage_images[frame_id] for frame_id in seed_frame_ids}
 
     qc_path: Path | None = None
@@ -606,13 +594,10 @@ def _execute_sam_episode(
 
 def _emit_sam_result(run_id: str, execution: SamEpisodeExecution) -> bool:
     mask_run = execution.mask_run
-    required_names = set(
-        annotation_spec(execution.annotation_mode).required_role_names
-    )
+    required_names = set(annotation_spec(execution.annotation_mode).required_role_names)
     object_roles = dict(zip(("target", "receiver"), mask_run.roles[:2], strict=True))
     complete = set(object_roles) == {"target", "receiver"} and all(
-        role.status
-        is (MaskStatus.OK if name in required_names else MaskStatus.NOT_APPLICABLE)
+        role.status is (MaskStatus.OK if name in required_names else MaskStatus.NOT_APPLICABLE)
         for name, role in object_roles.items()
     )
     _print(
@@ -620,9 +605,7 @@ def _emit_sam_result(run_id: str, execution: SamEpisodeExecution) -> bool:
             "run_id": run_id,
             "stage": "sam" if complete else "sam_incomplete",
             "artifact": str(Path(mask_run.artifact_dir) / "run_manifest.json"),
-            "mask_qc_artifact": (
-                None if execution.qc_path is None else str(execution.qc_path)
-            ),
+            "mask_qc_artifact": (None if execution.qc_path is None else str(execution.qc_path)),
             "roles": [role.to_json() for role in mask_run.roles],
         }
     )
@@ -635,8 +618,7 @@ def run_sam(config: PipelineConfig, episode_index: int, run_id: str) -> None:
     backend: Sam3Adapter | None = None
     try:
         backend = Sam3Adapter(
-            checkpoint_path=config.sam3.checkpoint,
-            gpus=config.sam3.gpus,
+            **config.sam3.backend_options(),
         )
         execution = _execute_sam_episode(config, episode_index, run_id, backend)
     except SAM_EXECUTION_ERRORS as exc:
@@ -681,8 +663,7 @@ def run_gripper(config: PipelineConfig, episode_index: int, run_id: str) -> None
     backend: Sam3Adapter | None = None
     try:
         backend = Sam3Adapter(
-            checkpoint_path=config.sam3.checkpoint,
-            gpus=config.sam3.gpus,
+            **config.sam3.backend_options(),
         )
         execution = _execute_gripper_episode(config, episode_index, run_id, backend)
     except SAM_EXECUTION_ERRORS as exc:
@@ -729,9 +710,7 @@ def _validate_manifest_mode(
         if mode is not AnnotationMode.PICK_PLACE:
             raise ValueError("target_only artifacts must declare required_object_roles")
     elif raw_roles != expected_roles:
-        raise ValueError(
-            "saved run_manifest.json required_object_roles differ from config"
-        )
+        raise ValueError("saved run_manifest.json required_object_roles differ from config")
 
 
 def _sam_episode_complete(
@@ -748,9 +727,7 @@ def _sam_episode_complete(
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         _validate_manifest_mode(manifest, config)
-        required_names = set(
-            annotation_spec(_annotation_mode(config)).required_role_names
-        )
+        required_names = set(annotation_spec(_annotation_mode(config)).required_role_names)
         roles: dict[str, dict[str, Any]] = {
             item["role"]: item
             for item in manifest["roles"]
@@ -770,15 +747,9 @@ def _sam_episode_complete(
             qc_roles = qc["roles"]
             if set(qc_roles) != required_names:
                 return False
-            if any(
-                qc_roles[role].get("status") != "passed"
-                for role in required_names
-            ):
+            if any(qc_roles[role].get("status") != "passed" for role in required_names):
                 return False
-            if any(
-                roles[role].get("qc_status") != "passed"
-                for role in required_names
-            ):
+            if any(roles[role].get("qc_status") != "passed" for role in required_names):
                 return False
             if any(
                 roles[role].get("qc_status") != "not_applicable"
@@ -804,9 +775,7 @@ def _gripper_episode_complete(
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         _validate_manifest_mode(manifest, config)
-        required_names = set(
-            annotation_spec(_annotation_mode(config)).required_role_names
-        )
+        required_names = set(annotation_spec(_annotation_mode(config)).required_role_names)
         algorithm = manifest.get("algorithm")
         if not isinstance(algorithm, dict):
             return False
@@ -869,9 +838,8 @@ def run_sam_batch(
     *,
     force: bool = False,
     backend_factory: Callable[..., Sam3Adapter] | None = None,
-    episode_runner: Callable[
-        [PipelineConfig, int, str, Sam3Adapter], SamEpisodeExecution
-    ] | None = None,
+    episode_runner: Callable[[PipelineConfig, int, str, Sam3Adapter], SamEpisodeExecution]
+    | None = None,
 ) -> None:
     """Run Stage 3 serially while keeping one SAM3 predictor resident."""
 
@@ -894,8 +862,7 @@ def run_sam_batch(
     if pending:
         try:
             backend = factory(
-                checkpoint_path=config.sam3.checkpoint,
-                gpus=config.sam3.gpus,
+                **config.sam3.backend_options(),
             )
             for episode_id in pending:
                 ref = _episode_ref(config, episode_id)
@@ -965,9 +932,7 @@ def run_gripper_batch(
     *,
     force: bool = False,
     backend_factory: Callable[..., Sam3Adapter] | None = None,
-    episode_runner: Callable[
-        [PipelineConfig, int, str, Sam3Adapter], GripperEpisodeExecution
-    ]
+    episode_runner: Callable[[PipelineConfig, int, str, Sam3Adapter], GripperEpisodeExecution]
     | None = None,
 ) -> None:
     """Run gripper serially while keeping one SAM3 predictor resident."""
@@ -991,8 +956,7 @@ def run_gripper_batch(
     if pending:
         try:
             backend = factory(
-                checkpoint_path=config.sam3.checkpoint,
-                gpus=config.sam3.gpus,
+                **config.sam3.backend_options(),
             )
             for episode_id in pending:
                 ref = _episode_ref(config, episode_id)

@@ -82,6 +82,35 @@ def test_video_only_reader_allows_missing_gripper_streams(
         umi_mcap.read_umi_mcap_episode(source)
 
 
+@pytest.mark.parametrize("topics", [(umi_mcap.CAMERA_TOPICS[1],), umi_mcap.CAMERA_TOPICS])
+def test_legacy_camera_topic_is_preserved_and_mixed_streams_are_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, topics: tuple[str, ...]
+) -> None:
+    source = SourceMetadata(tmp_path / "source.mcap", {"start_time_us": "1"})
+    source.path.touch()
+    messages = [
+        (
+            SimpleNamespace(encoding="flatbuffer", name="foxglove.CompressedVideo"),
+            SimpleNamespace(topic=topic),
+            SimpleNamespace(log_time=index, data=b"data"),
+        )
+        for index, topic in enumerate(topics)
+    ]
+    monkeypatch.setattr(
+        umi_mcap,
+        "mcap_reader_factory",
+        lambda: lambda _handle: SimpleNamespace(iter_messages=lambda **_kwargs: iter(messages)),
+    )
+    monkeypatch.setattr(umi_mcap, "parse_compressed_video_payload", lambda _data: b"video")
+    if len(topics) == 2:
+        with pytest.raises(RealMcapError, match="both UMI head-left"):
+            umi_mcap.read_umi_mcap_episode(source, require_grippers=False)
+    else:
+        episode = umi_mcap.read_umi_mcap_episode(source, require_grippers=False)
+        assert episode.camera_topic == topics[0]
+        assert episode.video_payloads == (b"video",)
+
+
 def test_umi_materializer_refuses_to_overwrite(tmp_path: Path) -> None:
     source = tmp_path / "source"
     output = tmp_path / "output"
@@ -107,7 +136,7 @@ def test_umi_materializer_writes_no_robot_state(
     source_path = source_root / "source.mcap"
     source_path.touch()
     source = SourceMetadata(source_path, {"start_time_us": "1", "episode_index": "9"})
-    episode = _episode(tmp_path)
+    episode = replace(_episode(tmp_path), camera_topic=umi_mcap.CAMERA_TOPICS[1])
     monkeypatch.setattr(umi_mcap, "read_source_metadata", lambda _path: source)
     monkeypatch.setattr(umi_mcap, "read_umi_mcap_episode", lambda _source: episode)
 
@@ -136,6 +165,7 @@ def test_umi_materializer_writes_no_robot_state(
     assert summary["episode_count"] == 1
     assert manifest["timeline_source"] == "episode_metadata"
     assert manifest["robot_state_available"] is False
+    assert manifest["source_camera_topic"] == umi_mcap.CAMERA_TOPICS[1]
     assert "observation.state" not in frame.columns
 
 

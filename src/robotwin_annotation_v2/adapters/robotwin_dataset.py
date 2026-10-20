@@ -292,7 +292,9 @@ class RoboTwinDataset:
             return shape
         return _parse_frame_shape(raw_shape)
 
-    def preflight(self, episode_ids: Iterable[int]) -> dict[str, Any]:
+    def preflight(
+        self, episode_ids: Iterable[int], *, require_sidecar: bool = True
+    ) -> dict[str, Any]:
         ids = tuple(int(value) for value in episode_ids)
         issues: list[str] = []
         metadata = self._metadata_index()
@@ -314,11 +316,13 @@ class RoboTwinDataset:
         for episode_index in ids:
             ref = EpisodeRef(self.task, episode_index, self.camera)
             paths = self.paths(ref)
-            for kind, path in (
+            required_paths = [
                 ("parquet", paths.parquet),
                 ("video", paths.video),
-                ("sidecar", paths.sidecar),
-            ):
+            ]
+            if require_sidecar:
+                required_paths.append(("sidecar", paths.sidecar))
+            for kind, path in required_paths:
                 if not path.is_file():
                     issues.append(f"episode {episode_index}: missing {kind}: {path}")
             if episode_index not in metadata:

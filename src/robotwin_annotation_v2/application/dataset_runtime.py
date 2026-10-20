@@ -118,6 +118,7 @@ def discover_episodes(
     *,
     camera: str,
     require_depth: bool = False,
+    require_sidecar: bool = True,
 ) -> DiscoveryResult:
     """Compatibility delegate for the canonical discovery module."""
 
@@ -125,6 +126,7 @@ def discover_episodes(
         root,
         camera=camera,
         require_depth=require_depth,
+        require_sidecar=require_sidecar,
     )
 
 
@@ -140,6 +142,7 @@ def build_dynamic_manifest(
     task: str,
     camera: str,
     episodes: Sequence[DiscoveredEpisode],
+    require_sidecar: bool = True,
 ) -> dict[str, Any]:
     """Compatibility delegate for the canonical discovery module."""
 
@@ -151,6 +154,7 @@ def build_dynamic_manifest(
         measure_episode_fn=_measure_episode,
         task_kind=read_dataset_task_kind(root),
         timeline_source=read_dataset_timeline_source(root),
+        require_sidecar=require_sidecar,
     )
 
 

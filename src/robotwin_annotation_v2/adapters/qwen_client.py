@@ -8,6 +8,7 @@ import io
 import json
 import math
 import os
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -87,14 +88,36 @@ class FileRequestGate:
             handle.close()
 
 
+class ThreadLocalFileRequestGate:
+    """Share process-safe token files while keeping each thread's handle separate."""
+
+    def __init__(self, token_paths: tuple[Path, ...]) -> None:
+        self._token_paths = token_paths
+        self._local = threading.local()
+
+    def _gate(self) -> FileRequestGate:
+        if not hasattr(self._local, "gate"):
+            self._local.gate = FileRequestGate(self._token_paths)
+        gate: FileRequestGate = self._local.gate
+        return gate
+
+    def acquire(self, blocking: bool = True, timeout: float | None = None) -> bool:
+        return self._gate().acquire(blocking, timeout)
+
+    def release(self) -> None:
+        self._gate().release()
+
+
 _REQUEST_GATE: RequestGate | None = None
 
 
-def install_qwen_request_gate(gate: RequestGate | None) -> None:
-    """Install a process-local concurrency gate for all Qwen HTTP requests."""
+def install_qwen_request_gate(gate: RequestGate | None) -> RequestGate | None:
+    """Install a process-local request gate and return its previous value."""
 
     global _REQUEST_GATE
+    previous = _REQUEST_GATE
     _REQUEST_GATE = gate
+    return previous
 
 
 class QwenServiceError(RuntimeError):

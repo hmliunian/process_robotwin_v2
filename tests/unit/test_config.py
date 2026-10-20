@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -262,9 +263,7 @@ def test_target_only_pilot_config_pins_close_and_hold_dataset() -> None:
     assert config.qwen.timeout_seconds == 600
     assert config.qwen.max_tokens == 400
     assert config.mask.qc_prompt_template is not None
-    assert config.mask.qc_prompt_template.name == (
-        "target_only_mask_candidate_qc_open_set.txt"
-    )
+    assert config.mask.qc_prompt_template.name == ("target_only_mask_candidate_qc_open_set.txt")
     assert config.mask.qc_max_candidates == 8
     assert config.mask.qc_query_fallback_enabled
     assert config.mask.qc_seed_fallback_enabled
@@ -371,9 +370,7 @@ def test_annotation_specs_only_declare_roles_and_backend() -> None:
 
 
 def test_config_rejects_unknown_annotation_mode(tmp_path: Path) -> None:
-    source = (PROJECT_ROOT / "configs/pilot_move_pillbottle_pad.yaml").read_text(
-        encoding="utf-8"
-    )
+    source = (PROJECT_ROOT / "configs/pilot_move_pillbottle_pad.yaml").read_text(encoding="utf-8")
     config_path = tmp_path / "bad-mode.yaml"
     config_path.write_text(source.replace("mode: pick_place", "mode: mystery"), encoding="utf-8")
 
@@ -444,3 +441,21 @@ def test_gripper_roi_requires_positive_finite_values(value: float) -> None:
             hard_axial_front_m=0.045,
             fixed_half_width_m=0.085,
         )
+
+
+@pytest.mark.parametrize("value", [-1, 17, True, 1.5])
+def test_sam_tracking_batch_rejects_invalid_values(value: object) -> None:
+    with pytest.raises(ConfigError, match="tracking_batch_size"):
+        Sam3Config(Path("sam3.pt"), tracking_batch_size=value)  # type: ignore[arg-type]
+
+
+def test_sam_backend_options_preserve_defaults_and_forward_fast_options() -> None:
+    config = Sam3Config(Path("sam3.pt"))
+    assert config.backend_options() == {"checkpoint_path": Path("sam3.pt"), "gpus": (0,)}
+    optimized = replace(config, seed_image_only=True, tracking_batch_size=1)
+    assert optimized.backend_options() == {
+        "checkpoint_path": Path("sam3.pt"),
+        "gpus": (0,),
+        "seed_image_only": True,
+        "tracking_batch_size": 1,
+    }

@@ -39,6 +39,7 @@ from .real_mcap import (
 )
 
 CAMERA_TOPIC = "/camera/coracam_head/left_h264/video"
+CAMERA_TOPICS = (CAMERA_TOPIC, "/camera/coracam_head/left/video")
 GRIPPER_TOPICS = (
     "/observation/left_gripper/gripper/joint_position",
     "/observation/right_gripper/gripper/joint_position",
@@ -54,6 +55,7 @@ class UmiMcapEpisode:
     video_payloads: tuple[bytes, ...]
     gripper_times_ns: tuple[NDArray, NDArray]
     gripper_values: tuple[NDArray, NDArray]
+    camera_topic: str = CAMERA_TOPIC
 
 
 @dataclass(frozen=True)
@@ -63,6 +65,8 @@ class UmiTimeline:
     gripper_travel: tuple[float, float] | None = None
     source_frame_indices: tuple[int, ...] | None = None
     source_frame_count: int | None = None
+    source_camera_topic: str = CAMERA_TOPIC
+    active_arm_source: str = "task_config_review"
 
     @property
     def metadata(self) -> dict[str, Any]:
@@ -71,8 +75,8 @@ class UmiTimeline:
                 "video_events": self.events.to_json(),
                 "timeline_provenance": {
                     "signal": "reviewed_video_window",
-                    "active_arm_source": "task_config_review",
-                    "source_topics": [CAMERA_TOPIC],
+                    "active_arm_source": self.active_arm_source,
+                    "source_topics": [self.source_camera_topic],
                     "source_frame_indices": list(self.source_frame_indices or ()),
                     "source_frame_count": self.source_frame_count,
                 },
@@ -147,6 +151,7 @@ def read_umi_mcap_episode(
 
     video_times: list[int] = []
     video_payloads: list[bytes] = []
+    camera_topic: str | None = None
     gripper_times: tuple[list[int], list[int]] = ([], [])
     gripper_values: tuple[list[float], list[float]] = ([], [])
     topic_indices = {topic: index for index, topic in enumerate(GRIPPER_TOPICS)}
@@ -154,11 +159,14 @@ def read_umi_mcap_episode(
         with source.path.open("rb") as handle:
             reader = mcap_reader_factory()(handle)
             for schema, channel, message in reader.iter_messages(
-                topics=[CAMERA_TOPIC, *GRIPPER_TOPICS]
+                topics=[*CAMERA_TOPICS, *GRIPPER_TOPICS]
             ):
                 if schema is None or schema.encoding != "flatbuffer":
                     raise RealMcapError(f"topic is not FlatBuffer encoded: {channel.topic}")
-                if channel.topic == CAMERA_TOPIC:
+                if channel.topic in CAMERA_TOPICS:
+                    if camera_topic is not None and camera_topic != channel.topic:
+                        raise RealMcapError("MCAP contains both UMI head-left video topics")
+                    camera_topic = channel.topic
                     if schema.name != "foxglove.CompressedVideo":
                         raise RealMcapError(f"unexpected camera schema: {schema.name}")
                     video_times.append(int(message.log_time))
@@ -195,6 +203,7 @@ def read_umi_mcap_episode(
             np.asarray(gripper_values[0], dtype=np.float64),
             np.asarray(gripper_values[1], dtype=np.float64),
         ),
+        camera_topic=camera_topic or CAMERA_TOPIC,
     )
     _validate_timestamps("video", episode.video_times_ns, source.path)
     for arm, timestamps in zip(("left gripper", "right gripper"), episode.gripper_times_ns):
@@ -248,6 +257,7 @@ def align_umi_timeline(episode: UmiMcapEpisode) -> UmiTimeline:
         timestamps_s=timestamps_s,
         events=events,
         gripper_travel=(float(travel[0]), float(travel[1])),
+        source_camera_topic=episode.camera_topic,
     )
 
 
@@ -285,7 +295,7 @@ def _write_sidecar(
     metadata = {
         "source_mcap": converted.source.path.name,
         "camera": OUTPUT_CAMERA,
-        "camera_topic": CAMERA_TOPIC,
+        "camera_topic": converted.timeline.source_camera_topic,
         "depth_available": False,
         "robot_state_available": False,
         "timeline_source": (
@@ -317,14 +327,14 @@ def _episode_metadata(
         "source_episode_index": None if source_episode is None else int(source_episode),
         "source_start_time_us": converted.source.start_time_us,
         "camera": OUTPUT_CAMERA,
-        "source_camera_topic": CAMERA_TOPIC,
+        "source_camera_topic": converted.timeline.source_camera_topic,
         "depth_available": False,
         "robot_state_available": False,
         **converted.timeline.metadata,
     }
 
 
-def _write_metadata(
+def write_umi_metadata(
     staging: Path,
     *,
     final_output: Path,
@@ -344,6 +354,7 @@ def _write_metadata(
     episode_ids = [item.episode_id for item in converted]
     video_window = task_config is not None
     mode = AnnotationMode.TARGET_ONLY if task_config is None else task_config.mode
+    camera_topics = sorted({item.timeline.source_camera_topic for item in converted})
     manifest = {
         "format": "robotwin_umi_video_extract_v1"
         if video_window
@@ -361,7 +372,11 @@ def _write_metadata(
             else {}
         ),
         "camera": OUTPUT_CAMERA,
-        "source_camera_topic": CAMERA_TOPIC,
+        **(
+            {"source_camera_topic": camera_topics[0]}
+            if len(camera_topics) == 1
+            else {"source_camera_topics": camera_topics}
+        ),
         "timeline_source": "video_window" if video_window else "episode_metadata",
         "depth_available": False,
         "robot_state_available": False,
@@ -438,6 +453,59 @@ def _discover_sources(input_root: Path) -> list[SourceMetadata]:
     return sorted(sources, key=lambda item: item.start_time_us)
 
 
+def convert_umi_episode(
+    source: SourceMetadata,
+    output_root: Path,
+    *,
+    episode_id: int,
+    global_start: int = 0,
+    active_arm: Literal["left", "right"] | None = None,
+    active_arm_source: str = "task_config_review",
+) -> ConvertedUmiEpisode:
+    """Convert one source, preserving native pixels and decoded-frame timestamps."""
+
+    episode = (
+        read_umi_mcap_episode(source)
+        if active_arm is None
+        else read_umi_mcap_episode(source, require_grippers=False)
+    )
+    chunk = f"chunk-{episode_id // 1000:03d}"
+    stem = f"episode_{episode_id:06d}"
+    video_path = (
+        output_root / "videos" / chunk / f"observation.images.{OUTPUT_CAMERA}" / f"{stem}.mp4"
+    )
+    if active_arm is None:
+        timeline = align_umi_timeline(episode)
+        frame_count, width, height, fps = write_video(
+            episode.video_payloads, episode.video_times_ns, video_path
+        )
+    else:
+        frames = decode_h264_frames(episode.video_payloads)
+        source_indices = tuple(cast(int, frame.pts) for frame in frames)
+        timestamps = episode.video_times_ns[list(source_indices)]
+        timeline = UmiTimeline(
+            timestamps_s=((timestamps - timestamps[0]) / 1e9).astype(np.float32),
+            events=VideoWindowEvents(active_arm, 0, len(frames) - 1),
+            source_frame_indices=source_indices,
+            source_frame_count=len(episode.video_payloads),
+            source_camera_topic=episode.camera_topic,
+            active_arm_source=active_arm_source,
+        )
+        frame_count, width, height, fps = encode_video_frames(frames, timestamps, video_path)
+    if frame_count != len(timeline.timestamps_s):
+        raise RealMcapError("video and derived timeline frame counts differ")
+    _write_frame_parquet(
+        output_root / "data" / chunk / f"{stem}.parquet",
+        episode_id=episode_id,
+        global_start=global_start,
+        timestamps_s=timeline.timestamps_s,
+        source_frame_indices=timeline.source_frame_indices,
+    )
+    item = ConvertedUmiEpisode(episode_id, frame_count, width, height, fps, source, timeline)
+    _write_sidecar(output_root / "sidecars" / f"{stem}.hdf5", converted=item)
+    return item
+
+
 def materialize_umi_mcap_dataset(
     input_root: Path,
     output_root: Path,
@@ -479,58 +547,16 @@ def materialize_umi_mcap_dataset(
     global_index = 0
     try:
         for episode_id, source in enumerate(sources):
-            episode = (
-                read_umi_mcap_episode(source)
-                if task_config is None
-                else read_umi_mcap_episode(source, require_grippers=False)
-            )
-            chunk = f"chunk-{episode_id // 1000:03d}"
-            stem = f"episode_{episode_id:06d}"
-            video_path = (
-                staging / "videos" / chunk / f"observation.images.{OUTPUT_CAMERA}" / f"{stem}.mp4"
-            )
-            if task_config is None:
-                timeline = align_umi_timeline(episode)
-                frame_count, width, height, fps = write_video(
-                    episode.video_payloads, episode.video_times_ns, video_path
-                )
-            else:
-                frames = decode_h264_frames(episode.video_payloads)
-                source_indices = tuple(cast(int, frame.pts) for frame in frames)
-                timestamps = episode.video_times_ns[list(source_indices)]
-                timeline = UmiTimeline(
-                    timestamps_s=((timestamps - timestamps[0]) / 1e9).astype(np.float32),
-                    events=VideoWindowEvents(
-                        task_config.episodes[source.path.name], 0, len(frames) - 1
-                    ),
-                    source_frame_indices=source_indices,
-                    source_frame_count=len(episode.video_payloads),
-                )
-                frame_count, width, height, fps = encode_video_frames(
-                    frames, timestamps, video_path
-                )
-            if frame_count != len(timeline.timestamps_s):
-                raise RealMcapError("video and derived timeline frame counts differ")
-            _write_frame_parquet(
-                staging / "data" / chunk / f"{stem}.parquet",
+            item = convert_umi_episode(
+                source,
+                staging,
                 episode_id=episode_id,
                 global_start=global_index,
-                timestamps_s=timeline.timestamps_s,
-                source_frame_indices=timeline.source_frame_indices,
+                active_arm=None if task_config is None else task_config.episodes[source.path.name],
             )
-            item = ConvertedUmiEpisode(
-                episode_id,
-                frame_count,
-                width,
-                height,
-                fps,
-                source,
-                timeline,
-            )
-            _write_sidecar(staging / "sidecars" / f"{stem}.hdf5", converted=item)
             converted.append(item)
-            global_index += frame_count
-        _write_metadata(
+            global_index += item.frame_count
+        write_umi_metadata(
             staging,
             final_output=output_root,
             task=task,
@@ -603,7 +629,9 @@ __all__ = [
     "UmiMcapEpisode",
     "UmiTimeline",
     "align_umi_timeline",
+    "convert_umi_episode",
     "main",
     "materialize_umi_mcap_dataset",
     "read_umi_mcap_episode",
+    "write_umi_metadata",
 ]

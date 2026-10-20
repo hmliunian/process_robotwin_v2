@@ -119,9 +119,7 @@ def test_text_query_masks_reuses_one_video_session() -> None:
     assert request_types.count("reset_session") == 1
     assert request_types.count("close_session") == 1
     assert [
-        request["text"]
-        for request in predictor.requests
-        if request["type"] == "add_prompt"
+        request["text"] for request in predictor.requests if request["type"] == "add_prompt"
     ] == ["bottle", "orange bottle"]
 
 
@@ -151,9 +149,7 @@ def test_visual_box_masks_submit_box_and_optional_text_together() -> None:
 
     assert np.array_equal(box_result, predictor.mask)
     assert np.array_equal(text_result, predictor.mask)
-    prompts = [
-        request for request in predictor.requests if request["type"] == "add_prompt"
-    ]
+    prompts = [request for request in predictor.requests if request["type"] == "add_prompt"]
     assert prompts[0]["bounding_boxes"] == [[0.1, 0.2, 0.7000000000000001, 0.7]]
     assert "text" not in prompts[0]
     assert prompts[1]["text"] == "black robot gripper"
@@ -205,3 +201,47 @@ def test_native_mask_propagation_keeps_exact_seed() -> None:
         if request["type"] == "propagate_in_video"
     ]
     assert directions == ["forward", "backward"]
+
+
+@pytest.mark.parametrize("method", ["text_mask", "box_mask", "text_box_mask"])
+def test_seed_image_uses_exact_frame_for_every_prompt_type(tmp_path: Path, method: str) -> None:
+    for index in range(4):
+        (tmp_path / f"{index:06d}.jpg").touch()
+    predictor = FakePredictor()
+    adapter = Sam3Adapter(
+        checkpoint_path=Path("unused.pt"), gpus=(0,), predictor=predictor, seed_image_only=True
+    )
+    args: list[Any] = [tmp_path]
+    if method in {"text_mask", "text_box_mask"}:
+        args.append("bottle")
+    if method in {"box_mask", "text_box_mask"}:
+        args.append((0.1, 0.2, 0.8, 0.9))
+
+    getattr(adapter, method)(*args, frame_id=2, frame_count=4, frame_shape=SHAPE)
+
+    assert predictor.requests[0]["resource_path"] == str(tmp_path / "000002.jpg")
+    assert predictor.requests[1]["frame_index"] == 0
+    assert predictor.requests[-1]["type"] == "close_session"
+
+
+def test_seed_image_preserves_video_index_for_ambiguous_frame_directory(tmp_path: Path) -> None:
+    for filename in ("000001.jpg", "000002.jpg"):
+        (tmp_path / filename).touch()
+    predictor = FakePredictor()
+    adapter = Sam3Adapter(
+        checkpoint_path=Path("unused.pt"), gpus=(0,), predictor=predictor, seed_image_only=True
+    )
+    adapter.text_mask(tmp_path, "bottle", frame_id=1, frame_count=2, frame_shape=SHAPE)
+    assert predictor.requests[0]["resource_path"] == str(tmp_path)
+    assert predictor.requests[1]["frame_index"] == 1
+
+
+@pytest.mark.parametrize("batch_size", [-1, 17, True, 1.5])
+def test_tracking_batch_size_is_bounded(batch_size: Any) -> None:
+    with pytest.raises(ValueError, match="tracking_batch_size"):
+        Sam3Adapter(
+            checkpoint_path=Path("unused.pt"),
+            gpus=(0,),
+            predictor=FakePredictor(),
+            tracking_batch_size=batch_size,
+        )

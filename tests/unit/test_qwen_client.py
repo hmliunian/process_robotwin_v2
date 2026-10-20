@@ -22,6 +22,7 @@ from robotwin_annotation_v2.adapters import (
 )
 from robotwin_annotation_v2.adapters.qwen_client import (
     FileRequestGate,
+    ThreadLocalFileRequestGate,
     install_qwen_request_gate,
 )
 from robotwin_annotation_v2.config import QwenConfig
@@ -33,6 +34,34 @@ class FakeHTTPResponse(io.BytesIO):
 
     def __exit__(self, *_args: object) -> None:
         self.close()
+
+
+def test_thread_local_file_gate_shares_tokens_and_keeps_thread_ownership(tmp_path: Path) -> None:
+    paths = FileRequestGate.create(tmp_path / "tokens", capacity=1).token_paths
+    gate = ThreadLocalFileRequestGate(paths)
+    held = threading.Event()
+    release = threading.Event()
+
+    def owner() -> None:
+        assert gate.acquire(timeout=2)
+        held.set()
+        try:
+            assert release.wait(3)
+        finally:
+            gate.release()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(owner)
+        try:
+            assert held.wait(3)
+            assert not gate.acquire(blocking=False)
+            with pytest.raises(RuntimeError, match="not acquired"):
+                gate.release()
+        finally:
+            release.set()
+        future.result(timeout=3)
+    assert gate.acquire(timeout=2)
+    gate.release()
 
 
 def _acquire_gate_and_exit(gate: FileRequestGate, connection: Any) -> None:
@@ -62,7 +91,7 @@ def test_openai_client_health_and_completion(monkeypatch: Any) -> None:
         else:
             payload = {
                 "model": "fake-qwen",
-                "choices": [{"message": {"content": "{\"target\": {}}"}}],
+                "choices": [{"message": {"content": '{"target": {}}'}}],
             }
         return FakeHTTPResponse(json.dumps(payload).encode("utf-8"))
 
@@ -103,9 +132,7 @@ def test_api_client_authenticates_models_probe_and_completion(monkeypatch: Any) 
             if request.full_url.endswith("/models")
             else {
                 "model": "qwen3.8-max",
-                "choices": [
-                    {"message": {"content": "ok"}, "finish_reason": "stop"}
-                ],
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
             }
         )
         return FakeHTTPResponse(json.dumps(payload).encode("utf-8"))

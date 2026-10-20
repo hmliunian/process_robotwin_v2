@@ -347,6 +347,26 @@ def test_discover_episodes_can_require_depth_video(tmp_path: Path) -> None:
     assert urdf.skipped[0]["missing"] == ["depth_video"]
 
 
+def test_object_discovery_needs_no_sidecar_but_depth_still_does(tmp_path: Path) -> None:
+    _touch_episode(tmp_path, 7, sidecar=False)
+
+    assert discover_episodes(tmp_path, camera="cam_high", require_sidecar=False).episode_ids == (7,)
+    assert discover_episodes(
+        tmp_path, camera="cam_high", require_depth=True, require_sidecar=False
+    ).episode_ids == ()
+
+    episodes = discover_episodes(tmp_path, camera="cam_high", require_sidecar=False).episodes
+    manifest = build_dynamic_manifest(
+        tmp_path,
+        task="task",
+        camera="cam_high",
+        episodes=episodes,
+        measure_episode_fn=lambda _: (6, (2, 3), 0),
+        require_sidecar=False,
+    )
+    assert not any("hdf5" in path for path in manifest["required_relative_files"])
+
+
 def test_discover_episodes_rejects_invalid_chunk_name(tmp_path: Path) -> None:
     bad = tmp_path / "data/not-a-chunk"
     bad.mkdir(parents=True)
@@ -558,7 +578,7 @@ def test_process_dataset_target_receiver_only_skips_gripper_and_uses_sam_resume(
     skip_render: bool,
 ) -> None:
     dataset = tmp_path / "dataset"
-    _touch_episode(dataset, 7)
+    _touch_episode(dataset, 7, sidecar=False)
     (dataset / "EXTRACT_MANIFEST.json").write_text(
         json.dumps({"timeline_source": timeline_source})
     )
