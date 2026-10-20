@@ -48,8 +48,8 @@ UMI 只处理 object source；两个 gripper 通道为空，不补造抓取、�
 ## 快速推理
 
 `scripts/run_umi_batch.py` 增加显式选择的快速模式。默认仍为 `legacy`；其他数据工作流的
-默认参数保持原样。这里的 `legacy` 对应已提交分支的原路径，本次 10 帧测量另行冻结了包含
-原工作区文本单图补丁的基线，避免重复计算已经存在的收益。
+默认参数保持原样。这里的 `legacy` 对应已提交分支的原路径；性能对照另行冻结包含原
+工作区文本单图补丁的基线，避免重复计算已经存在的收益。
 
 | 模式 | 行为 |
 | --- | --- |
@@ -84,9 +84,9 @@ OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 PYTHONPATH=src:. \
 旧输出没有快速模式身份文件时会拒绝复用，不覆盖已有推理结果。批次状态及分组索引仍由
 协调端更新，原有分辨率合并入口可读取快速模式的 `episode_results.json`。
 
-首轮仅对固定 10 帧做真实 SAM 的 IoU 与速度对照，见
-[10 帧验证报告](umi_inference_fast_10frames_20261020.md)。本轮不以此宣称整批异步或多 GPU
-吞吐加速；`needs_temporal_review` 仍要求视觉复核。
+固定十条完整视频的速度、IoU 和失败记录见
+[合并验证摘要](umi_inference_end_to_end_20261020.md)。固定 seed 的传播结果一致；真实 Qwen
+端到端结果存在差异，尚未证明等质替换。`needs_temporal_review` 仍要求视觉复核。
 
 ## 合并同一任务的不同分辨率
 

@@ -202,9 +202,7 @@ def run_umi_pipeline(
             "episode": job.episode,
             "camera": job.ref.camera,
             "run_id": job.run_id,
-            "artifact_dir": str(
-                ArtifactStore(job.config.output_root).episode_dir(job.run_id, job.ref)
-            ),
+            "artifact_dir": str(job.directory.parent),
             "objects_ready": False,
             "masks_ready": False,
         }
@@ -412,5 +410,5 @@ def run_umi_pipeline(
             raise
         finally:
             install_qwen_request_gate(previous_gate)
-            persist(final_status)
-    return persist(final_status)
+            final_result = persist(final_status)
+    return final_result

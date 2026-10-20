@@ -40,7 +40,6 @@ def file_hash(path: Path) -> str:
 
 
 def select_jobs(
-    batch_dir: Path,
     config_path: Path,
     output: Path,
     plan: dict[str, Any],
@@ -273,7 +272,7 @@ def run_worker(
             if not key or any(char.isspace() for char in key):
                 raise ValueError("invalid Qwen API key file")
             os.environ[key_env] = key
-    result: dict[str, Any] = run_umi_pipeline(
+    return run_umi_pipeline(
         jobs,
         output=output,
         render=render_job,
@@ -285,7 +284,6 @@ def run_worker(
         runtime=replace(runtime, sam_episode_complete=complete),
         request_gate=ThreadLocalFileRequestGate(gate_paths),
     )
-    return result
 
 
 def run_fast_batch(
@@ -316,7 +314,6 @@ def run_fast_batch(
     selection_path = state / "selection.json"
     plan = json.loads((batch_dir / "batch_plan.json").read_text())
     jobs = select_jobs(
-        batch_dir,
         config_path,
         output,
         plan,
