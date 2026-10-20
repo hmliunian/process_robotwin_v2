@@ -1,5 +1,8 @@
 # UMI 快速推理集成与 10 帧对照验证
 
+后续已补充[完整视频传播验证](umi_inference_full_validation_20261020.md)，覆盖固定十条
+视频及非零 seed 的反向传播。本文保留原十帧实验范围和结果。
+
 日期：2026-10-20。开发分支：`feat/umi-inference-fast`，从 `feat/umi-h200-batch` 新建。
 
 本次 H200 实测中，优化前后两个角色的 10 帧传播 mask 逐像素一致，平均及最小 IoU 均为
