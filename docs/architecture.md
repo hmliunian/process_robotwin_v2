@@ -62,6 +62,14 @@ SAM backend，任务携带各自的 dataset、mode 和 profile，每个角色使
 bbox 救援、时序传播及 canonical 保存仍保持原有依赖。多 GPU 共享文件 token 限制 Qwen
 总请求数，各线程分别持有 token 句柄；不提供全局 QC 请求优先级。
 
+`async --episode-workers N`（N > 1）允许每卡最多 N 条视频并发执行 CPU/Qwen 流程。
+所有 SAM 调用进入有界 FIFO 队列，由创建 backend 的同一个线程串行执行；每次调用仍
+独立创建、释放 session。视频线程等待自己的 SAM 结果，候选 QC、fallback、传播和发布
+顺序保持不变，其他视频可以在此期间使用 GPU。解码、QC 图片及 canonical 保存发生在
+视频线程，临时帧目录保留到该视频全部调用结束。渲染背压暂停接纳新视频，继续服务已经
+接纳的视频，避免阻塞 GPU 队列。fatal CUDA 或中断先关闭队列并唤醒等待者，再回收视频
+线程和 backend；完成的 masks 保留以便恢复。默认 N=1 保留原调度，队列模式显式启用。
+
 快速模式对文本、bbox、文本加 bbox 候选均可只加载对应 JPEG。多候选帧的搜索、query
 顺序和 QC 规则不变。原生传播可选择只计算跟踪所需的视觉特征，编码 batch 为 1 或 4，
 tracker 仍逐帧更新记忆，特征缓存只保留一个 chunk。`sam3.seed_image_only` 和

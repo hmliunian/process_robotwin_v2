@@ -95,6 +95,11 @@ def test_batch_keeps_group_ledgers_and_rejects_resume_input_changes(
         ]
         assert {row["run_id"] for row in rows} == {group["group"]}
     identity = (output / ".pipeline/selection.json").read_bytes()
+    with pytest.raises(ValueError, match="complete selection"):
+        batch.run_fast_batch(
+            tmp_path, Path("config"), gpus=(4, 7), output_root=output, episode_workers=3
+        )
+    assert (output / ".pipeline/selection.json").read_bytes() == identity
     monkeypatch.setattr(
         batch, "select_jobs", lambda *_, **__: [replace(jobs[0], input_signature="changed")]
     )
@@ -153,6 +158,16 @@ def test_existing_entry_routes_fast_mode_and_writes_review_index(
         return {"counts": {}, "episodes": []}
 
     monkeypatch.setattr(batch, "run_fast_batch", fast)
-    run_batch(tmp_path, Path("config"), gpus=(2,), inference_mode="async")
+    run_batch(tmp_path, Path("config"), gpus=(2,), inference_mode="async", episode_workers=3)
     assert options["asynchronous"] and options["tracking_batch_size"] == 1
+    assert options["episode_workers"] == 3
     assert (tmp_path / "runs/index.html").exists()
+
+
+@pytest.mark.parametrize("mode,workers", [("legacy", 2), ("resident", 2), ("async", 0)])
+def test_episode_queue_rejects_invalid_mode_or_capacity_before_writes(
+    tmp_path: Path, mode: str, workers: int
+) -> None:
+    with pytest.raises(ValueError, match="episode workers"):
+        run_batch(tmp_path, Path("config"), gpus=(0,), inference_mode=mode, episode_workers=workers)
+    assert not list(tmp_path.iterdir())

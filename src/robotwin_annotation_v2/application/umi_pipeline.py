@@ -1,15 +1,11 @@
-"""Bounded UMI planning and rendering around one resident, serial SAM backend.
-
-SAM seed QC, propagation and canonical mask publication keep their production
-implementation. Only planning of other episodes and disk-based review rendering
-overlap that work. A predictor is never shared between threads.
-"""
+"""Bounded UMI episode pipelines around one resident, single-owner SAM backend."""
 
 from __future__ import annotations
 
 import json
 import threading
 import time
+from collections import deque
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager
@@ -23,6 +19,7 @@ from robotwin_annotation_v2.adapters.qwen_client import RequestGate, install_qwe
 from robotwin_annotation_v2.config import PipelineConfig
 from robotwin_annotation_v2.models import EpisodeRef
 
+from .sam_task_queue import SamTaskQueue
 from .sam_workflow import SamBackend, SamRuntime, load_sam_runtime, validate_sam_run_id
 
 CURRENT_JOB: ContextVar[str] = ContextVar("umi_pipeline_job", default="batch")
@@ -154,6 +151,7 @@ def run_umi_pipeline(
     prefetch: int = 2,
     qwen_workers: int = 4,
     render_buffer: int = 2,
+    episode_workers: int = 1,
     resume: bool = False,
     runtime: SamRuntime[SamBackend, Any, Any] | None = None,
     events: PipelineEvents | None = None,
@@ -165,10 +163,14 @@ def run_umi_pipeline(
     at most ``qwen_workers - 1`` threads, leaving capacity for QC in a single-worker
     run when the cap exceeds one. Shared multi-GPU gates enforce a global request
     limit without QC priority. Serial mode uses identical model lifetime, stages
-    and output policy, providing a resident-model A/B baseline.
+    and output policy, providing a resident-model A/B baseline. With asynchronous
+    execution and ``episode_workers > 1``, CPU/Qwen episode threads submit SAM
+    calls to the owner queue. Admission bounds decoded videos and unsent reviews.
     """
-    if not jobs or min(prefetch, qwen_workers, render_buffer) < 1:
+    if not jobs or min(prefetch, qwen_workers, render_buffer, episode_workers) < 1:
         raise ValueError("jobs and pipeline capacities must be nonempty/positive")
+    if episode_workers > 1 and not asynchronous:
+        raise ValueError("multiple episode workers require asynchronous mode")
     first = jobs[0].config
     if resume:
         validate_batch_selection(output, jobs)
@@ -181,12 +183,14 @@ def run_umi_pipeline(
     rows: dict[str, dict[str, Any]] = {}
     written_rows: dict[str, dict[str, Any]] = {}
     backend: SamBackend | None = None
+    model_queue: SamTaskQueue | None = None
     pending_reviews: dict[Future[dict[str, Any]], UmiJob] = {}
     pending_plans: dict[Future[None], UmiJob] = {}
     fatal_error: str | None = None
     final_status = "failed"
     peak_plans = 0
     peak_reviews = 0
+    peak_episodes = 0
     active_job: UmiJob | None = None
     phase = "startup"
     startup_complete = False
@@ -225,9 +229,12 @@ def run_umi_pipeline(
             "prefetch": prefetch,
             "qwen_max_in_flight": qwen_workers,
             "render_buffer": render_buffer,
-            "mask_save": "synchronous",
+            "episode_workers": episode_workers,
+            "mask_save": "episode_worker" if episode_workers > 1 else "synchronous",
             "peak_plans": peak_plans,
             "peak_reviews": peak_reviews,
+            "peak_episodes": peak_episodes,
+            "sam_queue": None if model_queue is None else model_queue.snapshot(),
             "wall_s": time.perf_counter() - started,
             "fatal_error": fatal_error,
             "selected_job_ids": [job.key for job in jobs],
@@ -267,6 +274,145 @@ def run_umi_pipeline(
                 rows[job.key] = future.result()
                 persist("running")
 
+    def run_queued(
+        planners: ThreadPoolExecutor,
+        renders: ThreadPoolExecutor,
+        complete: dict[str, bool],
+    ) -> None:
+        nonlocal model_queue, peak_plans, peak_reviews, peak_episodes, fatal_error
+        model_queue = SamTaskQueue(
+            backend,
+            capacity=episode_workers,
+            fatal_cuda_error=runtime.fatal_cuda_error,
+            measure=events.measure,
+        )
+        pending: dict[Future[tuple[dict[str, Any], str | None]], UmiJob] = {}
+        ready_reviews: deque[UmiJob] = deque()
+        remaining = iter(jobs)
+
+        def refill_plans() -> None:
+            nonlocal peak_plans
+            while len(pending_plans) < prefetch:
+                job = next(remaining, None)
+                if job is None:
+                    break
+                if complete[job.key]:
+                    future: Future[None] = Future()
+                    future.set_result(None)
+                else:
+                    future = planners.submit(plan, job)
+                pending_plans[future] = job
+                peak_plans = max(peak_plans, len(pending_plans))
+
+        def execute(job: UmiJob) -> tuple[dict[str, Any], str | None]:
+            row = new_row(job)
+            try:
+                assert model_queue is not None
+                with events.measure("sam_qc_propagation_save", job.key):
+                    execution = runtime.execute_sam_episode(
+                        job.config, job.episode, job.run_id, model_queue
+                    )
+                    row["masks_ready"] = runtime.emit_sam_result(job.run_id, execution)
+                row["process_status"] = "completed" if row["masks_ready"] else "sam_incomplete"
+                row["status"] = "masks_pending_render" if row["masks_ready"] else "failed"
+            except (Exception, SystemExit) as exc:  # noqa: BLE001 - retain each episode failure
+                row.update(
+                    status="failed",
+                    process_status="sam_failed",
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                return row, str(row["error"]) if runtime.fatal_cuda_error(exc) else None
+            return row, None
+
+        def finish(job: UmiJob, row: dict[str, Any]) -> None:
+            rows[job.key] = row
+            ready_reviews.append(job)
+            persist("running")
+
+        episodes = ThreadPoolExecutor(max_workers=episode_workers, thread_name_prefix="umi-episode")
+        try:
+            refill_plans()
+            while pending_plans or pending or ready_reviews or pending_reviews:
+                collect_reviews()
+                for future in tuple(pending):
+                    if future.done():
+                        # Keep the future until result() succeeds so interruption cleanup
+                        # can account for the episode that raised a BaseException.
+                        row, error = future.result()
+                        job = pending.pop(future)
+                        finish(job, row)
+                        fatal_error = fatal_error or error
+                if model_queue.fatal_error is not None:
+                    exc = model_queue.fatal_error
+                    fatal_error = f"{type(exc).__name__}: {exc}"
+                if fatal_error is not None:
+                    model_queue.close(fatal_error)
+                    for planned in pending_plans:
+                        planned.cancel()
+                    pending_plans.clear()
+                while ready_reviews and len(pending_reviews) < render_buffer:
+                    job = ready_reviews.popleft()
+                    pending_reviews[renders.submit(review, job, rows[job.key])] = job
+                    peak_reviews = max(peak_reviews, len(pending_reviews))
+                # Completed episodes waiting for rendering retain an admission slot.
+                # Backpressure must never stop servicing calls from admitted episodes.
+                for planned in tuple(pending_plans):
+                    if (
+                        fatal_error is not None
+                        or len(pending) + len(ready_reviews) >= episode_workers
+                    ):
+                        break
+                    if not planned.done():
+                        continue
+                    job = pending_plans.pop(planned)
+                    try:
+                        planned.result()
+                    except (Exception, SystemExit) as exc:  # noqa: BLE001 - external planner
+                        finish(
+                            job,
+                            {
+                                **new_row(job),
+                                "status": "failed",
+                                "process_status": "planning_failed",
+                                "error": f"{type(exc).__name__}: {exc}",
+                            },
+                        )
+                    else:
+                        if complete[job.key]:
+                            finish(job, rows[job.key])
+                        else:
+                            pending[episodes.submit(execute, job)] = job
+                            peak_episodes = max(peak_episodes, len(pending))
+                    refill_plans()
+                if pending and fatal_error is None:
+                    model_queue.run_one()
+                elif pending or pending_plans or pending_reviews:
+                    waiting: list[Future[Any]] = [*pending, *pending_plans, *pending_reviews]
+                    wait(
+                        waiting,
+                        timeout=0.05,
+                        return_when=FIRST_COMPLETED,
+                    )
+        finally:
+            # Wake callers before joining episode threads, including on Ctrl-C.
+            model_queue.close()
+            for planned in pending_plans:
+                planned.cancel()
+            episodes.shutdown(wait=True, cancel_futures=True)
+            for future, job in pending.items():
+                if future.cancelled():
+                    continue
+                try:
+                    row, _error = future.result()
+                except BaseException as exc:  # noqa: BLE001 - preserve interrupted worker state
+                    row = {
+                        **new_row(job),
+                        "status": "interrupted_during_sam",
+                        "process_status": "interrupted_during_sam",
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                rows[job.key] = row
+
     planner_count = min(prefetch, max(1, qwen_workers - 1))
     try:
         persist("running")
@@ -297,79 +443,82 @@ def run_umi_pipeline(
             ) as planners,
             ThreadPoolExecutor(max_workers=1, thread_name_prefix="umi-render") as renders,
         ):
-            remaining = iter(jobs)
+            if episode_workers > 1:
+                run_queued(planners, renders, complete)
+            else:
+                remaining = iter(jobs)
 
-            def submit_next() -> bool:
-                nonlocal peak_plans
-                job = next(remaining, None)
-                if job is None:
-                    return False
-                if complete[job.key]:
-                    future: Future[None] = Future()
-                    future.set_result(None)
-                else:
-                    future = planners.submit(plan, job)
-                pending_plans[future] = job
-                peak_plans = max(peak_plans, len(pending_plans))
-                return True
-
-            for _ in range(prefetch if asynchronous else 1):
-                submit_next()
-            while pending_plans:
-                with events.measure("plan_wait"):
-                    ready, _ = wait(pending_plans, return_when=FIRST_COMPLETED)
-                future = next(f for f in pending_plans if f in ready)
-                job = pending_plans.pop(future)
-                active_job = job
-                # Refill before SAM starts, so the next plan can overlap this episode.
-                if asynchronous:
-                    submit_next()
-                row = new_row(job)
-                phase = "planning"
-                try:
-                    future.result()
-                    phase = "sam"
+                def submit_next() -> bool:
+                    nonlocal peak_plans
+                    job = next(remaining, None)
+                    if job is None:
+                        return False
                     if complete[job.key]:
-                        row["process_status"] = "skipped_complete"
-                        row["masks_ready"] = True
+                        future: Future[None] = Future()
+                        future.set_result(None)
                     else:
-                        assert backend is not None
-                        with events.measure("sam_qc_propagation_save", job.key):
-                            execution = runtime.execute_sam_episode(
-                                job.config, job.episode, job.run_id, backend
-                            )
-                            row["masks_ready"] = runtime.emit_sam_result(job.run_id, execution)
-                        row["process_status"] = (
-                            "completed" if row["masks_ready"] else "sam_incomplete"
-                        )
-                    row["status"] = "masks_pending_render" if row["masks_ready"] else "failed"
-                except (Exception, SystemExit) as exc:  # noqa: BLE001 - retain every attempt
-                    row.update(
-                        status="failed",
-                        process_status=f"{phase}_failed",
-                        error=f"{type(exc).__name__}: {exc}",
-                    )
-                    if runtime.fatal_cuda_error(exc):
-                        fatal_error = str(row["error"])
-                rows[job.key] = row
-                persist("running")
-                phase = "render"
-                if asynchronous:
-                    collect_reviews()
-                    while len(pending_reviews) >= render_buffer:
-                        collect_reviews(block=True)
-                    pending_reviews[renders.submit(review, job, row)] = job
-                    peak_reviews = max(peak_reviews, len(pending_reviews))
-                else:
-                    rows[job.key] = review(job, row)
-                    persist("running")
-                    if fatal_error is None:
+                        future = planners.submit(plan, job)
+                    pending_plans[future] = job
+                    peak_plans = max(peak_plans, len(pending_plans))
+                    return True
+
+                for _ in range(prefetch if asynchronous else 1):
+                    submit_next()
+                while pending_plans:
+                    with events.measure("plan_wait"):
+                        ready, _ = wait(pending_plans, return_when=FIRST_COMPLETED)
+                    future = next(f for f in pending_plans if f in ready)
+                    job = pending_plans.pop(future)
+                    active_job = job
+                    # Refill before SAM starts, so the next plan can overlap this episode.
+                    if asynchronous:
                         submit_next()
-                active_job = None
-                if fatal_error is not None:
-                    for waiting in pending_plans:
-                        waiting.cancel()
-                    break
+                    row = new_row(job)
+                    phase = "planning"
+                    try:
+                        future.result()
+                        phase = "sam"
+                        if complete[job.key]:
+                            row["process_status"] = "skipped_complete"
+                            row["masks_ready"] = True
+                        else:
+                            assert backend is not None
+                            with events.measure("sam_qc_propagation_save", job.key):
+                                execution = runtime.execute_sam_episode(
+                                    job.config, job.episode, job.run_id, backend
+                                )
+                                row["masks_ready"] = runtime.emit_sam_result(job.run_id, execution)
+                            row["process_status"] = (
+                                "completed" if row["masks_ready"] else "sam_incomplete"
+                            )
+                        row["status"] = "masks_pending_render" if row["masks_ready"] else "failed"
+                    except (Exception, SystemExit) as exc:  # noqa: BLE001 - retain every attempt
+                        row.update(
+                            status="failed",
+                            process_status=f"{phase}_failed",
+                            error=f"{type(exc).__name__}: {exc}",
+                        )
+                        if runtime.fatal_cuda_error(exc):
+                            fatal_error = str(row["error"])
+                    rows[job.key] = row
+                    persist("running")
+                    phase = "render"
+                    if asynchronous:
+                        collect_reviews()
+                        while len(pending_reviews) >= render_buffer:
+                            collect_reviews(block=True)
+                        pending_reviews[renders.submit(review, job, row)] = job
+                        peak_reviews = max(peak_reviews, len(pending_reviews))
+                    else:
+                        rows[job.key] = review(job, row)
+                        persist("running")
+                        if fatal_error is None:
+                            submit_next()
+                    active_job = None
+                    if fatal_error is not None:
+                        for waiting in pending_plans:
+                            waiting.cancel()
+                        break
             # The returned makespan includes all disk writes and review work.
             while pending_reviews:
                 collect_reviews(block=True)

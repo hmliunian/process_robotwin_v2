@@ -126,8 +126,9 @@ def _cpu_worker(
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="CPU overlays require ffmpeg")
+@pytest.mark.parametrize("episode_workers", [1, 3])
 def test_spawned_fast_batch_renders_and_merges_real_artifacts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, episode_workers: int
 ) -> None:
     group = "pick_up_32x32"
     dataset = tmp_path / "inputs" / group
@@ -187,7 +188,9 @@ def test_spawned_fast_batch_renders_and_merges_real_artifacts(
     monkeypatch.setattr(batch, "select_jobs", lambda *_, **__: jobs)
     monkeypatch.setattr(batch, "run_worker", _cpu_worker)
 
-    result = batch.run_fast_batch(tmp_path, config.config_path, gpus=(0,), output_root=output)
+    result = batch.run_fast_batch(
+        tmp_path, config.config_path, gpus=(0,), output_root=output, episode_workers=episode_workers
+    )
 
     success, incomplete, render_failed = result["episodes"]
     assert [row["status"] for row in result["episodes"]] == [
