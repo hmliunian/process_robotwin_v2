@@ -60,15 +60,24 @@ UMI 批处理可显式选择 `--inference-mode resident` 或 `async`。每个 GP
 SAM backend，任务携带各自的 dataset、mode 和 profile，每个角色使用独立 session。
 `async` 在同一个 SAM owner 线程周围重叠有界 Qwen 规划和磁盘文件可视化；候选 QC、
 bbox 救援、时序传播及 canonical 保存仍保持原有依赖。多 GPU 共享文件 token 限制 Qwen
-总请求数，各线程分别持有 token 句柄；不提供全局 QC 请求优先级。
+总请求数，各线程分别持有 token 句柄。队列模式限制规划请求最多使用一半 token
+（向下取整，至少一个），在请求上限大于 1 时给 QC/bbox 保留容量；这是容量预留，不是抢占正在执行的请求。
 
-`async --episode-workers N`（N > 1）允许每卡最多 N 条视频并发执行 CPU/Qwen 流程。
-所有 SAM 调用进入有界 FIFO 队列，由创建 backend 的同一个线程串行执行；每次调用仍
-独立创建、释放 session。视频线程等待自己的 SAM 结果，候选 QC、fallback、传播和发布
-顺序保持不变，其他视频可以在此期间使用 GPU。解码、QC 图片及 canonical 保存发生在
-视频线程，临时帧目录保留到该视频全部调用结束。渲染背压暂停接纳新视频，继续服务已经
-接纳的视频，避免阻塞 GPU 队列。fatal CUDA 或中断先关闭队列并唤醒等待者，再回收视频
-线程和 backend；完成的 masks 保留以便恢复。默认 N=1 保留原调度，队列模式显式启用。
+`async --episode-workers N`（N > 1）通过有界 FIFO 将所有 SAM 调用交给创建 backend 的
+同一个线程，每次调用仍独立创建、释放 session。生产 runtime 将 episode 拆成三个阶段：
+
+1. N 个生产者使用有来源帧编号的稀疏 JPEG 进行候选生成和 Qwen QC/bbox。等待接口时不
+   保留整段 JPEG；候选顺序、fallback 和质检规则不变。完成质检的就绪任务也占生产者容量。
+2. `--video-workers V`（默认 2）限制完整帧目录、传播以及待保存的完整 mask 结果总数。
+   进入此阶段才生成完整 JPEG 序列；SAM 仍由唯一 owner 调用。稀疏和完整 JPEG 使用相同编码参数。
+3. 独立 writer 保存 QC 证据和 canonical masks，保存完成才释放视频名额并发布完成状态。
+   渲染仅消费磁盘路径，积压不占生产者名额；仍在返回前等待全部渲染结果。
+
+规划、生产者、完整视频和渲染执行队列分别限流。N 与整批 Qwen 请求上限可独立配置，
+不能据此假定远程服务具有相同的实际吞吐。fatal CUDA 或中断先关闭模型队列并唤醒等待者，
+再回收线程和 backend；已提交的写盘任务会排空，完成的 masks 保留以便恢复。未发布的
+阶段会在恢复时重做。默认 N=1 保留原调度；没有分阶段 hooks 的注入 runtime 保留原整段
+执行接口。快速模式以外未开启种子单图优化的 runtime 也使用整段接口。
 
 快速模式对文本、bbox、文本加 bbox 候选均可只加载对应 JPEG。多候选帧的搜索、query
 顺序和 QC 规则不变。原生传播可选择只计算跟踪所需的视觉特征，编码 batch 为 1 或 4，

@@ -242,6 +242,7 @@ def run_worker(
     cpu_threads: int,
     resume: bool,
     episode_workers: int = 1,
+    video_workers: int = 2,
 ) -> dict[str, Any]:
     # Construction and all SAM calls happen on this process's main thread.
     import cv2
@@ -282,9 +283,12 @@ def run_worker(
         prefetch=prefetch,
         render_buffer=render_buffer,
         episode_workers=episode_workers,
+        video_workers=video_workers,
         resume=resume,
         runtime=replace(runtime, sam_episode_complete=complete),
-        request_gate=ThreadLocalFileRequestGate(gate_paths),
+        request_gate=ThreadLocalFileRequestGate(
+            gate_paths, planning_capacity=max(1, qwen_workers // 2) if episode_workers > 1 else None
+        ),
     )
 
 
@@ -301,12 +305,13 @@ def run_fast_batch(
     prefetch: int = 2,
     render_buffer: int = 2,
     episode_workers: int = 1,
+    video_workers: int = 2,
     cpu_threads: int = 8,
     output_root: Path | None = None,
 ) -> dict[str, Any]:
     if not gpus or len(set(gpus)) != len(gpus) or any(gpu < 0 for gpu in gpus):
         raise ValueError("distinct nonnegative GPU IDs are required")
-    if min(qwen_workers, prefetch, render_buffer, cpu_threads, episode_workers) < 1:
+    if min(qwen_workers, prefetch, render_buffer, cpu_threads, episode_workers, video_workers) < 1:
         raise ValueError("worker counts and queue capacities must be positive")
     if episode_workers > 1 and not asynchronous:
         raise ValueError("multiple episode workers require asynchronous mode")
@@ -337,6 +342,7 @@ def run_fast_batch(
             "qwen_workers": qwen_workers,
             "render_buffer": render_buffer,
             "episode_workers": episode_workers,
+            "video_workers": video_workers,
             "cpu_threads": cpu_threads,
         },
     }
@@ -408,6 +414,7 @@ def run_fast_batch(
         "prefetch": prefetch,
         "render_buffer": render_buffer,
         "episode_workers": episode_workers,
+        "video_workers": video_workers,
         "cpu_threads": cpu_threads,
         "resume": resume,
     }

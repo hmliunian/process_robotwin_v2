@@ -34,9 +34,14 @@ def main() -> None:
         "--inference-mode", choices=("legacy", "resident", "async"), default="legacy"
     )
     parser.add_argument("--episode-workers", type=int, default=1)
+    parser.add_argument("--video-workers", type=int, default=2)
     args = parser.parse_args()
-    if args.episode_workers < 1 or (args.episode_workers > 1 and args.inference_mode != "async"):
-        parser.error("episode workers must be positive; multiple workers require async mode")
+    if min(args.episode_workers, args.video_workers) < 1 or (
+        args.episode_workers > 1 and args.inference_mode != "async"
+    ):
+        parser.error(
+            "episode workers and video workers must be positive; multiple workers require async mode"
+        )
     if args.workers < 1 or (args.limit_per_action is not None and args.limit_per_action < 1):
         parser.error("workers and limit-per-action must be positive")
     if args.phase == "all" and (not args.gpus or args.limit_per_action is not None):
@@ -73,6 +78,7 @@ def main() -> None:
             qwen_workers=args.workers,
             inference_mode=args.inference_mode,
             episode_workers=args.episode_workers,
+            video_workers=args.video_workers,
         )
 
 

@@ -23,7 +23,7 @@ from robotwin_annotation_v2.adapters.canonical_masks import (
     read_canonical_masks,
 )
 from robotwin_annotation_v2.adapters.qwen_client import FileRequestGate, ThreadLocalFileRequestGate
-from robotwin_annotation_v2.application.sam_workflow import SamRuntime
+from robotwin_annotation_v2.application.sam_workflow import SamEpisodeStages, SamRuntime
 from robotwin_annotation_v2.application.umi_pipeline import UmiJob, run_umi_pipeline
 from robotwin_annotation_v2.config import AnnotationConfig, PipelineConfig, load_config
 from robotwin_annotation_v2.domain import AnnotationMode, TargetProfile
@@ -109,6 +109,11 @@ def _cpu_worker(
         gripper_episode_complete=lambda *_: False,
         sam_episode_complete=lambda *_: False,
         run_qwen=lambda *_: None,
+        sam_episode_stages=SamEpisodeStages(
+            prepare=lambda config, episode, run_id, _: (config, episode, run_id),
+            propagate=lambda prepared, _: prepared,
+            save=lambda prepared, _: segment(*prepared, None),
+        ),
     )
     result = run_umi_pipeline(
         jobs,

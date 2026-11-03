@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import tempfile
@@ -26,6 +27,7 @@ def extract_video_frames(
     frame_dir: Path,
     *,
     minimum_frame_count: int,
+    frame_ids: Sequence[int] | None = None,
 ) -> tuple[Path, ...]:
     """Decode RoboTwin AV1 video into the JPEG directory expected by SAM3."""
 
@@ -35,6 +37,11 @@ def extract_video_frames(
     if not video_path.is_file():
         raise Sam3Error(f"video does not exist: {video_path}")
     frame_dir.mkdir(parents=True, exist_ok=True)
+    selected = None if frame_ids is None else tuple(sorted(set(frame_ids)))
+    if selected is not None and (
+        not selected or selected[0] < 0 or selected[-1] >= minimum_frame_count
+    ):
+        raise ValueError("selected frames must be inside the video")
     command = [
         ffmpeg,
         "-hide_banner",
@@ -42,14 +49,25 @@ def extract_video_frames(
         "error",
         "-nostdin",
         "-y",
+        "-threads",
+        "1",
         "-i",
         str(video_path),
         "-map",
         "0:v:0",
+        "-filter_threads",
+        "1",
+        *(
+            []
+            if selected is None
+            else ["-vf", "select='" + "+".join(f"eq(n,{frame})" for frame in selected) + "'"]
+        ),
         "-vsync",
         "0",
         "-q:v",
         "2",
+        "-threads",
+        "1",
         "-start_number",
         "0",
         str(frame_dir / "%06d.jpg"),
@@ -59,8 +77,23 @@ def extract_video_frames(
     except subprocess.CalledProcessError as exc:
         raise Sam3Error(f"ffmpeg failed: {exc.stderr.strip()}") from exc
     frames = tuple(sorted(frame_dir.glob("*.jpg")))
-    if len(frames) < minimum_frame_count:
-        raise Sam3Error(f"decoded {len(frames)} frames, expected at least {minimum_frame_count}")
+    expected = minimum_frame_count if selected is None else len(selected)
+    if len(frames) < expected:
+        raise Sam3Error(f"decoded {len(frames)} frames, expected at least {expected}")
+    if selected is not None:
+        # Selected outputs are numbered consecutively by ffmpeg. Rename backwards
+        # to preserve source indices without overwriting another selected frame.
+        for path, frame in reversed(tuple(zip(frames, selected, strict=True))):
+            path.rename(frame_dir / f"{frame:06d}.jpg")
+        frames = tuple(frame_dir / f"{frame:06d}.jpg" for frame in selected)
+        (frame_dir / ".sam3-source-frames.json").write_text(
+            json.dumps(
+                {
+                    "frame_count": minimum_frame_count,
+                    "frame_ids": selected,
+                }
+            )
+        )
     return frames
 
 
@@ -70,6 +103,7 @@ def sam3_video_resource(
     *,
     minimum_frame_count: int,
     temp_root: Path | None = None,
+    frame_ids: Sequence[int] | None = None,
 ) -> Iterator[Path]:
     """Yield a temporary JPEG resource and remove it after SAM3 finishes."""
 
@@ -82,6 +116,7 @@ def sam3_video_resource(
             video_path,
             frame_dir,
             minimum_frame_count=minimum_frame_count,
+            frame_ids=frame_ids,
         )
         yield frame_dir
 
@@ -191,6 +226,17 @@ class Sam3Adapter:
     ) -> tuple[Path, int]:
         """Use one JPEG only when its numeric index unambiguously matches the video."""
         if self.seed_image_only and resource_path.is_dir():
+            manifest = resource_path / ".sam3-source-frames.json"
+            if manifest.is_file():
+                metadata = json.loads(manifest.read_text())
+                frame = resource_path / f"{frame_id:06d}.jpg"
+                if (
+                    metadata["frame_count"] != frame_count
+                    or frame_id not in metadata["frame_ids"]
+                    or not frame.is_file()
+                ):
+                    raise Sam3Error("sparse resource does not contain the requested source frame")
+                return frame, 0
             frames = tuple(sorted(resource_path.iterdir()))
             if len(frames) >= frame_count and all(
                 path.name == f"{index:06d}.jpg" for index, path in enumerate(frames)

@@ -21,10 +21,50 @@ from robotwin_annotation_v2.adapters import (
     image_data_url,
 )
 from robotwin_annotation_v2.adapters.qwen_client import (
+    QWEN_PLANNING,
     FileRequestGate,
+    PlanningRequestGate,
     ThreadLocalFileRequestGate,
     install_qwen_request_gate,
 )
+
+
+@pytest.mark.parametrize("file_gate", [False, True])
+def test_planning_cannot_exhaust_qc_request_capacity(tmp_path: Path, file_gate: bool) -> None:
+    paths = FileRequestGate.create(tmp_path / "tokens", capacity=2).token_paths
+    gate = (
+        ThreadLocalFileRequestGate(paths, planning_capacity=1)
+        if file_gate
+        else PlanningRequestGate(2)
+    )
+    started, release = threading.Event(), threading.Event()
+
+    def planning() -> None:
+        token = QWEN_PLANNING.set(True)
+        try:
+            assert gate.acquire(timeout=2)
+            started.set()
+            assert release.wait(5)
+            gate.release()
+        finally:
+            QWEN_PLANNING.reset(token)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(planning)
+        try:
+            assert started.wait(5)
+            token = QWEN_PLANNING.set(True)
+            try:
+                assert not gate.acquire(blocking=False)
+            finally:
+                QWEN_PLANNING.reset(token)
+            assert gate.acquire(blocking=False), "QC must retain a request slot"
+            gate.release()
+        finally:
+            release.set()
+        future.result(timeout=5)
+
+
 from robotwin_annotation_v2.config import QwenConfig
 
 

@@ -67,6 +67,15 @@ type RunQwenStage = Callable[[PipelineConfig, int, str | None], None]
 
 
 @dataclass(frozen=True)
+class SamEpisodeStages[BackendT, PreparedT, PropagatedT, ExecutionT]:
+    """Separate lightweight QC producers from full-video work and artifact writes."""
+
+    prepare: EpisodeExecutor[BackendT, PreparedT]
+    propagate: Callable[[PreparedT, BackendT], PropagatedT]
+    save: Callable[[PreparedT, PropagatedT], ExecutionT]
+
+
+@dataclass(frozen=True)
 class SamRuntime[BackendT: SamBackend, SamExecutionT, GripperExecutionT]:
     """Lazy-loaded model runtime with linked backend and execution result types."""
 
@@ -81,6 +90,7 @@ class SamRuntime[BackendT: SamBackend, SamExecutionT, GripperExecutionT]:
     gripper_episode_complete: EpisodeCompletionCheck
     sam_episode_complete: EpisodeCompletionCheck
     run_qwen: RunQwenStage
+    sam_episode_stages: SamEpisodeStages[BackendT, Any, Any, SamExecutionT] | None = None
 
 
 type DiscoverEpisodes = Callable[..., DiscoveryResult]
@@ -643,6 +653,11 @@ def load_sam_runtime() -> SamRuntime[SamBackend, Any, Any]:
         gripper_episode_complete=episode_runtime._gripper_episode_complete,
         sam_episode_complete=episode_runtime._sam_episode_complete,
         run_qwen=run_qwen_without_health,
+        sam_episode_stages=SamEpisodeStages(
+            prepare=episode_runtime._prepare_sam_episode,
+            propagate=episode_runtime._propagate_sam_episode,
+            save=episode_runtime._save_sam_episode,
+        ),
     )
 
 

@@ -41,13 +41,18 @@ def run_batch(
     prefetch: int = 2,
     render_buffer: int = 2,
     episode_workers: int = 1,
+    video_workers: int = 2,
     cpu_threads: int = 8,
     output_root: Path | None = None,
 ) -> dict[str, Any]:
     if inference_mode not in {"legacy", "resident", "async"}:
         raise ValueError("inference mode must be legacy, resident or async")
-    if episode_workers < 1 or (episode_workers > 1 and inference_mode != "async"):
-        raise ValueError("episode workers must be positive; multiple workers require async mode")
+    if min(episode_workers, video_workers) < 1 or (
+        episode_workers > 1 and inference_mode != "async"
+    ):
+        raise ValueError(
+            "episode workers and video workers must be positive; multiple workers require async mode"
+        )
     if inference_mode != "legacy":
         from scripts.run_umi_fast_batch import run_fast_batch
 
@@ -63,6 +68,7 @@ def run_batch(
             prefetch=prefetch,
             render_buffer=render_buffer,
             episode_workers=episode_workers,
+            video_workers=video_workers,
             cpu_threads=cpu_threads,
             output_root=output_root,
         )
@@ -283,7 +289,13 @@ def main() -> None:
         "--episode-workers",
         type=int,
         default=1,
-        help="in-flight videos per GPU; >1 enables the SAM task queue in async mode",
+        help="QC producers and ready episodes per GPU; >1 enables the async SAM queue",
+    )
+    parser.add_argument(
+        "--video-workers",
+        type=int,
+        default=2,
+        help="full-video propagation and pending-save slots per GPU",
     )
     parser.add_argument("--prefetch", type=int, default=2)
     parser.add_argument("--render-buffer", type=int, default=2)
@@ -302,6 +314,7 @@ def main() -> None:
         prefetch=args.prefetch,
         render_buffer=args.render_buffer,
         episode_workers=args.episode_workers,
+        video_workers=args.video_workers,
         cpu_threads=args.cpu_threads,
         output_root=args.output,
     )

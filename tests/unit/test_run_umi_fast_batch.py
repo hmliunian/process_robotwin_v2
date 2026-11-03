@@ -158,9 +158,17 @@ def test_existing_entry_routes_fast_mode_and_writes_review_index(
         return {"counts": {}, "episodes": []}
 
     monkeypatch.setattr(batch, "run_fast_batch", fast)
-    run_batch(tmp_path, Path("config"), gpus=(2,), inference_mode="async", episode_workers=3)
+    run_batch(
+        tmp_path,
+        Path("config"),
+        gpus=(2,),
+        inference_mode="async",
+        episode_workers=3,
+        video_workers=4,
+    )
     assert options["asynchronous"] and options["tracking_batch_size"] == 1
     assert options["episode_workers"] == 3
+    assert options["video_workers"] == 4
     assert (tmp_path / "runs/index.html").exists()
 
 
