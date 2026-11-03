@@ -34,6 +34,7 @@ def run_batch(
     *,
     gpus: tuple[int, ...],
     qwen_workers: int = 4,
+    sam_workers_per_gpu: int = 1,
     smoke: bool = False,
     only_groups: tuple[str, ...] = (),
     inference_mode: str = "legacy",
@@ -47,6 +48,8 @@ def run_batch(
 ) -> dict[str, Any]:
     if inference_mode not in {"legacy", "resident", "async"}:
         raise ValueError("inference mode must be legacy, resident or async")
+    if sam_workers_per_gpu < 1 or (sam_workers_per_gpu > 1 and inference_mode == "legacy"):
+        raise ValueError("SAM workers per GPU must be positive; multiple workers require fast mode")
     if min(episode_workers, video_workers) < 1 or (
         episode_workers > 1 and inference_mode != "async"
     ):
@@ -61,6 +64,7 @@ def run_batch(
             config_path,
             gpus=gpus,
             qwen_workers=qwen_workers,
+            sam_workers_per_gpu=sam_workers_per_gpu,
             smoke=smoke,
             only_groups=only_groups,
             asynchronous=inference_mode == "async",
@@ -278,7 +282,15 @@ def main() -> None:
     parser.add_argument("batch_dir", type=Path)
     parser.add_argument("--config", type=Path, default=PROJECT_ROOT / "configs/process.yaml")
     parser.add_argument("--gpus", type=int, nargs="+", required=True)
-    parser.add_argument("--qwen-workers", type=int, default=4)
+    parser.add_argument(
+        "--qwen-workers",
+        type=int,
+        default=4,
+        help="maximum concurrent Qwen requests across the batch",
+    )
+    parser.add_argument(
+        "--sam-workers-per-gpu", type=int, default=1, help="independent SAM processes per GPU"
+    )
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--groups", nargs="*", default=[])
     parser.add_argument(
@@ -289,13 +301,13 @@ def main() -> None:
         "--episode-workers",
         type=int,
         default=1,
-        help="QC producers and ready episodes per GPU; >1 enables the async SAM queue",
+        help="QC producers and ready episodes per SAM worker; >1 enables the async SAM queue",
     )
     parser.add_argument(
         "--video-workers",
         type=int,
         default=2,
-        help="full-video propagation and pending-save slots per GPU",
+        help="full-video propagation and pending-save slots per SAM worker",
     )
     parser.add_argument("--prefetch", type=int, default=2)
     parser.add_argument("--render-buffer", type=int, default=2)
@@ -307,6 +319,7 @@ def main() -> None:
         args.config,
         gpus=tuple(args.gpus),
         qwen_workers=args.qwen_workers,
+        sam_workers_per_gpu=args.sam_workers_per_gpu,
         smoke=args.smoke,
         only_groups=tuple(args.groups),
         inference_mode=args.inference_mode,

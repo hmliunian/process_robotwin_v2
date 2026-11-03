@@ -86,21 +86,26 @@ OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 PYTHONPATH=src:. \
   --video-workers 2 --render-buffer 2 --cpu-threads 4 --output "$FAST_OUTPUT"
 ```
 
-`--episode-workers` 是每 GPU 的候选/Qwen 生产者及待传播任务总容量，默认 1 保留原调度；
-大于 1 只适用于 async。`--video-workers` 默认 2，限制每 GPU 同时持有完整解码目录或
+`--sam-workers-per-gpu` 默认 1，可在 resident/async 模式下启动多个独立 SAM 进程共享一张卡。
+每个进程有自己的模型和 CUDA session；`--gpus` 仍只填写不同的物理卡号，worker 槽位按
+GPU 轮流分配。API 上限在所有进程间共享，不随 SAM 副本数自动增加。
+
+`--episode-workers` 是每个 SAM 进程的候选/Qwen 生产者及待传播任务总容量，默认 1 保留原调度；
+大于 1 只适用于 async。`--video-workers` 默认 2，限制每个 SAM 进程同时持有完整解码目录或
 完整传播结果的任务数，包括正在保存和等待保存的结果。生产者只保留候选帧、少量上下文
 图像及 QC 证据，不在等待 Qwen 时持有整段 JPEG。每条视频的 QC/fallback 依赖顺序不变。
 两次对照须使用不同的新输出目录；`process_umi_batch.py --phase all` 透传这两个参数。
 
-所有候选生成和传播请求进入有界 FIFO，由每卡唯一 SAM owner 串行执行。传播完成后独立
+每个进程的候选生成和传播请求进入有界 FIFO，由其 SAM owner 串行执行。传播完成后独立
 writer 保存 QC 图片和 canonical masks，完成后才标记 masks_ready。渲染队列只保留路径
 及小型结果记录，积压不会占生产者名额，批次仍等待所有保存和渲染任务完成才返回。视频
 名额和生产者名额避免大数组无界积压，但内存需求仍随视频长度、分辨率及 QC 尝试数变化。
 
 `--qwen-workers` 是整批全局请求上限，不是每 GPU 的上限。队列模式将规划请求限制在
 最多一半容量（至少一个），请求上限大于 1 时为 QC/bbox 留出 token；QC 可以使用所有空闲 token。运行中的
-请求不被抢占。预取和渲染执行容量按 GPU worker 限制；GPU 分组仍按帧数和角色数静态
-分配，不提供跨 GPU 任务迁移。并发参数应结合实际 API 延迟和限流逐档调整。
+请求不被抢占。预取、渲染执行容量和 CPU 线程数按 SAM worker 限制；分组仍按帧数和角色数静态
+分配，不提供跨 GPU 任务迁移。多副本时需累计各自的 CPU、内存和显存占用。
+并发参数应结合实际 API 延迟和限流逐档调整。
 
 fatal CUDA 会停止接收模型调用并唤醒等待者；中断先关闭模型队列，再回收线程，已提交的
 写盘任务会排空。完成的 masks 可恢复复用，尚未保存的阶段会重做。已发出的 Qwen HTTP
@@ -207,6 +212,91 @@ pmon、产物、`summary.png`/`summary.svg`、逐视频 `timeline.png`/`timeline
 `live_qwen/summary.json` 和实际语义响应。回放及分析脚本也在此目录，按产物规则不提交。
 相关 72 个测试、Ruff 和变更模块严格 mypy 通过；全量单元记录为 940 passed、1 skipped、
 2 个已在原分支复现的终端 UI 失败，后续新增的三个中断场景包含在上述 72 项验证中。
+
+### 2026-11-03 单卡 API/SAM 配比
+
+当前推荐候选为**每卡 2 个独立 SAM 进程，共享 4 路 API 请求额度**。每个 SAM 进程设置
+`episode-workers=4 / prefetch=4 / video-workers=2 / render-buffer=2 / cpu-threads=4`，
+使用 T1。这是已完成本地回放验证的配置；持续独占 GPU、真实 Flash API 和八卡吞吐尚未
+完成验证，不能据此声称全局最优或八卡线性加速。CLI 默认仍为每卡一个 SAM 进程。
+
+沿用既有 `QWEN_API_KEY` 或 `QWEN_API_KEY_FILE`，指定准备好的批次、配置及全新输出目录：
+
+```bash
+OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 PYTHONPATH=src:. \
+  .venv/bin/python -m scripts.run_umi_batch "$BATCH_DIR" \
+  --config "$PROCESS_CONFIG" --gpus 0 --inference-mode async \
+  --sam-workers-per-gpu 2 --episode-workers 4 --prefetch 4 \
+  --qwen-workers 4 --video-workers 2 --render-buffer 2 \
+  --cpu-threads 4 --tracking-batch-size 1 --output "$FAST_OUTPUT"
+```
+
+八卡时只将卡号改为 `--gpus 0 1 2 3 4 5 6 7`，API 上限改为 `--qwen-workers 32`，
+其余每进程参数保持不变，并使用新的输出目录。32 是整批所有进程共享的请求上限。
+
+| 容量 | 单卡 | 八卡配置换算 |
+| --- | ---: | ---: |
+| SAM 进程总数 | 2 | 16 |
+| 全局 API 请求上限 | 4 | 32 |
+| 生产者及已准备任务总容量 | 8 | 64 |
+| 完整视频及待保存结果槽位 | 4 | 32 |
+| Torch/OpenCV 配置线程数之和 | 8 | 64 |
+
+这些线程参数不包括 ffmpeg、规划、保存等线程，也不是总 CPU 核数硬限制。八卡请求上限
+32 是配置换算，尚未用真实接口验证其持续服务能力。
+
+**实验范围。** 使用前述十条 `cam_high`、640×480 完整视频各重复两次，共 20 个任务、
+4,798 帧；真实运行 SAM3、CPU 图像处理、保存和渲染。语义/QC/bbox 的响应及逐次请求耗时
+均回放历史 `qwen3.8-max` 记录。当前生产服务为 `qwen3.8-flash`；本轮真实接口测试在执行
+前被自动审批拒绝，理由是再次发送测试图像及提示词需要明确授权，因此没有新发远程请求。
+
+先在共享 GPU 0 比较单模型供给容量：
+
+| 生产者 / API 上限 / 视频槽 | 总秒数 | 稳态 SAM 方法占比 | 整批 owner 空等 | 同卡其他进程 SM 均值 |
+| --- | ---: | ---: | ---: | ---: |
+| 8 / 4 / 2 | 543.646 | 98.84% | 43.663 s | 30.91% |
+| 8 / 2 / 2 | 569.872 | 98.24% | 65.747 s | 29.17% |
+| 4 / 4 / 2 | 624.741 | 93.64% | 69.355 s | 39.48% |
+
+4 路 API、8 个生产者已能基本消除稳定处理时的 owner 供给空等。减少生产者后等待更多；
+外部进程负载同时改变，所以总耗时差异不能全部归因于并发参数。这里的 SAM 方法占比
+包括内部 CPU 工作，不能当作 GPU kernel 时间。
+
+之后 GPU 短暂空闲，在 GPU 1 上运行单模型基线；生产批次在收尾阶段重新进入全部八卡，
+随后的独占启动检查拒绝了双模型实验。双模型改为共享 GPU 1 验证，API 总上限仍为 4，
+两个进程各有 4 个生产者、4 个预取和 2 个视频槽位。
+
+| 指标 | 1 个 SAM、8 个生产者 | 2 个 SAM、各 4 个生产者 |
+| --- | ---: | ---: |
+| 稳态区间长度，第 4 至第 16 次保存完成 | 200.617 s | 230.749 s |
+| 稳态测试进程 SM 采样均值之和 | 55.48% | 65.99% |
+| 稳态其他进程 SM 采样均值之和 | 0% | 27.82% |
+| 稳态未采到测试进程 GPU 活动的窗口 | 32.909 s | 1.000 s |
+| 稳态至少一个 SAM 方法在执行 | 97.13% | 99.93% |
+| 整批时间，含模型加载及渲染 | 419.455 s | 417.665 s |
+| masks 与 review 就绪 | 18/20 | 18/20 |
+| 测试进程显存峰值之和，pmon 采样 | 15.15 GiB | 22.29 GiB |
+| 各进程 RSS 峰值之和 | 9.24 GiB | 16.00 GiB |
+| 进程及已退出子进程 CPU 秒 / 整批秒 | 2.22 | 3.04 |
+
+GPU 数据来自约 1 Hz 的逐进程 pmon。双模型在 99.57% 的稳态采样窗口中有 GPU 活动，
+表示几乎每个采样窗口都有计算，**不表示 99.57% 算力利用率或精确 kernel 时间**。
+其余进程仍占用了约 27.82% 的稳态 SM 采样；单模型稳态没有同卡竞争。两组不是持续独占
+的吞吐对照，不能用 419.455/417.665 推导独占加速比。双模型验证了供给连续性和并发
+执行正确性；四模型及其他 API 配额未继续定档。显存是同时采样之和，RSS 是各进程独立
+峰值之和，CPU 秒包含 ffmpeg 等已结束子进程；这些数值仅对应本轮输入。
+
+五个已完成实验各比较了 46 个 NPZ 的全部数组、970 张 PNG、20 份 QC 报告和 76 次
+QC/bbox 请求内容，均一致，canonical masks 差异像素为 0。两份 scoop receiver 拒绝均
+保留，未通过减少质检或跳过失败提高吞吐。生成数据和脚本位于
+`artifacts/sam_single_gpu_tuning/`，包括各组 `parity.json`、`summary.json`、timings、
+pmon、请求记录和完整产物。`multi_sam.py` 使用真实独立进程及共享文件 token；生产 CLI
+的分配、同卡多 worker、实际磁盘渲染及失败恢复另由 CPU 测试覆盖。
+
+相关 60 项 CPU 测试、全量 Ruff 和差异格式检查通过。相关三个 `src` 模块的严格 mypy
+通过；将严格检查扩展到三个 CLI 脚本时，仍出现 `render_batch_review_sheets.py` 的字典
+键类型推断和 `run_umi_batch.py` 原 legacy 路径的索引类型错误，两项均在修改前的
+`4edfd2c` 归档中复现。原工作区未修改，本次调参 GPU 进程均已退出。
 
 ## 合并同一任务的不同分辨率
 

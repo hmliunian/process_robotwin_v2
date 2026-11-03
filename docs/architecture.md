@@ -58,12 +58,15 @@ UMI 单臂物体标注可显式声明 `timeline_source=video_window`。这种输
 
 UMI 批处理可显式选择 `--inference-mode resident` 或 `async`。每个 GPU 进程跨组持有一个
 SAM backend，任务携带各自的 dataset、mode 和 profile，每个角色使用独立 session。
+`--sam-workers-per-gpu`（默认 1）可在同一物理 GPU 上建立多个独立 worker 进程，每个
+进程持有自己的模型、CUDA 状态和 owner 线程。按 GPU 轮流分配 worker 槽位，任务只分配
+一次；Qwen 文件 token 仍限制整批总请求数。改变副本数会改变调度身份，须使用新输出目录。
 `async` 在同一个 SAM owner 线程周围重叠有界 Qwen 规划和磁盘文件可视化；候选 QC、
 bbox 救援、时序传播及 canonical 保存仍保持原有依赖。多 GPU 共享文件 token 限制 Qwen
 总请求数，各线程分别持有 token 句柄。队列模式限制规划请求最多使用一半 token
 （向下取整，至少一个），在请求上限大于 1 时给 QC/bbox 保留容量；这是容量预留，不是抢占正在执行的请求。
 
-`async --episode-workers N`（N > 1）通过有界 FIFO 将所有 SAM 调用交给创建 backend 的
+`async --episode-workers N`（N > 1）在每个 SAM worker 内通过有界 FIFO 将调用交给创建 backend 的
 同一个线程，每次调用仍独立创建、释放 session。生产 runtime 将 episode 拆成三个阶段：
 
 1. N 个生产者使用有来源帧编号的稀疏 JPEG 进行候选生成和 Qwen QC/bbox。等待接口时不
@@ -73,7 +76,9 @@ bbox 救援、时序传播及 canonical 保存仍保持原有依赖。多 GPU �
 3. 独立 writer 保存 QC 证据和 canonical masks，保存完成才释放视频名额并发布完成状态。
    渲染仅消费磁盘路径，积压不占生产者名额；仍在返回前等待全部渲染结果。
 
-规划、生产者、完整视频和渲染执行队列分别限流。N 与整批 Qwen 请求上限可独立配置，
+规划、生产者、完整视频、渲染和 CPU 线程参数按 SAM worker 设置；默认一个 worker 时即为
+每卡容量。多副本时这些资源随 worker 数增加，显存也需容纳各自的模型和 session。
+N 与整批 Qwen 请求上限可独立配置，
 不能据此假定远程服务具有相同的实际吞吐。fatal CUDA 或中断先关闭模型队列并唤醒等待者，
 再回收线程和 backend；已提交的写盘任务会排空，完成的 masks 保留以便恢复。未发布的
 阶段会在恢复时重做。默认 N=1 保留原调度；没有分阶段 hooks 的注入 runtime 保留原整段

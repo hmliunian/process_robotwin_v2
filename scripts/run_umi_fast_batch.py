@@ -298,6 +298,7 @@ def run_fast_batch(
     *,
     gpus: tuple[int, ...],
     qwen_workers: int = 4,
+    sam_workers_per_gpu: int = 1,
     smoke: bool = False,
     only_groups: tuple[str, ...] = (),
     asynchronous: bool = True,
@@ -311,7 +312,16 @@ def run_fast_batch(
 ) -> dict[str, Any]:
     if not gpus or len(set(gpus)) != len(gpus) or any(gpu < 0 for gpu in gpus):
         raise ValueError("distinct nonnegative GPU IDs are required")
-    if min(qwen_workers, prefetch, render_buffer, cpu_threads, episode_workers, video_workers) < 1:
+    capacities = (
+        qwen_workers,
+        sam_workers_per_gpu,
+        prefetch,
+        render_buffer,
+        cpu_threads,
+        episode_workers,
+        video_workers,
+    )
+    if min(capacities) < 1:
         raise ValueError("worker counts and queue capacities must be positive")
     if episode_workers > 1 and not asynchronous:
         raise ValueError("multiple episode workers require asynchronous mode")
@@ -331,15 +341,17 @@ def run_fast_batch(
         only_groups=only_groups,
         tracking_batch_size=tracking_batch_size,
     )
-    shards = partition_jobs(jobs, gpus)
+    worker_gpus = gpus * sam_workers_per_gpu
+    shards = partition_jobs(jobs, worker_gpus)
     selection = {
         "jobs": [{"key": job.key, "identity": job.identity} for job in jobs],
         "workers": [[job.key for job in shard] for shard in shards],
-        "gpus": list(gpus[: len(shards)]),
+        "gpus": list(worker_gpus[: len(shards)]),
         "scheduling": {
             "asynchronous": asynchronous,
             "prefetch": prefetch,
             "qwen_workers": qwen_workers,
+            "sam_workers_per_gpu": sam_workers_per_gpu,
             "render_buffer": render_buffer,
             "episode_workers": episode_workers,
             "video_workers": video_workers,
@@ -400,7 +412,8 @@ def run_fast_batch(
             {
                 "status": status,
                 "pid": os.getpid(),
-                "worker_gpus": list(gpus),
+                "worker_gpus": list(worker_gpus[: len(shards)]),
+                "sam_workers_per_gpu": sam_workers_per_gpu,
                 "wall_s": time.perf_counter() - started,
                 "inference_mode": "async" if asynchronous else "resident",
                 "counts": result["counts"],

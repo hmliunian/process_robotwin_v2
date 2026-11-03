@@ -131,9 +131,12 @@ def _cpu_worker(
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="CPU overlays require ffmpeg")
-@pytest.mark.parametrize("episode_workers", [1, 3])
+@pytest.mark.parametrize("episode_workers,sam_workers_per_gpu", [(1, 1), (3, 1), (3, 2)])
 def test_spawned_fast_batch_renders_and_merges_real_artifacts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, episode_workers: int
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    episode_workers: int,
+    sam_workers_per_gpu: int,
 ) -> None:
     group = "pick_up_32x32"
     dataset = tmp_path / "inputs" / group
@@ -194,7 +197,12 @@ def test_spawned_fast_batch_renders_and_merges_real_artifacts(
     monkeypatch.setattr(batch, "run_worker", _cpu_worker)
 
     result = batch.run_fast_batch(
-        tmp_path, config.config_path, gpus=(0,), output_root=output, episode_workers=episode_workers
+        tmp_path,
+        config.config_path,
+        gpus=(0,),
+        output_root=output,
+        episode_workers=episode_workers,
+        sam_workers_per_gpu=sam_workers_per_gpu,
     )
 
     success, incomplete, render_failed = result["episodes"]
@@ -208,9 +216,14 @@ def test_spawned_fast_batch_renders_and_merges_real_artifacts(
     assert render_failed["masks_ready"] and not render_failed["objects_ready"]
     assert render_failed["pipeline_status"] == "render_failed"
     assert "video is missing requested frames [8]" in render_failed["render_error"]
-    runtime = json.loads((output / ".pipeline/worker-0/runtime.json").read_text())
-    assert runtime["pid"] != os.getpid()
-    assert runtime["seed_image_only"] == "True" and runtime["tracking_batch_size"] == "4"
+    runtimes = [
+        json.loads(path.read_text())
+        for path in (output / ".pipeline").glob("worker-*/runtime.json")
+    ]
+    assert len(runtimes) == sam_workers_per_gpu
+    for runtime in runtimes:
+        assert runtime["pid"] != os.getpid()
+        assert runtime["seed_image_only"] == "True" and runtime["tracking_batch_size"] == "4"
     masks_before = {job.key: (job.directory.parent / "masks.npz").read_bytes() for job in jobs}
     for job in jobs:
         assert json.loads((job.directory / "job.json").read_text()) == job.identity
