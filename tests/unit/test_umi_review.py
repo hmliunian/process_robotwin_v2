@@ -47,3 +47,15 @@ def test_screen_preserves_two_hand_evidence_and_bimanual_decision() -> None:
     )
     answer = {**_answer(), "decision": "bimanual", "left_hand": "Steadies the bowl"}
     assert parse_arm_review(json.dumps(answer), frames) == answer
+
+
+def test_single_arm_task_rejects_model_reclassification_as_bimanual() -> None:
+    frames = (
+        UmiPreview(Path("head.jpg"), "head/right@0ms", 0),
+        UmiPreview(Path("right.jpg"), "right_wrist/right@100ms", 100),
+    )
+    answer = {**_answer(), "decision": "bimanual", "left_hand": "Steadies the bowl"}
+    with pytest.raises(ValueError, match="task is single-arm"):
+        parse_arm_review(json.dumps(answer), frames, single_arm_task=True)
+    answer["decision"] = "right"
+    assert parse_arm_review(json.dumps(answer), frames, single_arm_task=True) == answer

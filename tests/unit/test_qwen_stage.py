@@ -601,3 +601,54 @@ def test_run_qwen_stage_rejects_truncated_completion(tmp_path: Path) -> None:
         )
 
     assert captured.value.raw_response == '{"target":'
+
+
+def test_parse_semantic_plan_accepts_exact_query_value_order() -> None:
+    payload = json.loads(_response())
+    expected = {}
+    for role, bank in payload.items():
+        expected[role] = tuple(bank["recommended_order"])
+        bank["recommended_order"] = [bank[field] for field in bank["recommended_order"]]
+    plan = parse_semantic_plan(
+        json.dumps(payload), context=_context(), model="fake-qwen", rendered_prompt="test"
+    )
+    assert plan.target.query_bank is not None
+    assert plan.receiver.query_bank is not None
+    assert plan.target.query_bank.recommended_order == expected["target"]
+    assert plan.receiver.query_bank.recommended_order == expected["receiver"]
+    assert plan.target.query_bank.category_query == "bottle"
+
+
+def test_parse_semantic_plan_accepts_mixed_exact_query_and_key_order() -> None:
+    payload = json.loads(_response())
+    payload["target"]["recommended_order"][0] = "orange bottle"
+    plan = parse_semantic_plan(
+        json.dumps(payload), context=_context(), model="fake-qwen", rendered_prompt="test"
+    )
+    assert plan.target.query_bank is not None
+    assert plan.target.query_bank.recommended_order == (
+        "color_category_query", "category_query", "general_fallback_query"
+    )
+
+
+@pytest.mark.parametrize(
+    "order,shape_query,error",
+    [
+        (["orange cup", "category_query", "general_fallback_query"], None, "exactly match"),
+        (["Orange Bottle", "category_query", "general_fallback_query"], None, "exactly match"),
+        (["orange bottle", "category_query", "general_fallback_query"], "orange bottle", "2 matches"),
+        (["bottle", "category_query", "general_fallback_query"], None, "exactly once"),
+        (["orange bottle", "category_query"], None, "exactly once"),
+        (["container", "orange bottle", "category_query"], None, "must be last"),
+    ],
+)
+def test_parse_semantic_plan_rejects_unsafe_query_value_order(
+    order: list[str], shape_query: str | None, error: str
+) -> None:
+    payload = json.loads(_response())
+    payload["target"]["recommended_order"] = order
+    payload["target"]["shape_category_query"] = shape_query
+    with pytest.raises(QwenStageError, match=error):
+        parse_semantic_plan(
+            json.dumps(payload), context=_context(), model="fake-qwen", rendered_prompt="test"
+        )

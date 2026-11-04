@@ -1,17 +1,11 @@
 version: 1
+# UMI-marker: only transport is bimanual; all other actions are single-arm tasks.
+bimanual_actions: [A_003]
 excluded_actions: [A_003]
-screen_prompt: ../prompts/umi_single_arm_screen.txt
+screen_prompt: ../prompts/umi_marker_active_arm.txt
 min_arm_confidence: 0.9
-# Assistant review of source head/wrist previews; these are exclusions, not human labels.
-excluded_episodes:
-  9ad416313eefe01e92036c9390ef6bd7: Both grippers manipulate the clothing and hanger.
-  fa8898680a1f686956e8eb2f4b89b598: One gripper steadies the bottle while the other handles its cap.
-  5ee33d1b0fdddf4efb984e024fe44253: Both grippers participate in the bottle and cap operation.
-  8eb63aef81257dfa83f71c648dfd568a: One gripper holds the bottle and the other handles its cap.
-  fa5b057640dc840fd00495fa267055e4: One gripper steadies the jar while the other replaces its lid.
-  d8cc7d8943755a17bf848ef0f4c68d30: One gripper holds the jar while the other removes its lid.
-  76e62e7fa1306a47473519d405a24603: Both grippers manipulate the bottle and cap.
-  502943eef1f3dbb4aac9752626e88933: Pending full-video review of possible assistance near the end.
+# Supporting-hand participation does not exclude a single-arm task.
+excluded_episodes: {}
 tasks:
   A_001:
     name: pick_up
