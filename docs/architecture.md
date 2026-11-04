@@ -190,3 +190,17 @@ keys、shape、dtype、status 和 lineage。
 - `configs/`：共享 profiles、prompts、manifests 与 bundled render assets。
 
 Domain code 不依赖 adapters。生成的视频、dataset、checkpoint、run 和 secret 不得进入 Git。
+
+## UMI 跨批次常驻执行（显式流式入口）
+
+流式 worker 在同一个 SAM owner 线程中持续消费新任务，只有显式输入结束、fatal CUDA
+或进程退出才关闭 backend。输入暂时为空时保持模型常驻，继续排空已有保存与渲染任务。
+动态任务必须具有独立 namespace，保持原始 batch/episode/output 身份；不同批次的相同
+局部 episode 编号不会冲突。每个后续任务在入队前验证服务、SAM 参数和已有输出身份。
+
+输入就绪队列、规划、QC 生产者、完整视频及输出队列均有界。模型 session 按视频清理，
+权重跨批保留。完成的逐条 ledger 必须先落盘再通知调度器，调度器按源 ID 防重并独立
+汇总批次。已确认条目从 worker 活跃账本和内存计时列表移除，逐条结果与计时保留在其
+原输出目录。GPU 工作者可以跨批交错，CPU 分组汇总不作为下一批 GPU 任务的前置条件。
+进程恢复仍须先确保旧 owner 已退出，验证输入/实现哈希后复用完整 canonical/overlay；
+未知 API 结果不新增盲目重试。默认有限批入口的身份、调度和 artifact 合同保持不变。

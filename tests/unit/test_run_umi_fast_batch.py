@@ -248,3 +248,70 @@ def test_sam_replica_validation_precedes_writes(tmp_path: Path, mode: str, worke
             tmp_path, Path("config"), gpus=(0,), inference_mode=mode, sam_workers_per_gpu=workers
         )
     assert not list(tmp_path.iterdir())
+
+
+def test_deferred_finalizer_can_retry_without_api_or_gpu_and_rejects_tampering(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, jobs = fixture_jobs(tmp_path)
+    monkeypatch.setattr(batch, "select_jobs", lambda *_, **__: jobs)
+    monkeypatch.setattr(batch, "ProcessPoolExecutor", lambda **_: ThreadPoolExecutor(max_workers=2))
+    calls = []
+
+    def worker(selected: list[UmiJob], output: Path, *_: Any, **__: Any) -> dict[str, Any]:
+        calls.append(output.name)
+        result = {
+            "episodes": [
+                {
+                    **job.metadata,
+                    "episode": job.episode,
+                    "run_id": job.run_id,
+                    "status": "failed",
+                    "objects_ready": False,
+                    "process_status": "sam_incomplete",
+                }
+                for job in selected
+            ]
+        }
+        ArtifactStore.write_json(output / "episode_results.json", result)
+        return result
+
+    monkeypatch.setattr(batch, "run_worker", worker)
+
+    def fail(*_: Any) -> None:
+        raise OSError("review disk unavailable")
+
+    monkeypatch.setattr(batch, "render_batch_sheets", fail)
+    output = tmp_path / "out"
+    batch.run_fast_batch(
+        tmp_path,
+        Path("config"),
+        gpus=(0, 1),
+        output_root=output,
+        defer_finalize=True,
+        request_gate_dir=tmp_path / "shared",
+    )
+    count = len(calls)
+    assert json.loads((output / "batch_status.json").read_text())["status"] == "awaiting_finalize"
+    ledger = (output / "episode_results.json").read_bytes()
+    with pytest.raises(OSError, match="unavailable"):
+        batch.finalize_fast_batch(tmp_path, output_root=output)
+    assert json.loads((output / "batch_status.json").read_text())["status"] == "finalization_failed"
+    monkeypatch.setattr(batch, "render_batch_sheets", lambda *_: None)
+    batch.finalize_fast_batch(tmp_path, output_root=output)
+    # A retried GPU command consumes the durable handoff, never re-submits work.
+    batch.run_fast_batch(
+        tmp_path,
+        Path("config"),
+        gpus=(0, 1),
+        output_root=output,
+        defer_finalize=True,
+        request_gate_dir=tmp_path / "shared",
+    )
+    assert len(calls) == count
+    assert (output / "episode_results.json").read_bytes() == ledger
+    assert json.loads((output / "batch_status.json").read_text())["status"] == "finished"
+    (output / "episode_results.json").write_text("{}")
+    with pytest.raises(ValueError, match="handoff identity"):
+        batch.finalize_fast_batch(tmp_path, output_root=output)

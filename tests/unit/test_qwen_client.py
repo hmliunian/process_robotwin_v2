@@ -421,3 +421,17 @@ def test_file_request_gate_recovers_token_after_hard_process_exit(
     contender.release()
     parent_connection.close()
     process.close()
+
+
+def test_shared_gate_keeps_capacity_across_independent_batch_roots(tmp_path):
+    from robotwin_annotation_v2.adapters.qwen_client import FileRequestGate
+
+    a = FileRequestGate.create_shared(tmp_path / "shared", capacity=1)
+    b = FileRequestGate.create_shared(tmp_path / "shared", capacity=1)
+    assert a.acquire(blocking=False)
+    assert not b.acquire(blocking=False)
+    a.release()
+    assert b.acquire(blocking=False)
+    b.release()
+    with pytest.raises(ValueError, match="capacity changed"):
+        FileRequestGate.create_shared(tmp_path / "shared", capacity=2)

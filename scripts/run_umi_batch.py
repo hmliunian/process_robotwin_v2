@@ -45,7 +45,11 @@ def run_batch(
     video_workers: int = 2,
     cpu_threads: int = 8,
     output_root: Path | None = None,
+    defer_finalize: bool = False,
+    request_gate_dir: Path | None = None,
 ) -> dict[str, Any]:
+    if inference_mode == "legacy" and (defer_finalize or request_gate_dir is not None):
+        raise ValueError("cross-batch stages require resident or async mode")
     if inference_mode not in {"legacy", "resident", "async"}:
         raise ValueError("inference mode must be legacy, resident or async")
     if sam_workers_per_gpu < 1 or (sam_workers_per_gpu > 1 and inference_mode == "legacy"):
@@ -75,9 +79,12 @@ def run_batch(
             video_workers=video_workers,
             cpu_threads=cpu_threads,
             output_root=output_root,
+            defer_finalize=defer_finalize,
+            request_gate_dir=request_gate_dir,
         )
         output = (output_root or batch_dir / ("smoke" if smoke else "runs")).resolve()
-        write_index(output, result)
+        if not defer_finalize:
+            write_index(output, result)
         return result
     batch_dir = batch_dir.resolve()
     plan = _read(batch_dir / "batch_plan.json")
@@ -281,7 +288,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("batch_dir", type=Path)
     parser.add_argument("--config", type=Path, default=PROJECT_ROOT / "configs/process.yaml")
-    parser.add_argument("--gpus", type=int, nargs="+", required=True)
+    parser.add_argument("--gpus", type=int, nargs="+")
     parser.add_argument(
         "--qwen-workers",
         type=int,
@@ -313,7 +320,19 @@ def main() -> None:
     parser.add_argument("--render-buffer", type=int, default=2)
     parser.add_argument("--cpu-threads", type=int, default=8)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--request-gate-dir", type=Path)
+    phases = parser.add_mutually_exclusive_group()
+    phases.add_argument("--defer-finalize", action="store_true")
+    phases.add_argument("--finalize-only", action="store_true")
     args = parser.parse_args()
+    if args.finalize_only:
+        from scripts.run_umi_fast_batch import finalize_fast_batch
+
+        output = args.output or args.batch_dir / ("smoke" if args.smoke else "runs")
+        finalize_fast_batch(args.batch_dir, output_root=output)
+        return
+    if not args.gpus:
+        parser.error("--gpus is required for inference")
     run_batch(
         args.batch_dir,
         args.config,
@@ -330,6 +349,8 @@ def main() -> None:
         video_workers=args.video_workers,
         cpu_threads=args.cpu_threads,
         output_root=args.output,
+        defer_finalize=args.defer_finalize,
+        request_gate_dir=args.request_gate_dir,
     )
 
 

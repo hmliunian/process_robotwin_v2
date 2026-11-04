@@ -38,6 +38,7 @@ class UmiJob:
     run_id: str
     metadata: dict[str, Any] = field(default_factory=dict)
     input_signature: str = ""
+    namespace: str = ""
 
     @property
     def ref(self) -> EpisodeRef:
@@ -45,7 +46,8 @@ class UmiJob:
 
     @property
     def key(self) -> str:
-        return f"{self.run_id}/{self.ref.task}/{self.episode:06d}/{self.ref.camera}"
+        prefix = f"{self.namespace}/" if self.namespace else ""
+        return f"{prefix}{self.run_id}/{self.ref.task}/{self.episode:06d}/{self.ref.camera}"
 
     @property
     def directory(self) -> Path:
@@ -64,6 +66,7 @@ class UmiJob:
             "seed_image_only": self.config.sam3.seed_image_only,
             "tracking_batch_size": self.config.sam3.tracking_batch_size,
             "input_signature": self.input_signature,
+            **({"namespace": self.namespace} if self.namespace else {}),
         }
 
     def validate_output(self, *, resume: bool) -> None:
@@ -111,6 +114,13 @@ class PipelineEvents:
                 )
             CURRENT_JOB.reset(token)
             CURRENT_STAGE.reset(stage_token)
+
+    def retire(self, job: str) -> list[dict[str, Any]]:
+        """Move a finished stream job's measurements out of the live working set."""
+        with self._lock:
+            retired = [event for event in self.events if event["job"] == job]
+            self.events[:] = [event for event in self.events if event["job"] != job]
+            return retired
 
     def snapshot(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -162,6 +172,8 @@ def run_umi_pipeline(
     runtime: SamRuntime[SamBackend, Any, Any] | None = None,
     events: PipelineEvents | None = None,
     request_gate: RequestGate | None = None,
+    poll_job: Callable[[], UmiJob | None] | None = None,
+    on_terminal: Callable[[UmiJob, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Run all attempts, retaining mask failures and draining bounded review work.
 
@@ -177,8 +189,12 @@ def run_umi_pipeline(
         raise ValueError("jobs and pipeline capacities must be nonempty/positive")
     if episode_workers > 1 and not asynchronous:
         raise ValueError("multiple episode workers require asynchronous mode")
+    if poll_job is not None and (episode_workers < 2 or not asynchronous or on_terminal is None):
+        raise ValueError("streaming requires async producers and a durable terminal callback")
+    active_jobs = list(jobs)
+    jobs = active_jobs
     first = jobs[0].config
-    if resume:
+    if resume and poll_job is None:
         validate_batch_selection(output, jobs)
     validate_umi_jobs(jobs, resume=resume)
     for job in jobs:
@@ -191,6 +207,11 @@ def run_umi_pipeline(
     events = PipelineEvents() if events is None else events
     rows: dict[str, dict[str, Any]] = {}
     written_rows: dict[str, dict[str, Any]] = {}
+    complete: dict[str, bool] = {}
+    completed_jobs = 0
+    completed_outputs = 0
+    seen_keys = {job.key for job in jobs}
+    stream_open = poll_job is not None
     backend: SamBackend | None = None
     model_queue: SamTaskQueue | None = None
     pending_reviews: dict[Future[dict[str, Any]], UmiJob] = {}
@@ -266,6 +287,16 @@ def run_umi_pipeline(
             "fatal_error": fatal_error,
             "selected_job_ids": [job.key for job in jobs],
             "episodes": [rows[job.key] for job in jobs if job.key in rows],
+            **(
+                {
+                    "selection_scope": "active_stream",
+                    "completed_jobs": completed_jobs,
+                    "completed_outputs": completed_outputs,
+                    "stream_open": stream_open,
+                }
+                if poll_job is not None
+                else {}
+            ),
         }
         ArtifactStore.write_json(output / "episode_results.json", result)
         ArtifactStore.write_json(output / "timings.json", {"events": events.snapshot()})
@@ -296,6 +327,7 @@ def run_umi_pipeline(
             }
 
     def collect_reviews(*, block: bool = False) -> None:
+        nonlocal completed_jobs, completed_outputs
         if block and pending_reviews:
             with events.measure("render_backpressure"):
                 wait(pending_reviews, return_when=FIRST_COMPLETED)
@@ -304,6 +336,30 @@ def run_umi_pipeline(
                 job = pending_reviews.pop(future)
                 rows[job.key] = future.result()
                 persist("running")
+                if poll_job is not None:
+                    # The on-disk result is authoritative if the coordinator dies before ack.
+                    ArtifactStore.write_json(
+                        job.directory / "timings.json",
+                        {
+                            "events": events.retire(job.key),
+                            "worker_origin": events.origin,
+                        },
+                    )
+                    ArtifactStore.write_json(
+                        job.directory / "terminal_result.json",
+                        {
+                            "identity": job.identity,
+                            "row": rows[job.key],
+                        },
+                    )
+                    assert on_terminal is not None
+                    on_terminal(job, dict(rows[job.key]))
+                    completed_jobs += 1
+                    completed_outputs += bool(rows[job.key].get("objects_ready"))
+                    active_jobs.remove(job)
+                    rows.pop(job.key)
+                    written_rows.pop(job.key, None)
+                    complete.pop(job.key, None)
 
     def run_queued(
         planners: ThreadPoolExecutor,
@@ -311,7 +367,7 @@ def run_umi_pipeline(
         complete: dict[str, bool],
     ) -> None:
         nonlocal model_queue, peak_plans, peak_reviews, peak_episodes, fatal_error
-        nonlocal peak_videos, peak_ready_videos
+        nonlocal peak_videos, peak_ready_videos, stream_open
         model_queue = SamTaskQueue(
             backend,
             capacity=episode_workers + video_workers,
@@ -321,12 +377,54 @@ def run_umi_pipeline(
         pending: dict[Future[Any], tuple[UmiJob, str, Any]] = {}
         ready_videos: deque[tuple[UmiJob, Any]] = deque()
         ready_reviews: deque[UmiJob] = deque()
-        remaining = iter(jobs)
+        remaining = iter(jobs) if poll_job is None else iter(())
+        initial = deque(jobs) if poll_job is not None else deque()
+        admission_capacity = prefetch + episode_workers + video_workers + render_buffer
+
+        def next_job() -> UmiJob | None:
+            nonlocal stream_open
+            if poll_job is None:
+                return next(remaining, None)
+            if initial:
+                return initial.popleft()
+            if not stream_open or len(active_jobs) >= admission_capacity:
+                return None
+            try:
+                job = poll_job()
+            except StopIteration:
+                stream_open = False
+                return None
+            if job is None:
+                return None
+            if job.key in seen_keys:
+                raise ValueError("duplicate streamed job identity")
+            if job.config.sam3 != first.sam3 or any(
+                getattr(job.config.qwen, name) != getattr(first.qwen, name)
+                for name in ("endpoint", "model", "runtime", "api_key_env")
+            ):
+                raise ValueError("streamed job changed SAM configuration or Qwen service")
+            validate_umi_jobs([job], resume=resume)
+            ArtifactStore.write_json(job.directory / "job.json", job.identity)
+            complete[job.key] = resume and runtime.sam_episode_complete(
+                job.config, ArtifactStore(job.config.output_root), job.run_id, job.ref
+            )
+            if complete[job.key]:
+                rows[job.key] = {
+                    **new_row(job),
+                    "process_status": "skipped_complete",
+                    "masks_ready": True,
+                    "status": "masks_pending_render",
+                }
+            active_jobs.append(job)
+            seen_keys.add(job.key)
+            return job
 
         def refill_plans() -> None:
             nonlocal peak_plans
             while len(pending_plans) < prefetch:
-                job = next(remaining, None)
+                if fatal_error is not None:
+                    break
+                job = next_job()
                 if job is None:
                     break
                 if complete[job.key]:
@@ -373,8 +471,16 @@ def run_umi_pipeline(
         saves = ThreadPoolExecutor(max_workers=1, thread_name_prefix="umi-save")
         try:
             refill_plans()
-            while pending_plans or pending or ready_videos or ready_reviews or pending_reviews:
+            while (
+                stream_open
+                or pending_plans
+                or pending
+                or ready_videos
+                or ready_reviews
+                or pending_reviews
+            ):
                 collect_reviews()
+                refill_plans()
                 for future in tuple(pending):
                     if not future.done():
                         continue
@@ -414,6 +520,7 @@ def run_umi_pipeline(
                     model_error = model_queue.fatal_error
                     fatal_error = f"{type(model_error).__name__}: {model_error}"
                 if fatal_error is not None:
+                    stream_open = False
                     model_queue.close(fatal_error)
                     for planned in pending_plans:
                         planned.cancel()
@@ -482,6 +589,8 @@ def run_umi_pipeline(
                 elif pending or pending_plans or pending_reviews:
                     waiting: list[Future[Any]] = [*pending, *pending_plans, *pending_reviews]
                     wait(waiting, timeout=0.05, return_when=FIRST_COMPLETED)
+                elif stream_open:
+                    time.sleep(0.02)
         finally:
             # Wake callers before joining any pool, including on Ctrl-C. Writers
             # already admitted are drained, so completed masks survive interruption.
@@ -528,7 +637,7 @@ def run_umi_pipeline(
                     "masks_ready": True,
                     "status": "masks_pending_render",
                 }
-        if not all(complete.values()):
+        if poll_job is not None or not all(complete.values()):
             with events.measure("qwen_health"):
                 runtime.qwen_client_factory(config=first.qwen).health()
             with events.measure("model_load"):

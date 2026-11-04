@@ -312,3 +312,66 @@ episode、原图和叠加视频通过软链接引用，保留原始尺寸、ID�
 待确认记录。每任务重绘早期、中期、末期三张 review sheet，失败段使用带标记的原图。
 `index.html` 是任务总览，`review_sheets/index.html` 集中展示合并后的检查图。
 `merge_status.json` 在所有任务完成后才标记 `finished`；失败的处理结果不会因此变成成功。
+
+
+## Experimental persistent workers across prepared batches
+
+`run_umi_continuous.py` is a separate Linux entry point. It accepts an explicit, finite list
+of immutable prepared batches and a fresh output directory. It does not claim transfer
+shards, screen raw episodes, change arm policy, or adopt an existing production queue.
+Use the existing approved Flash configuration and transport policy when integrating it
+with a production producer. This experimental entry point is not an automatic replacement
+for that producer/supervisor.
+
+```bash
+PYTHONPATH=src:. .venv/bin/python scripts/run_umi_continuous.py \
+  --batch-dir /path/to/prepared-a --batch-dir /path/to/prepared-b \
+  --config /path/to/approved-flash-profile.yaml --output /path/to/new-stream-run \
+  --gpus 0 1 2 3 4 5 6 7 --sam-workers-per-gpu 2 \
+  --qwen-workers 32 --episode-workers 4 --prefetch 4 \
+  --video-workers 2 --render-buffer 2 --cpu-threads 4
+```
+
+Each worker loads SAM once, accepts jobs across batch boundaries, and releases its model
+only at explicit end-of-stream or a fatal error. Empty input queues keep the model alive.
+There are at most two admitted inference batches, one preparation thread, and two queued
+CPU finalizations with one finalizer thread. Preparation/identity checks and group review
+can overlap inference. Per-worker admission is bounded by the sum of prefetch, episode,
+video, and render capacities. Only paths and small job/result records cross process queues.
+All SAM calls execute on the worker's owning thread. API tokens are shared across all workers
+and batches, with half the capacity reserved from planning so QC/bbox can proceed.
+
+`jobs.sqlite3` owns unique source IDs and per-worker leases. `status.json` separates queued,
+leased, terminal, finalizing, finalized and model-load counts. A terminal episode can still
+be a failed annotation: only `objects_ready` after canonical masks and overlay publication
+counts as a complete output, and `needs_temporal_review` still requires human evaluation.
+Each batch writes the usual `runs/episode_results.json` and review artifacts. Per-job event
+traces and `terminal_result.json` are archived next to `job.json`; the worker ledger contains
+only its bounded active selection, not cumulative successes.
+
+Restart requires the same inputs, configuration, implementation, and worker topology.
+The coordinator lock prevents duplicate launches; surviving prior worker PIDs/start times
+block a new run. A durable terminal receipt can be reconciled after an acknowledgement is
+lost. A partial `pipeline_result.json` is never sufficient to mark an episode terminal.
+Leases without a terminal receipt require inspection before retry, since a remote API
+request could already have been sent. CPU finalization can be retried without rerunning SAM.
+This prototype deliberately stops on worker failure rather than guessing that such requests
+are safe to repeat. Completed production batches must not be submitted as fresh inputs.
+
+Validation should first use CPU concurrency/crash tests, then the same fixed videos and
+saved Qwen responses in serial versus streamed real-SAM runs. Compare canonical pixels,
+QC candidate images and request identities, and report model-load count and actual elapsed
+time. A short test on a shared GPU cannot establish eight-GPU production throughput or
+Flash semantic accuracy. Continuous residency removes model reloads and batch barriers;
+API, decoding, disk, and bounded-buffer waits can still leave GPU execution idle.
+
+
+Initial isolated validation (2026-11-04): four fixed videos / 681 frames split into two
+batches on one H200 GPU, using saved Qwen decisions and latency rather than network calls.
+Serial batches took 178.43 seconds and loaded SAM twice; streaming took 158.93 seconds and
+loaded SAM once (10.93% less wall time in this pair). All nine NPZ archives, 249 PNG images,
+460 rendered overlay frames, and 24 replayed QC/bbox requests matched. Both runs produced
+three complete outputs and the same one QC failure. Group finalization was too short in
+this sample to observe a GPU-call overlap directly; a separate CPU regression deliberately
+blocks the previous finalizer and verifies that the next batch continues. The GPU was shared
+with production, so these observations do not establish sustained production speedup.

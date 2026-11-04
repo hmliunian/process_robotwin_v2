@@ -88,6 +88,25 @@ class FileRequestGate:
             path.touch(exist_ok=True)
         return cls(token_paths)
 
+    @classmethod
+    def create_shared(cls, directory: Path, *, capacity: int) -> FileRequestGate:
+        """Pin capacity across independent batch processes; never resize a live gate."""
+        if capacity < 1:
+            raise ValueError("request gate capacity must be positive")
+        directory.mkdir(parents=True, exist_ok=True)
+        with (directory / "capacity.lock").open("a+b") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            manifest = directory / "capacity.json"
+            expected = {"capacity": capacity, "version": 1}
+            if manifest.exists():
+                if json.loads(manifest.read_text()) != expected:
+                    raise ValueError("shared Qwen gate capacity changed")
+            else:
+                temp = directory / f"capacity.{os.getpid()}.tmp"
+                temp.write_text(json.dumps(expected))
+                temp.replace(manifest)
+            return cls.create(directory, capacity=capacity)
+
     def acquire(self, blocking: bool = True, timeout: float | None = None) -> bool:
         if self._handle is not None:
             raise RuntimeError("Qwen request gate is already acquired")
