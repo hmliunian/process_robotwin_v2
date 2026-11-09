@@ -236,6 +236,30 @@ def test_seed_image_preserves_video_index_for_ambiguous_frame_directory(tmp_path
     assert predictor.requests[1]["frame_index"] == 1
 
 
+def test_sparse_seed_resources_preserve_source_indices_and_jpeg_pixels(tmp_path: Path) -> None:
+    from robotwin_annotation_v2.adapters.sam3_adapter import Sam3Error, sam3_video_resource
+    from tests.unit.test_umi_fast_integration import _write_video
+
+    video = tmp_path / "video.mp4"
+    _write_video(video)
+    predictor = FakePredictor()
+    adapter = Sam3Adapter(
+        checkpoint_path=Path("unused.pt"), gpus=(0,), predictor=predictor, seed_image_only=True
+    )
+    with (
+        sam3_video_resource(video, minimum_frame_count=4) as full,
+        sam3_video_resource(video, minimum_frame_count=4, frame_ids=(0, 3)) as sparse,
+    ):
+        assert sorted(path.name for path in sparse.glob("*.jpg")) == ["000000.jpg", "000003.jpg"]
+        for index in (0, 3):
+            name = f"{index:06d}.jpg"
+            assert (full / name).read_bytes() == (sparse / name).read_bytes()
+            assert adapter._seed_resource(sparse, index, 4) == (sparse / name, 0)
+        with pytest.raises(Sam3Error, match="requested source frame"):
+            adapter._seed_resource(sparse, 1, 4)
+    assert not sparse.exists() and not full.exists()
+
+
 @pytest.mark.parametrize("batch_size", [-1, 17, True, 1.5])
 def test_tracking_batch_size_is_bounded(batch_size: Any) -> None:
     with pytest.raises(ValueError, match="tracking_batch_size"):

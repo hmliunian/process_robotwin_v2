@@ -59,7 +59,9 @@ def preview_identity(previews: tuple[UmiPreview, ...]) -> list[dict[str, Any]]:
     ]
 
 
-def parse_arm_review(content: str, previews: tuple[UmiPreview, ...]) -> dict[str, Any]:
+def parse_arm_review(
+    content: str, previews: tuple[UmiPreview, ...], *, single_arm_task: bool = False
+) -> dict[str, Any]:
     """Reject ungrounded, incomplete, or non-finite model answers."""
 
     value = json.loads(content)
@@ -71,6 +73,8 @@ def parse_arm_review(content: str, previews: tuple[UmiPreview, ...]) -> dict[str
         "no_action",
     }:
         raise ValueError("invalid single-arm decision")
+    if single_arm_task and value["decision"] == "bimanual":
+        raise ValueError("task is single-arm; identify the primary operating side")
     confidence = value.get("confidence")
     if (
         isinstance(confidence, bool)
@@ -99,6 +103,7 @@ def screen_umi_episode(
     previews: tuple[UmiPreview, ...],
     prompt: str,
     task_text: str,
+    single_arm_task: bool = False,
 ) -> dict[str, Any]:
     content: list[dict[str, Any]] = [
         {"type": "text", "text": prompt.replace("{task_text}", task_text)}
@@ -118,7 +123,7 @@ def screen_umi_episode(
     if answer.finish_reason not in {"stop", None}:
         raise ValueError(f"incomplete single-arm response: {answer.finish_reason}")
     return {
-        **parse_arm_review(answer.content, previews),
+        **parse_arm_review(answer.content, previews, single_arm_task=single_arm_task),
         "review_source": "qwen_multiframe_screen",
         "model": answer.model,
         "raw_response": answer.content,

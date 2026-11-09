@@ -236,6 +236,50 @@ def _string_list(
     return tuple(cleaned)
 
 
+
+def _canonicalize_candidate_order_queries(
+    candidate_values: dict[str, str | None],
+    order: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Accept exact, unique candidate values in place of their field names.
+
+    Some compatible models echo the supplied query phrases in recommended_order.
+    This only changes their representation; it never invents a query or ranking.
+    Aliased orders must already be complete, distinct, and put fallback last.
+    """
+
+    resolved: list[str] = []
+    used_query_alias = False
+    for item in order:
+        if item in CANDIDATE_FIELDS:
+            resolved.append(item)
+            continue
+        matches = [
+            field for field, value in candidate_values.items()
+            if value is not None and item == value
+        ]
+        if len(matches) != 1:
+            raise QwenStageError(
+                "recommended_order query must exactly match one candidate value; "
+                f"got {item!r} with {len(matches)} matches"
+            )
+        used_query_alias = True
+        resolved.append(matches[0])
+    if used_query_alias:
+        expected = {
+            field for field, value in candidate_values.items() if value is not None
+        }
+        if len(resolved) != len(set(resolved)) or set(resolved) != expected:
+            raise QwenStageError(
+                "recommended_order query aliases must contain every non-null "
+                "candidate exactly once"
+            )
+        fallback = "general_fallback_query"
+        if fallback in resolved and resolved[-1] != fallback:
+            raise QwenStageError("general_fallback_query must be last")
+    return tuple(resolved)
+
+
 def _canonicalize_duplicate_candidates(
     candidate_values: dict[str, str | None],
     order: tuple[str, ...],
@@ -361,6 +405,7 @@ def _parse_role(
             except SemanticPlanError as exc:
                 raise QwenStageError(str(exc)) from exc
     order = _string_list(payload["recommended_order"], field=f"{role}.recommended_order")
+    order = _canonicalize_candidate_order_queries(candidate_values, order)
     candidate_values, order = _canonicalize_duplicate_candidates(
         candidate_values,
         order,

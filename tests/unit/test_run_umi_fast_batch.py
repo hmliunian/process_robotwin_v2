@@ -95,6 +95,15 @@ def test_batch_keeps_group_ledgers_and_rejects_resume_input_changes(
         ]
         assert {row["run_id"] for row in rows} == {group["group"]}
     identity = (output / ".pipeline/selection.json").read_bytes()
+    with pytest.raises(ValueError, match="complete selection"):
+        batch.run_fast_batch(
+            tmp_path, Path("config"), gpus=(4, 7), output_root=output, episode_workers=3
+        )
+    with pytest.raises(ValueError, match="complete selection"):
+        batch.run_fast_batch(
+            tmp_path, Path("config"), gpus=(4, 7), output_root=output, sam_workers_per_gpu=2
+        )
+    assert (output / ".pipeline/selection.json").read_bytes() == identity
     monkeypatch.setattr(
         batch, "select_jobs", lambda *_, **__: [replace(jobs[0], input_signature="changed")]
     )
@@ -153,6 +162,156 @@ def test_existing_entry_routes_fast_mode_and_writes_review_index(
         return {"counts": {}, "episodes": []}
 
     monkeypatch.setattr(batch, "run_fast_batch", fast)
-    run_batch(tmp_path, Path("config"), gpus=(2,), inference_mode="async")
+    run_batch(
+        tmp_path,
+        Path("config"),
+        gpus=(2,),
+        inference_mode="async",
+        episode_workers=3,
+        video_workers=4,
+        sam_workers_per_gpu=2,
+    )
     assert options["asynchronous"] and options["tracking_batch_size"] == 1
+    assert options["episode_workers"] == 3
+    assert options["video_workers"] == 4
+    assert options["sam_workers_per_gpu"] == 2
     assert (tmp_path / "runs/index.html").exists()
+
+
+@pytest.mark.parametrize("mode,workers", [("legacy", 2), ("resident", 2), ("async", 0)])
+def test_episode_queue_rejects_invalid_mode_or_capacity_before_writes(
+    tmp_path: Path, mode: str, workers: int
+) -> None:
+    with pytest.raises(ValueError, match="episode workers"):
+        run_batch(tmp_path, Path("config"), gpus=(0,), inference_mode=mode, episode_workers=workers)
+    assert not list(tmp_path.iterdir())
+
+
+def test_multiple_sam_slots_share_api_cap_and_distribute_each_job_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, jobs = fixture_jobs(tmp_path)
+    monkeypatch.setattr(batch, "select_jobs", lambda *_, **__: jobs)
+    monkeypatch.setattr(
+        batch, "ProcessPoolExecutor", lambda **kw: ThreadPoolExecutor(max_workers=kw["max_workers"])
+    )
+    monkeypatch.setattr(batch, "render_batch_sheets", lambda *_: None)
+    observed: dict[str, Any] = {}
+
+    def worker(
+        selected: list[UmiJob], output: Path, paths: tuple[Path, ...], **options: Any
+    ) -> dict[str, Any]:
+        observed[output.name] = (selected, paths, options)
+        result = {
+            "episodes": [
+                {
+                    **job.metadata,
+                    "episode": job.episode,
+                    "run_id": job.run_id,
+                    "status": "failed",
+                    "process_status": "sam_incomplete",
+                    "objects_ready": False,
+                }
+                for job in selected
+            ]
+        }
+        ArtifactStore.write_json(output / "episode_results.json", result)
+        return result
+
+    monkeypatch.setattr(batch, "run_worker", worker)
+    output = tmp_path / "out"
+    batch.run_fast_batch(
+        tmp_path,
+        Path("config"),
+        gpus=(4, 7),
+        sam_workers_per_gpu=2,
+        qwen_workers=4,
+        episode_workers=4,
+        output_root=output,
+    )
+    # Three jobs use three slots, visiting both physical cards before a second replica.
+    workers = [observed[f"worker-{i}"] for i in range(3)]
+    assert [selected[0].config.sam3.gpus for selected, _, _ in workers] == [(4,), (7,), (4,)]
+    assert sorted(job.key for selected, _, _ in workers for job in selected) == sorted(
+        job.key for job in jobs
+    )
+    assert all(paths == workers[0][1] and len(paths) == 4 for _, paths, _ in workers)
+    assert all(options["qwen_workers"] == 4 for _, _, options in workers)
+    assert all(options["episode_workers"] == 4 for _, _, options in workers)
+    assert json.loads((output / "batch_status.json").read_text())["worker_gpus"] == [4, 7, 4]
+
+
+@pytest.mark.parametrize("mode,workers", [("legacy", 2), ("async", 0)])
+def test_sam_replica_validation_precedes_writes(tmp_path: Path, mode: str, workers: int) -> None:
+    with pytest.raises(ValueError, match="SAM workers per GPU"):
+        run_batch(
+            tmp_path, Path("config"), gpus=(0,), inference_mode=mode, sam_workers_per_gpu=workers
+        )
+    assert not list(tmp_path.iterdir())
+
+
+def test_deferred_finalizer_can_retry_without_api_or_gpu_and_rejects_tampering(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, jobs = fixture_jobs(tmp_path)
+    monkeypatch.setattr(batch, "select_jobs", lambda *_, **__: jobs)
+    monkeypatch.setattr(batch, "ProcessPoolExecutor", lambda **_: ThreadPoolExecutor(max_workers=2))
+    calls = []
+
+    def worker(selected: list[UmiJob], output: Path, *_: Any, **__: Any) -> dict[str, Any]:
+        calls.append(output.name)
+        result = {
+            "episodes": [
+                {
+                    **job.metadata,
+                    "episode": job.episode,
+                    "run_id": job.run_id,
+                    "status": "failed",
+                    "objects_ready": False,
+                    "process_status": "sam_incomplete",
+                }
+                for job in selected
+            ]
+        }
+        ArtifactStore.write_json(output / "episode_results.json", result)
+        return result
+
+    monkeypatch.setattr(batch, "run_worker", worker)
+
+    def fail(*_: Any) -> None:
+        raise OSError("review disk unavailable")
+
+    monkeypatch.setattr(batch, "render_batch_sheets", fail)
+    output = tmp_path / "out"
+    batch.run_fast_batch(
+        tmp_path,
+        Path("config"),
+        gpus=(0, 1),
+        output_root=output,
+        defer_finalize=True,
+        request_gate_dir=tmp_path / "shared",
+    )
+    count = len(calls)
+    assert json.loads((output / "batch_status.json").read_text())["status"] == "awaiting_finalize"
+    ledger = (output / "episode_results.json").read_bytes()
+    with pytest.raises(OSError, match="unavailable"):
+        batch.finalize_fast_batch(tmp_path, output_root=output)
+    assert json.loads((output / "batch_status.json").read_text())["status"] == "finalization_failed"
+    monkeypatch.setattr(batch, "render_batch_sheets", lambda *_: None)
+    batch.finalize_fast_batch(tmp_path, output_root=output)
+    # A retried GPU command consumes the durable handoff, never re-submits work.
+    batch.run_fast_batch(
+        tmp_path,
+        Path("config"),
+        gpus=(0, 1),
+        output_root=output,
+        defer_finalize=True,
+        request_gate_dir=tmp_path / "shared",
+    )
+    assert len(calls) == count
+    assert (output / "episode_results.json").read_bytes() == ledger
+    assert json.loads((output / "batch_status.json").read_text())["status"] == "finished"
+    (output / "episode_results.json").write_text("{}")
+    with pytest.raises(ValueError, match="handoff identity"):
+        batch.finalize_fast_batch(tmp_path, output_root=output)

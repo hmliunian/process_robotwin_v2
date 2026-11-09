@@ -241,6 +241,8 @@ def run_worker(
     render_buffer: int,
     cpu_threads: int,
     resume: bool,
+    episode_workers: int = 1,
+    video_workers: int = 2,
 ) -> dict[str, Any]:
     # Construction and all SAM calls happen on this process's main thread.
     import cv2
@@ -280,9 +282,13 @@ def run_worker(
         qwen_workers=qwen_workers,
         prefetch=prefetch,
         render_buffer=render_buffer,
+        episode_workers=episode_workers,
+        video_workers=video_workers,
         resume=resume,
         runtime=replace(runtime, sam_episode_complete=complete),
-        request_gate=ThreadLocalFileRequestGate(gate_paths),
+        request_gate=ThreadLocalFileRequestGate(
+            gate_paths, planning_capacity=max(1, qwen_workers // 2) if episode_workers > 1 else None
+        ),
     )
 
 
@@ -292,19 +298,35 @@ def run_fast_batch(
     *,
     gpus: tuple[int, ...],
     qwen_workers: int = 4,
+    sam_workers_per_gpu: int = 1,
     smoke: bool = False,
     only_groups: tuple[str, ...] = (),
     asynchronous: bool = True,
     tracking_batch_size: int = 1,
     prefetch: int = 2,
     render_buffer: int = 2,
+    episode_workers: int = 1,
+    video_workers: int = 2,
     cpu_threads: int = 8,
     output_root: Path | None = None,
+    defer_finalize: bool = False,
+    request_gate_dir: Path | None = None,
 ) -> dict[str, Any]:
     if not gpus or len(set(gpus)) != len(gpus) or any(gpu < 0 for gpu in gpus):
         raise ValueError("distinct nonnegative GPU IDs are required")
-    if min(qwen_workers, prefetch, render_buffer, cpu_threads) < 1:
+    capacities = (
+        qwen_workers,
+        sam_workers_per_gpu,
+        prefetch,
+        render_buffer,
+        cpu_threads,
+        episode_workers,
+        video_workers,
+    )
+    if min(capacities) < 1:
         raise ValueError("worker counts and queue capacities must be positive")
+    if episode_workers > 1 and not asynchronous:
+        raise ValueError("multiple episode workers require asynchronous mode")
     if tracking_batch_size not in (0, 1, 4):
         raise ValueError("tracking batch must be 0, 1 or 4")
     started = time.perf_counter()
@@ -321,19 +343,25 @@ def run_fast_batch(
         only_groups=only_groups,
         tracking_batch_size=tracking_batch_size,
     )
-    shards = partition_jobs(jobs, gpus)
-    selection = {
+    worker_gpus = gpus * sam_workers_per_gpu
+    shards = partition_jobs(jobs, worker_gpus)
+    selection: dict[str, Any] = {
         "jobs": [{"key": job.key, "identity": job.identity} for job in jobs],
         "workers": [[job.key for job in shard] for shard in shards],
-        "gpus": list(gpus[: len(shards)]),
+        "gpus": list(worker_gpus[: len(shards)]),
         "scheduling": {
             "asynchronous": asynchronous,
             "prefetch": prefetch,
             "qwen_workers": qwen_workers,
+            "sam_workers_per_gpu": sam_workers_per_gpu,
             "render_buffer": render_buffer,
+            "episode_workers": episode_workers,
+            "video_workers": video_workers,
             "cpu_threads": cpu_threads,
         },
     }
+    if request_gate_dir is not None:
+        selection["scheduling"]["request_gate_dir"] = str(request_gate_dir.resolve())
     resume = selection_path.exists()
     if resume:
         if json.loads(selection_path.read_text()) != selection:
@@ -344,7 +372,11 @@ def run_fast_batch(
         raise ValueError("existing output has no fast-pipeline identity; choose a fresh --output")
     validate_umi_jobs(jobs, resume=resume)
     ArtifactStore.write_json(selection_path, selection)
-    gate = FileRequestGate.create(state / "qwen_tokens", capacity=qwen_workers)
+    gate = (
+        FileRequestGate.create_shared(request_gate_dir.resolve(), capacity=qwen_workers)
+        if request_gate_dir is not None
+        else FileRequestGate.create(state / "qwen_tokens", capacity=qwen_workers)
+    )
     rows = {row["episode_index"]: dict(row) for row in plan["episodes"]}
     selected_ids = {job.episode for job in jobs}
     for job in jobs:
@@ -388,7 +420,8 @@ def run_fast_batch(
             {
                 "status": status,
                 "pid": os.getpid(),
-                "worker_gpus": list(gpus),
+                "worker_gpus": list(worker_gpus[: len(shards)]),
+                "sam_workers_per_gpu": sam_workers_per_gpu,
                 "wall_s": time.perf_counter() - started,
                 "inference_mode": "async" if asynchronous else "resident",
                 "counts": result["counts"],
@@ -401,9 +434,14 @@ def run_fast_batch(
         "qwen_workers": qwen_workers,
         "prefetch": prefetch,
         "render_buffer": render_buffer,
+        "episode_workers": episode_workers,
+        "video_workers": video_workers,
         "cpu_threads": cpu_threads,
         "resume": resume,
     }
+    if (state / "inference_complete.json").exists():
+        result = validate_inference_receipt(batch_dir, output)
+        return result if defer_finalize else finalize_fast_batch(batch_dir, output_root=output)
     save("running")
     try:
         with ProcessPoolExecutor(
@@ -423,13 +461,69 @@ def run_fast_batch(
                             f"UMI worker did not finish: {report.get('fatal_error') or report['status']}"
                         )
                 save("running")
-        result = save("rendering_groups")
+        result = save("awaiting_finalize")
+        ArtifactStore.write_json(
+            state / "inference_complete.json",
+            {
+                "version": 1,
+                "batch": str(batch_dir),
+                "output": str(output),
+                "plan_sha256": file_hash(batch_dir / "batch_plan.json"),
+                "selection_sha256": file_hash(selection_path),
+                "ledger_sha256": file_hash(output / "episode_results.json"),
+                "implementation": implementation_hashes(),
+            },
+        )
+        return result if defer_finalize else finalize_fast_batch(batch_dir, output_root=output)
+    except BaseException:
+        save("interrupted_or_failed")
+        raise
+
+
+def implementation_hashes() -> dict[str, str]:
+    return {
+        str(path.relative_to(ROOT)): file_hash(path)
+        for directory in (ROOT / "src/robotwin_annotation_v2", ROOT / "scripts")
+        for path in sorted(directory.rglob("*.py"))
+    }
+
+
+def validate_inference_receipt(batch_dir: Path, output: Path) -> dict[str, Any]:
+    """Verify the immutable handoff without constructing a SAM or API runtime."""
+    receipt = json.loads((output / ".pipeline/inference_complete.json").read_text())
+    expected = {
+        "version": 1,
+        "batch": str(batch_dir.resolve()),
+        "output": str(output.resolve()),
+        "plan_sha256": file_hash(batch_dir / "batch_plan.json"),
+        "selection_sha256": file_hash(output / ".pipeline/selection.json"),
+        "ledger_sha256": file_hash(output / "episode_results.json"),
+        "implementation": implementation_hashes(),
+    }
+    if receipt != expected:
+        raise ValueError("inference handoff identity changed; refusing finalization")
+    result: dict[str, Any] = json.loads((output / "episode_results.json").read_text())
+    return result
+
+
+def finalize_fast_batch(batch_dir: Path, *, output_root: Path | None = None) -> dict[str, Any]:
+    """Idempotent CPU-only group review, independent of the GPU lifecycle."""
+    batch_dir = batch_dir.resolve()
+    output = (output_root or batch_dir / "runs").resolve()
+    result = validate_inference_receipt(batch_dir, output)
+    plan = json.loads((batch_dir / "batch_plan.json").read_text())
+    status_path = output / "batch_status.json"
+    status = json.loads(status_path.read_text())
+
+    def progress(value: str, **extra: Any) -> None:
+        ArtifactStore.write_json(
+            status_path, {**status, "status": value, "pid": os.getpid(), **extra}
+        )
+
+    progress("rendering_groups")
+    try:
         for group in plan["groups"]:
-            selected = [
-                row
-                for row in result["episodes"]
-                if row["episode_index"] in selected_ids and row.get("run_id") == group["group"]
-            ]
+            selected = [row for row in result["episodes"] if row.get("run_id") == group["group"]]
             if not selected:
                 continue
             directory = output / group["group"]
@@ -443,14 +537,18 @@ def run_fast_batch(
                     "run_id": group["group"],
                     "gripper_backend": None,
                     "stage_mode": "object_source_only",
-                    "inference_mode": "async" if asynchronous else "resident",
+                    "inference_mode": status["inference_mode"],
                     "records": [
                         {"episode": row["episode"], "status": row["process_status"]}
                         for row in selected
                     ],
                 },
             )
-        return save("finished")
-    except BaseException:
-        save("interrupted_or_failed")
+        from scripts.run_umi_batch import write_index
+
+        write_index(output, result)
+        progress("finished")
+        return result
+    except BaseException as exc:
+        progress("finalization_failed", error=f"{type(exc).__name__}: {exc}")
         raise

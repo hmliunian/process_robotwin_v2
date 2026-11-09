@@ -38,6 +38,7 @@ from robotwin_annotation_v2.models import (
     EpisodeRef,
     FrameWindow,
     LoopContext,
+    MaskQCResult,
     MaskQCStatus,
     MaskRun,
     MaskStatus,
@@ -111,6 +112,19 @@ class SamEpisodeExecution:
     mask_run: MaskRun
     qc_path: Path | None
     annotation_mode: AnnotationMode = AnnotationMode.PICK_PLACE
+
+
+@dataclass
+class PreparedSamEpisode:
+    config: PipelineConfig
+    run_id: str
+    context: LoopContext
+    plan: SemanticPlan
+    frame_shape: tuple[int, int]
+    stage_images: dict[int, Image.Image]
+    seed_images: dict[int, Image.Image]
+    mask_qc: MaskQCResult | None = None
+    qc_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -534,12 +548,11 @@ def _execute_gripper_episode(
     )
 
 
-def _execute_sam_episode(
+def _load_sam_episode(
     config: PipelineConfig,
     episode_index: int,
     run_id: str,
-    backend: Sam3Adapter,
-) -> SamEpisodeExecution:
+) -> PreparedSamEpisode:
     dataset = _dataset(config)
     ref = _episode_ref(config, episode_index)
     context = _build_context(config, dataset, ref)
@@ -550,46 +563,99 @@ def _execute_sam_episode(
     stage_images = dataset.read_frames(ref, semantic_frame_ids)
     seed_frame_ids = {frame.frame_id for frame in context.semantic_frames if frame.seed_eligible}
     seed_images = {frame_id: stage_images[frame_id] for frame_id in seed_frame_ids}
+    return PreparedSamEpisode(config, run_id, context, plan, frame_shape, stage_images, seed_images)
 
-    qc_path: Path | None = None
-    with sam3_video_resource(
-        Path(context.video_source),
-        minimum_frame_count=context.frame_count,
-    ) as resource_path:
-        mask_qc = None
-        if config.mask.qc_enabled:
-            qc_client = OpenAICompatibleQwenClient.from_config(config.qwen)
-            mask_qc = run_mask_qc_stage(
-                context,
-                plan,
-                backend,
-                resource_path,
-                seed_images=seed_images,
-                context_images=stage_images,
-                frame_shape=frame_shape,
-                mask_config=config.mask,
-                client=qc_client,
-            )
-            qc_path = save_mask_qc_artifacts(store, run_id, context, mask_qc)
-        result = run_sam_stage(
-            context,
-            plan,
+
+def _run_seed_qc(prepared: PreparedSamEpisode, backend: Sam3Adapter, resource_path: Path) -> None:
+    if prepared.config.mask.qc_enabled:
+        prepared.mask_qc = run_mask_qc_stage(
+            prepared.context,
+            prepared.plan,
             backend,
             resource_path,
-            frame_shape=frame_shape,
-            mask_config=config.mask,
-            mask_qc=mask_qc,
+            seed_images=prepared.seed_images,
+            context_images=prepared.stage_images,
+            frame_shape=prepared.frame_shape,
+            mask_config=prepared.config.mask,
+            client=OpenAICompatibleQwenClient.from_config(prepared.config.qwen),
+        )
+
+
+def _prepare_sam_episode(
+    config: PipelineConfig, episode_index: int, run_id: str, backend: Sam3Adapter
+) -> PreparedSamEpisode:
+    """Keep only sampled JPEGs while a producer waits for QC or localization."""
+    if not config.sam3.seed_image_only:
+        raise ValueError("staged SAM producers require seed_image_only")
+    prepared = _load_sam_episode(config, episode_index, run_id)
+    if config.mask.qc_enabled:
+        with sam3_video_resource(
+            Path(prepared.context.video_source),
+            minimum_frame_count=prepared.context.frame_count,
+            frame_ids=tuple(prepared.seed_images),
+        ) as resource_path:
+            _run_seed_qc(prepared, backend, resource_path)
+    prepared.stage_images.clear()
+    return prepared
+
+
+def _sam_stage(
+    prepared: PreparedSamEpisode, backend: Sam3Adapter, resource_path: Path
+) -> SamStageResult:
+    return run_sam_stage(
+        prepared.context,
+        prepared.plan,
+        backend,
+        resource_path,
+        frame_shape=prepared.frame_shape,
+        mask_config=prepared.config.mask,
+        mask_qc=prepared.mask_qc,
+    )
+
+
+def _propagate_sam_episode(prepared: PreparedSamEpisode, backend: Sam3Adapter) -> SamStageResult:
+    """Only bounded video workers retain full JPEG directories and mask volumes."""
+    with sam3_video_resource(
+        Path(prepared.context.video_source),
+        minimum_frame_count=prepared.context.frame_count,
+    ) as resource_path:
+        return _sam_stage(prepared, backend, resource_path)
+
+
+def _save_sam_episode(prepared: PreparedSamEpisode, result: SamStageResult) -> SamEpisodeExecution:
+    store = ArtifactStore(prepared.config.output_root)
+    if prepared.mask_qc is not None and prepared.qc_path is None:
+        prepared.qc_path = save_mask_qc_artifacts(
+            store, prepared.run_id, prepared.context, prepared.mask_qc
         )
     mask_run = save_sam_artifacts(
         store,
-        run_id,
-        context,
-        plan,
+        prepared.run_id,
+        prepared.context,
+        prepared.plan,
         result,
-        seed_images=seed_images,
+        seed_images=prepared.seed_images,
     )
-    (store.episode_dir(run_id, ref) / "sam_failure.json").unlink(missing_ok=True)
-    return SamEpisodeExecution(mask_run, qc_path, context.annotation_mode)
+    (store.episode_dir(prepared.run_id, prepared.context.episode) / "sam_failure.json").unlink(
+        missing_ok=True
+    )
+    return SamEpisodeExecution(mask_run, prepared.qc_path, prepared.context.annotation_mode)
+
+
+def _execute_sam_episode(
+    config: PipelineConfig, episode_index: int, run_id: str, backend: Sam3Adapter
+) -> SamEpisodeExecution:
+    prepared = _load_sam_episode(config, episode_index, run_id)
+    with sam3_video_resource(
+        Path(prepared.context.video_source), minimum_frame_count=prepared.context.frame_count
+    ) as resource_path:
+        _run_seed_qc(prepared, backend, resource_path)
+        if prepared.mask_qc is not None:
+            prepared.qc_path = save_mask_qc_artifacts(
+                ArtifactStore(config.output_root), run_id, prepared.context, prepared.mask_qc
+            )
+        result = _sam_stage(prepared, backend, resource_path)
+    return _save_sam_episode(prepared, result)
 
 
 def _emit_sam_result(run_id: str, execution: SamEpisodeExecution) -> bool:

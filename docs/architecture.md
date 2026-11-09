@@ -58,9 +58,31 @@ UMI 单臂物体标注可显式声明 `timeline_source=video_window`。这种输
 
 UMI 批处理可显式选择 `--inference-mode resident` 或 `async`。每个 GPU 进程跨组持有一个
 SAM backend，任务携带各自的 dataset、mode 和 profile，每个角色使用独立 session。
+`--sam-workers-per-gpu`（默认 1）可在同一物理 GPU 上建立多个独立 worker 进程，每个
+进程持有自己的模型、CUDA 状态和 owner 线程。按 GPU 轮流分配 worker 槽位，任务只分配
+一次；Qwen 文件 token 仍限制整批总请求数。改变副本数会改变调度身份，须使用新输出目录。
 `async` 在同一个 SAM owner 线程周围重叠有界 Qwen 规划和磁盘文件可视化；候选 QC、
 bbox 救援、时序传播及 canonical 保存仍保持原有依赖。多 GPU 共享文件 token 限制 Qwen
-总请求数，各线程分别持有 token 句柄；不提供全局 QC 请求优先级。
+总请求数，各线程分别持有 token 句柄。队列模式限制规划请求最多使用一半 token
+（向下取整，至少一个），在请求上限大于 1 时给 QC/bbox 保留容量；这是容量预留，不是抢占正在执行的请求。
+
+`async --episode-workers N`（N > 1）在每个 SAM worker 内通过有界 FIFO 将调用交给创建 backend 的
+同一个线程，每次调用仍独立创建、释放 session。生产 runtime 将 episode 拆成三个阶段：
+
+1. N 个生产者使用有来源帧编号的稀疏 JPEG 进行候选生成和 Qwen QC/bbox。等待接口时不
+   保留整段 JPEG；候选顺序、fallback 和质检规则不变。完成质检的就绪任务也占生产者容量。
+2. `--video-workers V`（默认 2）限制完整帧目录、传播以及待保存的完整 mask 结果总数。
+   进入此阶段才生成完整 JPEG 序列；SAM 仍由唯一 owner 调用。稀疏和完整 JPEG 使用相同编码参数。
+3. 独立 writer 保存 QC 证据和 canonical masks，保存完成才释放视频名额并发布完成状态。
+   渲染仅消费磁盘路径，积压不占生产者名额；仍在返回前等待全部渲染结果。
+
+规划、生产者、完整视频、渲染和 CPU 线程参数按 SAM worker 设置；默认一个 worker 时即为
+每卡容量。多副本时这些资源随 worker 数增加，显存也需容纳各自的模型和 session。
+N 与整批 Qwen 请求上限可独立配置，
+不能据此假定远程服务具有相同的实际吞吐。fatal CUDA 或中断先关闭模型队列并唤醒等待者，
+再回收线程和 backend；已提交的写盘任务会排空，完成的 masks 保留以便恢复。未发布的
+阶段会在恢复时重做。默认 N=1 保留原调度；没有分阶段 hooks 的注入 runtime 保留原整段
+执行接口。快速模式以外未开启种子单图优化的 runtime 也使用整段接口。
 
 快速模式对文本、bbox、文本加 bbox 候选均可只加载对应 JPEG。多候选帧的搜索、query
 顺序和 QC 规则不变。原生传播可选择只计算跟踪所需的视觉特征，编码 batch 为 1 或 4，
@@ -168,3 +190,17 @@ keys、shape、dtype、status 和 lineage。
 - `configs/`：共享 profiles、prompts、manifests 与 bundled render assets。
 
 Domain code 不依赖 adapters。生成的视频、dataset、checkpoint、run 和 secret 不得进入 Git。
+
+## UMI 跨批次常驻执行（显式流式入口）
+
+流式 worker 在同一个 SAM owner 线程中持续消费新任务，只有显式输入结束、fatal CUDA
+或进程退出才关闭 backend。输入暂时为空时保持模型常驻，继续排空已有保存与渲染任务。
+动态任务必须具有独立 namespace，保持原始 batch/episode/output 身份；不同批次的相同
+局部 episode 编号不会冲突。每个后续任务在入队前验证服务、SAM 参数和已有输出身份。
+
+输入就绪队列、规划、QC 生产者、完整视频及输出队列均有界。模型 session 按视频清理，
+权重跨批保留。完成的逐条 ledger 必须先落盘再通知调度器，调度器按源 ID 防重并独立
+汇总批次。已确认条目从 worker 活跃账本和内存计时列表移除，逐条结果与计时保留在其
+原输出目录。GPU 工作者可以跨批交错，CPU 分组汇总不作为下一批 GPU 任务的前置条件。
+进程恢复仍须先确保旧 owner 已退出，验证输入/实现哈希后复用完整 canonical/overlay；
+未知 API 结果不新增盲目重试。默认有限批入口的身份、调度和 artifact 合同保持不变。

@@ -179,9 +179,9 @@ def test_prefetch_is_bounded_and_return_drains_background_reviews(tmp_path: Path
     assert all(row["objects_ready"] for row in result["episodes"])
 
 
-@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("asynchronous,episode_workers", [(False, 1), (True, 1), (True, 3)])
 def test_failures_keep_every_attempt_and_do_not_promote_masks_to_reviewed(
-    tmp_path: Path, asynchronous: bool
+    tmp_path: Path, asynchronous: bool, episode_workers: int
 ) -> None:
     executed = []
 
@@ -205,6 +205,7 @@ def test_failures_keep_every_attempt_and_do_not_promote_masks_to_reviewed(
         render=render,
         runtime=runtime,
         asynchronous=asynchronous,
+        episode_workers=episode_workers,
     )
     rows = result["episodes"]
     assert set(executed) == {0, 2, 3}

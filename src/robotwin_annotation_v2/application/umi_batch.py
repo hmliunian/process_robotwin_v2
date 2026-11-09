@@ -39,6 +39,18 @@ def _read(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _task_arm_type(action_id: str, rules: dict[str, Any]) -> str | None:
+    """An explicit task allowlist takes precedence over visual arm-count screening."""
+
+    if "bimanual_actions" not in rules:
+        return None
+    if action_id in rules["bimanual_actions"]:
+        return "bimanual"
+    if action_id not in rules["tasks"]:
+        raise ValueError(f"unknown task action category: {action_id!r}; configure task rules first")
+    return "single"
+
+
 def initialize_batch(source_root: Path, batch_dir: Path, rules_path: Path) -> dict[str, Any]:
     """Freeze original IDs, source fingerprints, semantics and screening prompt."""
 
@@ -46,6 +58,10 @@ def initialize_batch(source_root: Path, batch_dir: Path, rules_path: Path) -> di
     rules = yaml.safe_load(rules_path.read_text())
     prompt = (rules_path.parent / rules["screen_prompt"]).read_text()
     manifest = _read(source_root / "manifest.json")
+    if "bimanual_actions" in rules:
+        # Validate categories before reading any source or partially creating a batch.
+        for action_id in sorted({record["action_id"] for record in manifest}):
+            _task_arm_type(action_id, rules)
     records = [r for r in manifest if r["action_id"] not in rules["excluded_actions"]]
     missing = set(rules["excluded_episodes"]) - {r["id"] for r in records}
     if missing:
@@ -69,6 +85,11 @@ def initialize_batch(source_root: Path, batch_dir: Path, rules_path: Path) -> di
                 "source_size": stat.st_size,
                 "source_mtime_ns": stat.st_mtime_ns,
                 "task_text": f"{action_text}\n{task['objects']}",
+                **(
+                    {"arm_type": _task_arm_type(record["action_id"], rules)}
+                    if "bimanual_actions" in rules
+                    else {}
+                ),
             }
         )
     if len({e["id"] for e in episodes}) != len(episodes):
@@ -80,6 +101,16 @@ def initialize_batch(source_root: Path, batch_dir: Path, rules_path: Path) -> di
         "prompt": prompt,
         "episodes": episodes,
         "excluded_action_count": len(manifest) - len(records),
+        **(
+            {
+                "action_arm_types": {
+                    action: _task_arm_type(action, rules)
+                    for action in sorted({r["action_id"] for r in manifest})
+                }
+            }
+            if "bimanual_actions" in rules
+            else {}
+        ),
     }
     inventory["signature"] = _digest(inventory)
     path = batch_dir / "inventory.json"
@@ -112,6 +143,19 @@ def screen_batch(
     def review(episode: dict[str, Any]) -> dict[str, Any]:
         path = batch_dir / "screening" / f"{episode['id']}.json"
         base = {"id": episode["id"], "action_id": episode["action_id"]}
+        arm_type = _task_arm_type(episode["action_id"], rules)
+        if arm_type is not None:
+            base.update(arm_type=arm_type, arm_classification_source="task_action_id")
+        if arm_type == "bimanual":
+            result = {
+                **base,
+                "decision": "bimanual",
+                "status": "excluded_bimanual",
+                "reason": "Action is configured as a bimanual task.",
+                "review_source": "task_action_id",
+            }
+            ArtifactStore.write_json(path, result)
+            return result
         exclusion = rules["excluded_episodes"].get(episode["id"])
         if exclusion:
             result = {
@@ -142,10 +186,11 @@ def screen_batch(
                 previews=previews,
                 prompt=inventory["prompt"],
                 task_text=episode["task_text"],
+                single_arm_task=arm_type == "single",
             )
             decision = answer["decision"]
             status = "needs_arm_review"
-            if decision in {"bimanual", "no_action"}:
+            if arm_type != "single" and decision in {"bimanual", "no_action"}:
                 status = f"excluded_{decision}"
             elif (
                 decision in {"left", "right"}

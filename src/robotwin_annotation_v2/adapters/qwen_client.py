@@ -14,6 +14,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
@@ -26,12 +27,47 @@ if TYPE_CHECKING:
     from robotwin_annotation_v2.config import QwenConfig
 
 NDArray = np.ndarray[Any, Any]
+QWEN_PLANNING: ContextVar[bool] = ContextVar("qwen_planning", default=False)
 
 
 class RequestGate(Protocol):
     def acquire(self, blocking: bool = True, timeout: float | None = None) -> bool: ...
 
     def release(self) -> None: ...
+
+
+class PlanningRequestGate:
+    """Bound requests and limit planning to retain QC capacity when the cap exceeds one."""
+
+    def __init__(self, capacity: int) -> None:
+        self._total = threading.BoundedSemaphore(capacity)
+        self._planning = threading.BoundedSemaphore(max(1, capacity // 2))
+        self._local = threading.local()
+
+    def acquire(self, blocking: bool = True, timeout: float | None = None) -> bool:
+        planning = QWEN_PLANNING.get()
+        started = time.monotonic()
+        if planning and not self._planning.acquire(blocking, timeout):
+            return False
+        try:
+            remaining = (
+                None if timeout is None else max(0.0, timeout - (time.monotonic() - started))
+            )
+            acquired = self._total.acquire(blocking, remaining)
+        except BaseException:
+            if planning:
+                self._planning.release()
+            raise
+        if acquired:
+            self._local.planning = planning
+        elif planning:
+            self._planning.release()
+        return acquired
+
+    def release(self) -> None:
+        self._total.release()
+        if self._local.planning:
+            self._planning.release()
 
 
 @dataclass(slots=True)
@@ -51,6 +87,25 @@ class FileRequestGate:
         for path in token_paths:
             path.touch(exist_ok=True)
         return cls(token_paths)
+
+    @classmethod
+    def create_shared(cls, directory: Path, *, capacity: int) -> FileRequestGate:
+        """Pin capacity across independent batch processes; never resize a live gate."""
+        if capacity < 1:
+            raise ValueError("request gate capacity must be positive")
+        directory.mkdir(parents=True, exist_ok=True)
+        with (directory / "capacity.lock").open("a+b") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            manifest = directory / "capacity.json"
+            expected = {"capacity": capacity, "version": 1}
+            if manifest.exists():
+                if json.loads(manifest.read_text()) != expected:
+                    raise ValueError("shared Qwen gate capacity changed")
+            else:
+                temp = directory / f"capacity.{os.getpid()}.tmp"
+                temp.write_text(json.dumps(expected))
+                temp.replace(manifest)
+            return cls.create(directory, capacity=capacity)
 
     def acquire(self, blocking: bool = True, timeout: float | None = None) -> bool:
         if self._handle is not None:
@@ -91,21 +146,28 @@ class FileRequestGate:
 class ThreadLocalFileRequestGate:
     """Share process-safe token files while keeping each thread's handle separate."""
 
-    def __init__(self, token_paths: tuple[Path, ...]) -> None:
+    def __init__(
+        self, token_paths: tuple[Path, ...], *, planning_capacity: int | None = None
+    ) -> None:
         self._token_paths = token_paths
+        self._planning_paths = token_paths[:planning_capacity]
         self._local = threading.local()
 
-    def _gate(self) -> FileRequestGate:
-        if not hasattr(self._local, "gate"):
-            self._local.gate = FileRequestGate(self._token_paths)
-        gate: FileRequestGate = self._local.gate
-        return gate
-
     def acquire(self, blocking: bool = True, timeout: float | None = None) -> bool:
-        return self._gate().acquire(blocking, timeout)
+        if getattr(self._local, "gate", None) is not None:
+            raise RuntimeError("Qwen request gate is already acquired")
+        gate = FileRequestGate(self._planning_paths if QWEN_PLANNING.get() else self._token_paths)
+        if not gate.acquire(blocking, timeout):
+            return False
+        self._local.gate = gate
+        return True
 
     def release(self) -> None:
-        self._gate().release()
+        gate = getattr(self._local, "gate", None)
+        if gate is None:
+            raise RuntimeError("Qwen request gate is not acquired")
+        self._local.gate = None
+        gate.release()
 
 
 _REQUEST_GATE: RequestGate | None = None

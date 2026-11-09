@@ -34,17 +34,32 @@ def run_batch(
     *,
     gpus: tuple[int, ...],
     qwen_workers: int = 4,
+    sam_workers_per_gpu: int = 1,
     smoke: bool = False,
     only_groups: tuple[str, ...] = (),
     inference_mode: str = "legacy",
     tracking_batch_size: int = 1,
     prefetch: int = 2,
     render_buffer: int = 2,
+    episode_workers: int = 1,
+    video_workers: int = 2,
     cpu_threads: int = 8,
     output_root: Path | None = None,
+    defer_finalize: bool = False,
+    request_gate_dir: Path | None = None,
 ) -> dict[str, Any]:
+    if inference_mode == "legacy" and (defer_finalize or request_gate_dir is not None):
+        raise ValueError("cross-batch stages require resident or async mode")
     if inference_mode not in {"legacy", "resident", "async"}:
         raise ValueError("inference mode must be legacy, resident or async")
+    if sam_workers_per_gpu < 1 or (sam_workers_per_gpu > 1 and inference_mode == "legacy"):
+        raise ValueError("SAM workers per GPU must be positive; multiple workers require fast mode")
+    if min(episode_workers, video_workers) < 1 or (
+        episode_workers > 1 and inference_mode != "async"
+    ):
+        raise ValueError(
+            "episode workers and video workers must be positive; multiple workers require async mode"
+        )
     if inference_mode != "legacy":
         from scripts.run_umi_fast_batch import run_fast_batch
 
@@ -53,17 +68,23 @@ def run_batch(
             config_path,
             gpus=gpus,
             qwen_workers=qwen_workers,
+            sam_workers_per_gpu=sam_workers_per_gpu,
             smoke=smoke,
             only_groups=only_groups,
             asynchronous=inference_mode == "async",
             tracking_batch_size=tracking_batch_size,
             prefetch=prefetch,
             render_buffer=render_buffer,
+            episode_workers=episode_workers,
+            video_workers=video_workers,
             cpu_threads=cpu_threads,
             output_root=output_root,
+            defer_finalize=defer_finalize,
+            request_gate_dir=request_gate_dir,
         )
         output = (output_root or batch_dir / ("smoke" if smoke else "runs")).resolve()
-        write_index(output, result)
+        if not defer_finalize:
+            write_index(output, result)
         return result
     batch_dir = batch_dir.resolve()
     plan = _read(batch_dir / "batch_plan.json")
@@ -267,32 +288,69 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("batch_dir", type=Path)
     parser.add_argument("--config", type=Path, default=PROJECT_ROOT / "configs/process.yaml")
-    parser.add_argument("--gpus", type=int, nargs="+", required=True)
-    parser.add_argument("--qwen-workers", type=int, default=4)
+    parser.add_argument("--gpus", type=int, nargs="+")
+    parser.add_argument(
+        "--qwen-workers",
+        type=int,
+        default=4,
+        help="maximum concurrent Qwen requests across the batch",
+    )
+    parser.add_argument(
+        "--sam-workers-per-gpu", type=int, default=1, help="independent SAM processes per GPU"
+    )
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--groups", nargs="*", default=[])
     parser.add_argument(
         "--inference-mode", choices=("legacy", "resident", "async"), default="legacy"
     )
     parser.add_argument("--tracking-batch-size", type=int, choices=(0, 1, 4), default=1)
+    parser.add_argument(
+        "--episode-workers",
+        type=int,
+        default=1,
+        help="QC producers and ready episodes per SAM worker; >1 enables the async SAM queue",
+    )
+    parser.add_argument(
+        "--video-workers",
+        type=int,
+        default=2,
+        help="full-video propagation and pending-save slots per SAM worker",
+    )
     parser.add_argument("--prefetch", type=int, default=2)
     parser.add_argument("--render-buffer", type=int, default=2)
     parser.add_argument("--cpu-threads", type=int, default=8)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--request-gate-dir", type=Path)
+    phases = parser.add_mutually_exclusive_group()
+    phases.add_argument("--defer-finalize", action="store_true")
+    phases.add_argument("--finalize-only", action="store_true")
     args = parser.parse_args()
+    if args.finalize_only:
+        from scripts.run_umi_fast_batch import finalize_fast_batch
+
+        output = args.output or args.batch_dir / ("smoke" if args.smoke else "runs")
+        finalize_fast_batch(args.batch_dir, output_root=output)
+        return
+    if not args.gpus:
+        parser.error("--gpus is required for inference")
     run_batch(
         args.batch_dir,
         args.config,
         gpus=tuple(args.gpus),
         qwen_workers=args.qwen_workers,
+        sam_workers_per_gpu=args.sam_workers_per_gpu,
         smoke=args.smoke,
         only_groups=tuple(args.groups),
         inference_mode=args.inference_mode,
         tracking_batch_size=args.tracking_batch_size,
         prefetch=args.prefetch,
         render_buffer=args.render_buffer,
+        episode_workers=args.episode_workers,
+        video_workers=args.video_workers,
         cpu_threads=args.cpu_threads,
         output_root=args.output,
+        defer_finalize=args.defer_finalize,
+        request_gate_dir=args.request_gate_dir,
     )
 
 
